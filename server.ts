@@ -5,7 +5,7 @@
  */
 
 import { RpcServer, RpcSerialization } from "@effect/rpc"
-import { HttpRouter, HttpMiddleware } from "@effect/platform"
+import { HttpRouter, HttpMiddleware, HttpServerResponse } from "@effect/platform"
 import { BunHttpServer, BunContext } from "@effect/platform-bun"
 import { BunRuntime } from "@effect/platform-bun"
 import { Console, Effect, Layer, Config } from "effect"
@@ -35,11 +35,23 @@ const HttpProtocol = RpcServer.layerProtocolHttp({
 }).pipe(Layer.provide(RpcSerialization.layerNdjson))
 
 // =============================================================================
+// Health Check Route
+// =============================================================================
+
+const HealthRoute = HttpRouter.Default.use((router) =>
+  Effect.gen(function* () {
+    yield* router.get("/health", HttpServerResponse.json({ status: "ok" }))
+    return router
+  })
+)
+
+// =============================================================================
 // Server Layer Factory
 // =============================================================================
 
 const makeServerLayer = (port: number) =>
   HttpRouter.Default.serve(HttpMiddleware.logger).pipe(
+    Layer.provide(HealthRoute),
     Layer.provide(RpcLive),
     Layer.provide(HttpProtocol),
     Layer.provide(BunHttpServer.layer({ port }))

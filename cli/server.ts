@@ -5,73 +5,15 @@
  */
 
 import { Command } from "@effect/cli"
-import { FileSystem } from "@effect/platform"
 import { Console, Effect, Option } from "effect"
 import { daemonizeOption } from "./options"
-
-// =============================================================================
-// Configuration
-// =============================================================================
-
-const PID_FILE = "server.pid"
-
-// =============================================================================
-// Helper Effects
-// =============================================================================
-
-const isServerRunning = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem
-  const exists = yield* fs.exists(PID_FILE)
-  if (!exists) return false
-
-  const pidStr = yield* fs.readFileString(PID_FILE)
-  const pid = parseInt(pidStr.trim(), 10)
-  if (isNaN(pid)) return false
-
-  try {
-    process.kill(pid, 0)
-    return true
-  } catch {
-    yield* fs.remove(PID_FILE).pipe(Effect.ignore)
-    return false
-  }
-})
-
-const getServerPid = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem
-  const exists = yield* fs.exists(PID_FILE)
-  if (!exists) return Option.none<number>()
-
-  const pidStr = yield* fs.readFileString(PID_FILE)
-  const pid = parseInt(pidStr.trim(), 10)
-  if (isNaN(pid)) return Option.none<number>()
-  return Option.some(pid)
-})
-
-const startServerBackground = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem
-  yield* Console.log("Starting server in background...")
-
-  const proc = Bun.spawn(["bun", "server.ts"], {
-    cwd: process.cwd(),
-    stdout: "ignore",
-    stderr: "ignore",
-    stdin: "ignore",
-    env: process.env // Inherit env vars (e.g., from doppler)
-  })
-
-  yield* fs.writeFileString(PID_FILE, String(proc.pid))
-  yield* Console.log(`Server started with PID ${proc.pid}`)
-  proc.unref()
-})
-
-const startServerForeground = Effect.gen(function* () {
-  yield* Console.log("Starting server in foreground (Ctrl+C to stop)...")
-  yield* Effect.tryPromise(async () => {
-    const { $ } = await import("bun")
-    await $`bun server.ts`
-  }).pipe(Effect.catchAll(() => Console.error("Server exited")))
-})
+import {
+  isServerRunning,
+  getServerPid,
+  startServerBackground,
+  startServerForeground,
+  stopServer
+} from "./server-utils"
 
 // =============================================================================
 // Commands
@@ -84,48 +26,44 @@ const startCommand = Command.make("start", { daemonize: daemonizeOption }, ({ da
       yield* Console.log("Server is already running")
       return
     }
-    yield* daemonize ? startServerBackground : startServerForeground
+    
+    if (daemonize) {
+      yield* Console.log("Starting server in background...")
+      const pid = yield* startServerBackground
+      yield* Console.log(`Server started with PID ${pid}`)
+    } else {
+      yield* startServerForeground
+    }
   })
 ).pipe(Command.withDescription("Start the RPC server"))
 
 const stopCommand = Command.make("stop", {}, () =>
   Effect.gen(function* () {
-    const pid = yield* getServerPid
-    const fs = yield* FileSystem.FileSystem
-
-    yield* Option.match(pid, {
+    const stopped = yield* stopServer
+    
+    yield* Option.match(stopped, {
       onNone: () => Console.log("Server is not running"),
-      onSome: (p) =>
-        Effect.gen(function* () {
-          try {
-            process.kill(p, "SIGTERM")
-            yield* Console.log(`Sent SIGTERM to server (PID ${p})`)
-          } catch {
-            yield* Console.log("Server process not found")
-          }
-          yield* fs.remove(PID_FILE).pipe(Effect.ignore)
-        })
+      onSome: (pid) => Console.log(`Stopped server (PID ${pid})`)
     })
   })
 ).pipe(Command.withDescription("Stop the RPC server"))
 
 const restartCommand = Command.make("restart", { daemonize: daemonizeOption }, ({ daemonize }) =>
   Effect.gen(function* () {
-    const pid = yield* getServerPid
-    const fs = yield* FileSystem.FileSystem
-
-    if (Option.isSome(pid)) {
-      try {
-        process.kill(pid.value, "SIGTERM")
-        yield* Console.log(`Stopped server (PID ${pid.value})`)
-      } catch {
-        // Process already dead
-      }
-      yield* fs.remove(PID_FILE).pipe(Effect.ignore)
+    const stopped = yield* stopServer
+    
+    if (Option.isSome(stopped)) {
+      yield* Console.log(`Stopped server (PID ${stopped.value})`)
       yield* Effect.sleep("500 millis")
     }
 
-    yield* daemonize ? startServerBackground : startServerForeground
+    if (daemonize) {
+      yield* Console.log("Starting server in background...")
+      const pid = yield* startServerBackground
+      yield* Console.log(`Server started with PID ${pid}`)
+    } else {
+      yield* startServerForeground
+    }
   })
 ).pipe(Command.withDescription("Restart the RPC server"))
 
@@ -152,4 +90,3 @@ export const serverCommand = Command.make("server", {}, () =>
   Command.withDescription("Manage the RPC server"),
   Command.withSubcommands([startCommand, stopCommand, restartCommand, statusCommand])
 )
-

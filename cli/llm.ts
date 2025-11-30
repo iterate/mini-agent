@@ -8,6 +8,7 @@ import { Args, Command, Options } from "@effect/cli"
 import { Console, Effect, Stream } from "effect"
 import { withLlmClient } from "./client"
 import { serverUrlOption } from "./options"
+import { withTraceLinks } from "../shared/tracing"
 
 // =============================================================================
 // Generate Command (with streaming option)
@@ -47,6 +48,7 @@ const generateCommand = Command.make(
         }
       })
     ).pipe(
+      withTraceLinks,
       Effect.withSpan("cli.llm.generate"),
       Effect.catchAll((error) => logError(error))
     )

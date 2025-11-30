@@ -8,6 +8,7 @@ import { Args, Command, Options } from "@effect/cli"
 import { Console, Effect } from "effect"
 import { withTaskClient } from "./client"
 import { serverUrlOption } from "./options"
+import { withTraceLinks } from "../shared/tracing"
 
 // =============================================================================
 // List Command
@@ -39,6 +40,7 @@ const listCommand = Command.make(
         }
       })
     ).pipe(
+      withTraceLinks,
       Effect.withSpan("cli.tasks.list"),
       Effect.catchAll((error) => logError(error))
     )
@@ -63,6 +65,7 @@ const addCommand = Command.make(
         yield* Console.log(`Added task #${task.id}: ${task.text}`)
       })
     ).pipe(
+      withTraceLinks,
       Effect.withSpan("cli.tasks.add"),
       Effect.catchAll((error) => logError(error))
     )
@@ -87,6 +90,7 @@ const toggleCommand = Command.make(
         yield* Console.log(`Toggled: ${task.text} (${task.done ? "done" : "pending"})`)
       })
     ).pipe(
+      withTraceLinks,
       Effect.withSpan("cli.tasks.toggle"),
       Effect.catchAll((error) => logError(error))
     )
@@ -106,6 +110,7 @@ const clearCommand = Command.make(
         yield* Console.log(`Cleared ${result.cleared} tasks.`)
       })
     ).pipe(
+      withTraceLinks,
       Effect.withSpan("cli.tasks.clear"),
       Effect.catchAll((error) => logError(error))
     )

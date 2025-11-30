@@ -15,6 +15,25 @@ import {
 } from "effect"
 
 // =============================================================================
+// withTraceLinks - prints observability links when CLI command starts
+// =============================================================================
+
+/** Wrapper that prints trace URLs at the start of a command */
+export const withTraceLinks = <A, E, R>(
+  effect: Effect.Effect<A, E, R>
+): Effect.Effect<A, E, R | TraceLinks> =>
+  Effect.gen(function* () {
+    const traceLinks = yield* TraceLinks
+    const currentSpan = yield* Effect.currentSpan.pipe(Effect.option)
+
+    if (Option.isSome(currentSpan)) {
+      yield* traceLinks.printLinks(currentSpan.value.traceId)
+    }
+
+    return yield* effect
+  })
+
+// =============================================================================
 // OpenTelemetry Diagnostic Logging
 // =============================================================================
 

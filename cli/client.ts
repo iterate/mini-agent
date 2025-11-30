@@ -5,9 +5,11 @@
  */
 
 import { RpcClient, RpcSerialization } from "@effect/rpc"
-import { FetchHttpClient } from "@effect/platform"
+import { FetchHttpClient, FileSystem } from "@effect/platform"
 import { Effect, Layer, Stream } from "effect"
 import { TaskRpcs, LlmRpcs, Task } from "../shared/schemas"
+import { ensureServerRunning } from "./server-utils"
+import type { PlatformError } from "@effect/platform/Error"
 
 // =============================================================================
 // Default Configuration
@@ -41,17 +43,21 @@ export interface LlmClient {
 }
 
 // =============================================================================
-// Scoped Client Helpers
+// Scoped Client Helpers (with auto-start)
 // =============================================================================
 
 /**
  * Run an operation with a scoped TaskRpcs client
+ * Automatically starts the server if not running
  */
 export const withTaskClient = <A, E>(
   serverUrl: string,
   fn: (client: TaskClient) => Effect.Effect<A, E>
-): Effect.Effect<A, E | unknown> =>
+): Effect.Effect<A, E | Error | PlatformError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    // Ensure server is running before connecting
+    yield* ensureServerRunning(serverUrl)
+    
     const client = yield* RpcClient.make(TaskRpcs)
     return yield* fn(client as unknown as TaskClient)
   }).pipe(
@@ -60,13 +66,17 @@ export const withTaskClient = <A, E>(
   )
 
 /**
- * Run an operation with a scoped LlmRpcs client  
+ * Run an operation with a scoped LlmRpcs client
+ * Automatically starts the server if not running
  */
 export const withLlmClient = <A, E>(
   serverUrl: string,
   fn: (client: LlmClient) => Effect.Effect<A, E>
-): Effect.Effect<A, E | unknown> =>
+): Effect.Effect<A, E | Error | PlatformError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
+    // Ensure server is running before connecting
+    yield* ensureServerRunning(serverUrl)
+    
     const client = yield* RpcClient.make(LlmRpcs)
     return yield* fn(client as unknown as LlmClient)
   }).pipe(
