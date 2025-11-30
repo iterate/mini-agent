@@ -13,6 +13,68 @@ Default to using Bun instead of Node.js.
 - Use `bun run <script>` instead of `npm run <script>` or `yarn run <script>` or `pnpm run <script>`
 - Bun automatically loads .env, so don't use dotenv.
 
+## Environment Variables with Doppler
+
+This project uses [Doppler](https://doppler.com) for secrets management. **All commands that require environment variables must be prefixed with `doppler run --`**.
+
+```bash
+# Running the app with env vars
+doppler run -- bun index.ts
+
+# Running with watch mode
+doppler run -- bun --watch index.ts
+
+# Running scripts that need env vars
+doppler run -- bun run start
+
+# Type checking (no env vars needed)
+bun run typecheck
+```
+
+### Required Environment Variables
+
+The following environment variables are expected to be configured in Doppler:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `HONEYCOMB_API_KEY` | Yes (for tracing) | API key from Honeycomb (Settings → API Keys) |
+| `HONEYCOMB_ENDPOINT` | No | Defaults to `https://api.honeycomb.io` |
+| `OTEL_SERVICE_NAME` | No | Defaults to `effect-tasks-cli` |
+| `SERVICE_VERSION` | No | Defaults to `1.0.0` |
+
+If `HONEYCOMB_API_KEY` is not set, the app runs without tracing (graceful degradation).
+
+## Environment Variables with Doppler
+
+This project uses [Doppler](https://doppler.com) for secrets management. **All commands that require environment variables must be prefixed with `doppler run --`**.
+
+```bash
+# Running the app with env vars
+doppler run -- bun index.ts
+
+# Running with watch mode
+doppler run -- bun --watch index.ts
+
+# Running scripts that need env vars
+doppler run -- bun run start
+
+# Type checking (no env vars needed)
+bun run typecheck
+```
+
+### Required Environment Variables
+
+The following environment variables are expected to be configured in Doppler:
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `HONEYCOMB_API_KEY` | Yes (for tracing) | API key from Honeycomb (Settings → API Keys) |
+| `HONEYCOMB_ENDPOINT` | No | Defaults to `https://api.honeycomb.io` |
+| `OTEL_SERVICE_NAME` | No | Defaults to `effect-tasks-cli` |
+| `SERVICE_VERSION` | No | Defaults to `1.0.0` |
+
+If `HONEYCOMB_API_KEY` is not set, the app runs without tracing (graceful degradation).
+
 ## APIs
 
 - `Bun.serve()` supports WebSockets, HTTPS, and routes. Don't use `express`.

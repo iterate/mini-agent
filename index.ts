@@ -1,17 +1,66 @@
 import { Args, Command, Options } from "@effect/cli"
-import { FileSystem } from "@effect/platform"
+import * as Otlp from "@effect/opentelemetry/Otlp"
+import { FileSystem, FetchHttpClient } from "@effect/platform"
 import type { PlatformError } from "@effect/platform/Error"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import {
   Array,
+  Config,
   Console,
   Context,
   Effect,
   Layer,
   Option,
   type ParseResult,
+  Redacted,
   Schema
 } from "effect"
+
+// =============================================================================
+// Honeycomb Tracing Configuration
+// =============================================================================
+
+const HoneycombApiKey = Config.redacted("HONEYCOMB_API_KEY")
+const HoneycombEndpoint = Config.string("HONEYCOMB_ENDPOINT").pipe(
+  Config.withDefault("https://api.honeycomb.io")
+)
+const ServiceName = Config.string("OTEL_SERVICE_NAME").pipe(
+  Config.withDefault("effect-tasks-cli")
+)
+const ServiceVersion = Config.string("SERVICE_VERSION").pipe(
+  Config.withDefault("1.0.0")
+)
+
+const TracingConfig = Config.all({
+  apiKey: HoneycombApiKey,
+  endpoint: HoneycombEndpoint,
+  serviceName: ServiceName,
+  serviceVersion: ServiceVersion
+})
+
+const TracingLayer = Layer.unwrapEffect(
+  Effect.gen(function* () {
+    const config = yield* TracingConfig
+    return Otlp.layer({
+      baseUrl: config.endpoint,
+      headers: {
+        "x-honeycomb-team": Redacted.value(config.apiKey)
+      },
+      resource: {
+        serviceName: config.serviceName,
+        serviceVersion: config.serviceVersion,
+        attributes: {
+          "deployment.environment": process.env.NODE_ENV ?? "development"
+        }
+      }
+    }).pipe(Layer.provide(FetchHttpClient.layer))
+  })
+).pipe(
+  Layer.catchAll(() =>
+    // If HONEYCOMB_API_KEY is not set, provide an empty layer (no tracing)
+    Layer.empty
+  )
+)
 
 // =============================================================================
 // Task Schema
@@ -98,13 +147,20 @@ class TaskRepo extends Context.Tag("TaskRepo")<
       const load = Effect.gen(function* () {
         const content = yield* fs.readFileString(path)
         return yield* Schema.decode(TaskList.Json)(content)
-      }).pipe(Effect.orElseSucceed(() => TaskList.empty))
+      }).pipe(
+        Effect.orElseSucceed(() => TaskList.empty),
+        Effect.withSpan("TaskRepo.load")
+      )
 
       const save = (list: TaskList) =>
         Effect.gen(function* () {
           const json = yield* Schema.encode(TaskList.Json)(list)
           yield* fs.writeFileString(path, json)
-        })
+        }).pipe(
+          Effect.withSpan("TaskRepo.save", {
+            attributes: { "task.count": list.tasks.length }
+          })
+        )
 
       // Public API
       const list = Effect.fn("TaskRepo.list")(function* (all?: boolean) {
@@ -150,7 +206,11 @@ const addCommand = Command.make("add", { text: taskText }, ({ text }) =>
     const repo = yield* TaskRepo
     const task = yield* repo.add(text)
     yield* Console.log(`Added task #${task.id}: ${task.text}`)
-  })
+  }).pipe(
+    Effect.withSpan("cli.add", {
+      attributes: { "cli.command": "add", "task.text": text }
+    })
+  )
 ).pipe(Command.withDescription("Add a new task"))
 
 // list [--all]
@@ -173,7 +233,11 @@ const listCommand = Command.make("list", { all: allOption }, ({ all }) =>
       const status = task.done ? "[x]" : "[ ]"
       yield* Console.log(`${status} #${task.id} ${task.text}`)
     }
-  })
+  }).pipe(
+    Effect.withSpan("cli.list", {
+      attributes: { "cli.command": "list", "cli.args.all": all }
+    })
+  )
 ).pipe(Command.withDescription("List pending tasks"))
 
 // toggle <id>
@@ -192,7 +256,11 @@ const toggleCommand = Command.make("toggle", { id: taskId }, ({ id }) =>
       onSome: (task) =>
         Console.log(`Toggled: ${task.text} (${task.done ? "done" : "pending"})`)
     })
-  })
+  }).pipe(
+    Effect.withSpan("cli.toggle", {
+      attributes: { "cli.command": "toggle", "task.id": id }
+    })
+  )
 ).pipe(Command.withDescription("Toggle a task's done status"))
 
 // clear
@@ -201,7 +269,11 @@ const clearCommand = Command.make("clear", {}, () =>
     const repo = yield* TaskRepo
     yield* repo.clear()
     yield* Console.log("Cleared all tasks.")
-  })
+  }).pipe(
+    Effect.withSpan("cli.clear", {
+      attributes: { "cli.command": "clear" }
+    })
+  )
 ).pipe(Command.withDescription("Clear all tasks"))
 
 // =============================================================================
@@ -218,6 +290,8 @@ const cli = Command.run(app, {
   version: "1.0.0"
 })
 
-const mainLayer = Layer.provideMerge(TaskRepo.layer, BunContext.layer)
+const mainLayer = Layer.provideMerge(TaskRepo.layer, BunContext.layer).pipe(
+  Layer.provideMerge(TracingLayer)
+)
 
 cli(process.argv).pipe(Effect.provide(mainLayer), BunRuntime.runMain)
