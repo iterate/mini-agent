@@ -1,11 +1,13 @@
+import { LanguageModel } from "@effect/ai"
+import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { Args, Command, Options } from "@effect/cli"
 import * as NodeSdk from "@effect/opentelemetry/NodeSdk"
 import { diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api"
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto"
-import { SimpleSpanProcessor, type SpanProcessor, type ReadableSpan, type SpanExporter } from "@opentelemetry/sdk-trace-base"
+import { BatchSpanProcessor, type SpanProcessor, type ReadableSpan, type SpanExporter } from "@opentelemetry/sdk-trace-base"
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core"
 import { JsonTraceSerializer } from "@opentelemetry/otlp-transformer"
-import { FileSystem } from "@effect/platform"
+import { FileSystem, FetchHttpClient } from "@effect/platform"
 import type { PlatformError } from "@effect/platform/Error"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import {
@@ -18,7 +20,8 @@ import {
   Option,
   type ParseResult,
   Redacted,
-  Schema
+  Schema,
+  Stream
 } from "effect"
 
 // =============================================================================
@@ -172,11 +175,12 @@ const makeSpanProcessors = Effect.gen(function* () {
     const env = yield* HoneycombEnvironment
     processors.push({
       name: "Honeycomb",
-      processor: new SimpleSpanProcessor(
+      processor: new BatchSpanProcessor(
         new OTLPTraceExporter({
           url: `${endpoint}/v1/traces`,
           headers: { "x-honeycomb-team": Redacted.value(honeycombKey.value) }
-        })
+        }),
+        { scheduledDelayMillis: 100 }
       ),
       buildUrl: (traceId) =>
         `https://ui.honeycomb.io/${team}/environments/${env}/datasets/${serviceName}/trace?trace_id=${traceId}`
@@ -191,12 +195,13 @@ const makeSpanProcessors = Effect.gen(function* () {
     const axiomOrg = yield* AxiomOrg
     processors.push({
       name: "Axiom",
-      processor: new SimpleSpanProcessor(
+      processor: new BatchSpanProcessor(
         new AxiomFetchExporter({
           url: `${endpoint}/v1/traces`,
           apiKey: Redacted.value(axiomKey.value),
           dataset
-        })
+        }),
+        { scheduledDelayMillis: 100 }
       ),
       // Only include buildUrl if org is configured
       ...(Option.isSome(axiomOrg)
@@ -216,13 +221,14 @@ const makeSpanProcessors = Effect.gen(function* () {
   if (Option.isSome(sentryEndpoint) && Option.isSome(sentryKey)) {
     processors.push({
       name: "Sentry",
-      processor: new SimpleSpanProcessor(
+      processor: new BatchSpanProcessor(
         new OTLPTraceExporter({
           url: sentryEndpoint.value,
           headers: {
             "x-sentry-auth": `sentry sentry_key=${Redacted.value(sentryKey.value)}`
           }
-        })
+        }),
+        { scheduledDelayMillis: 100 }
       ),
       buildUrl: (traceId) =>
         `https://${sentryTeam}.sentry.io/explore/traces/trace/${traceId}/`
@@ -246,18 +252,12 @@ const TracingLayer = Layer.unwrapEffect(
     const processors = yield* makeSpanProcessors
 
     if (processors.length === 0) {
-      yield* Console.log("⚠️  No tracing providers configured")
       // Provide empty TraceLinks when no providers
       const emptyTraceLinks = Layer.succeed(TraceLinks, {
         providers: [],
         printLinks: () => Effect.void
       })
       return emptyTraceLinks
-    }
-
-    // Log enabled providers
-    for (const p of processors) {
-      yield* Console.log(`✓ Tracing enabled: ${p.name}`)
     }
 
     // Build active providers list for trace URLs
@@ -447,12 +447,11 @@ class TaskRepo extends Context.Tag("TaskRepo")<
 // CLI Commands
 // =============================================================================
 
-/** Wrapper that prints trace URLs after a command completes */
+/** Wrapper that prints trace URLs at the start of a command */
 const withTraceLinks = <A, E, R>(
   effect: Effect.Effect<A, E, R>
 ): Effect.Effect<A, E, R | TraceLinks> =>
   Effect.gen(function* () {
-    const result = yield* effect
     const traceLinks = yield* TraceLinks
     const currentSpan = yield* Effect.currentSpan.pipe(Effect.option)
 
@@ -460,7 +459,7 @@ const withTraceLinks = <A, E, R>(
       yield* traceLinks.printLinks(currentSpan.value.traceId)
     }
 
-    return result
+    return yield* effect
   })
 
 // add <task>
@@ -548,12 +547,66 @@ const clearCommand = Command.make("clear", {}, () =>
 ).pipe(Command.withDescription("Clear all tasks"))
 
 // =============================================================================
+// LLM Command
+// =============================================================================
+
+const OpenAiApiKey = Config.redacted("OPENAI_API_KEY")
+
+const OpenAiLive = Layer.unwrapEffect(
+  Effect.gen(function* () {
+    const apiKey = yield* OpenAiApiKey
+    return OpenAiClient.layer({ apiKey }).pipe(
+      Layer.provide(FetchHttpClient.layer)
+    )
+  })
+)
+
+const LanguageModelLive = OpenAiLanguageModel.layer({
+  model: "gpt-4.1"
+}).pipe(Layer.provide(OpenAiLive))
+
+const llmRequest = Args.text({ name: "request" }).pipe(
+  Args.withDescription("The request to send to the LLM")
+)
+
+const streamOption = Options.boolean("stream").pipe(
+  Options.withAlias("s"),
+  Options.withDescription("Stream the response in real-time"),
+  Options.withDefault(false)
+)
+
+const llmCommand = Command.make("llm", { request: llmRequest, stream: streamOption }, ({ request, stream }) =>
+  Effect.gen(function* () {
+    if (stream) {
+      yield* LanguageModel.streamText({ prompt: request }).pipe(
+        Stream.runForEach((part) => {
+          if (part.type === "text-delta") {
+            return Effect.sync(() => process.stdout.write(part.delta))
+          }
+          return Effect.void
+        })
+      )
+      yield* Console.log("")
+    } else {
+      const response = yield* LanguageModel.generateText({ prompt: request })
+      yield* Console.log(response.text)
+    }
+  }).pipe(
+    withTraceLinks,
+    Effect.withSpan("cli.llm", {
+      attributes: { "cli.command": "llm", "llm.request": request, "llm.stream": stream }
+    }),
+    Effect.provide(LanguageModelLive)
+  )
+).pipe(Command.withDescription("Send a request to the LLM"))
+
+// =============================================================================
 // Main App
 // =============================================================================
 
 const app = Command.make("tasks", {}).pipe(
   Command.withDescription("A simple task manager"),
-  Command.withSubcommands([addCommand, listCommand, toggleCommand, clearCommand])
+  Command.withSubcommands([addCommand, listCommand, toggleCommand, clearCommand, llmCommand])
 )
 
 const cli = Command.run(app, {
