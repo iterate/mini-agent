@@ -1,6 +1,8 @@
 import { Args, Command, Options } from "@effect/cli"
-import * as Otlp from "@effect/opentelemetry/Otlp"
-import { FileSystem, FetchHttpClient } from "@effect/platform"
+import * as NodeSdk from "@effect/opentelemetry/NodeSdk"
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto"
+import { BatchSpanProcessor, type SpanProcessor } from "@opentelemetry/sdk-trace-base"
+import { FileSystem } from "@effect/platform"
 import type { PlatformError } from "@effect/platform/Error"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import {
@@ -17,13 +19,12 @@ import {
 } from "effect"
 
 // =============================================================================
-// Honeycomb Tracing Configuration
+// Multi-Provider Tracing - Standard OpenTelemetry approach
 // =============================================================================
+// One span → multiple SpanProcessors → multiple destinations
+// This is the idiomatic OTel pattern: each span is processed by ALL processors
 
-const HoneycombApiKey = Config.redacted("HONEYCOMB_API_KEY")
-const HoneycombEndpoint = Config.string("HONEYCOMB_ENDPOINT").pipe(
-  Config.withDefault("https://api.honeycomb.io")
-)
+// Shared resource config
 const ServiceName = Config.string("OTEL_SERVICE_NAME").pipe(
   Config.withDefault("effect-tasks-cli")
 )
@@ -31,34 +32,124 @@ const ServiceVersion = Config.string("SERVICE_VERSION").pipe(
   Config.withDefault("1.0.0")
 )
 
-const TracingConfig = Config.all({
-  apiKey: HoneycombApiKey,
-  endpoint: HoneycombEndpoint,
-  serviceName: ServiceName,
-  serviceVersion: ServiceVersion
+// Provider-specific configs (all optional)
+const HoneycombApiKey = Config.option(Config.redacted("HONEYCOMB_API_KEY"))
+const HoneycombEndpoint = Config.string("HONEYCOMB_ENDPOINT").pipe(
+  Config.withDefault("https://api.honeycomb.io")
+)
+
+const AxiomApiKey = Config.option(Config.redacted("AXIOM_API_KEY"))
+const AxiomDataset = Config.string("AXIOM_DATASET").pipe(
+  Config.withDefault("traces")
+)
+
+const GrafanaApiKey = Config.option(Config.redacted("GRAFANA_API_KEY"))
+const GrafanaEndpoint = Config.option(Config.string("GRAFANA_OTLP_ENDPOINT"))
+
+// Add more providers here as needed...
+// const DatadogApiKey = Config.option(Config.redacted("DD_API_KEY"))
+
+// =============================================================================
+// Build SpanProcessors for each configured provider
+// =============================================================================
+
+const makeSpanProcessors = Effect.gen(function* () {
+  const processors: Array<{ name: string; processor: SpanProcessor }> = []
+
+  // Honeycomb
+  const honeycombKey = yield* HoneycombApiKey
+  if (Option.isSome(honeycombKey)) {
+    const endpoint = yield* HoneycombEndpoint
+    processors.push({
+      name: "Honeycomb",
+      processor: new BatchSpanProcessor(
+        new OTLPTraceExporter({
+          url: `${endpoint}/v1/traces`,
+          headers: { "x-honeycomb-team": Redacted.value(honeycombKey.value) }
+        })
+      )
+    })
+  }
+
+  // Axiom
+  const axiomKey = yield* AxiomApiKey
+  if (Option.isSome(axiomKey)) {
+    const dataset = yield* AxiomDataset
+    processors.push({
+      name: "Axiom",
+      processor: new BatchSpanProcessor(
+        new OTLPTraceExporter({
+          url: "https://api.axiom.co/v1/traces",
+          headers: {
+            Authorization: `Bearer ${Redacted.value(axiomKey.value)}`,
+            "X-Axiom-Dataset": dataset
+          }
+        })
+      )
+    })
+  }
+
+  // Grafana Cloud
+  const grafanaKey = yield* GrafanaApiKey
+  const grafanaEndpoint = yield* GrafanaEndpoint
+  if (Option.isSome(grafanaKey) && Option.isSome(grafanaEndpoint)) {
+    processors.push({
+      name: "Grafana",
+      processor: new BatchSpanProcessor(
+        new OTLPTraceExporter({
+          url: `${grafanaEndpoint.value}/v1/traces`,
+          headers: {
+            Authorization: `Basic ${Buffer.from(`${Redacted.value(grafanaKey.value)}`).toString("base64")}`
+          }
+        })
+      )
+    })
+  }
+
+  // Add more providers here following the same pattern:
+  // if (Option.isSome(someKey)) { processors.push({ name: "...", processor: ... }) }
+
+  return processors
 })
+
+// =============================================================================
+// Final Tracing Layer
+// =============================================================================
 
 const TracingLayer = Layer.unwrapEffect(
   Effect.gen(function* () {
-    const config = yield* TracingConfig
-    return Otlp.layer({
-      baseUrl: config.endpoint,
-      headers: {
-        "x-honeycomb-team": Redacted.value(config.apiKey)
-      },
+    const serviceName = yield* ServiceName
+    const serviceVersion = yield* ServiceVersion
+    const processors = yield* makeSpanProcessors
+
+    if (processors.length === 0) {
+      yield* Console.log("⚠️  No tracing providers configured")
+      return Layer.empty
+    }
+
+    // Log enabled providers
+    for (const p of processors) {
+      yield* Console.log(`✓ Tracing enabled: ${p.name}`)
+    }
+
+    // Create the NodeSdk layer with ALL processors
+    // Each span will be sent to ALL destinations
+    return NodeSdk.layer(() => ({
       resource: {
-        serviceName: config.serviceName,
-        serviceVersion: config.serviceVersion,
+        serviceName,
+        serviceVersion,
         attributes: {
           "deployment.environment": process.env.NODE_ENV ?? "development"
         }
-      }
-    }).pipe(Layer.provide(FetchHttpClient.layer))
-  })
-).pipe(
-  Layer.catchAll(() =>
-    // If HONEYCOMB_API_KEY is not set, provide an empty layer (no tracing)
-    Layer.empty
+      },
+      spanProcessor: processors.map((p) => p.processor)
+    }))
+  }).pipe(
+    Effect.catchAll((error) =>
+      Console.error(`Tracing setup failed: ${error}`).pipe(
+        Effect.map(() => Layer.empty)
+      )
+    )
   )
 )
 
