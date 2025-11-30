@@ -7,7 +7,11 @@
     "prepare": "effect-language-service patch",
     "typecheck": "tsc --noEmit",
     "dev": "doppler run -- bun --watch index.ts",
-    "start": "doppler run -- bun index.ts"
+    "start": "doppler run -- bun index.ts",
+    "server": "doppler run -- bun server.ts",
+    "test": "bun test",
+    "test:unit": "bun test shared/derive.test.ts",
+    "test:e2e": "bun test e2e.test.ts"
   },
   "devDependencies": {
     "@effect/language-service": "^0.57.1",
