@@ -27,15 +27,18 @@ const extractTextFromParts = (parts: ReadonlyArray<{ type: string; text?: string
 }
 
 /**
- * Custom span transformer that adds prompt/completion content using
- * OpenTelemetry GenAI semantic conventions.
+ * Custom span transformer that adds prompt/completion content as span attributes.
  * 
- * @see https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/
+ * Langfuse expects input/output as span ATTRIBUTES in specific formats:
+ * - `input` / `output` as JSON-stringified message arrays
+ * - Content type hints via `input_content_type` / `output_content_type`
+ * 
+ * @see https://github.com/langfuse/langfuse/blob/ea96debdde6a9dd3b8f0c8c43b22f0d7eff3798a/web/src/__tests__/server/api/otel/otelMapping.servertest.ts
  */
 const GenAISpanTransformer: Telemetry.SpanTransformer = (options) => {
   const { prompt, span, response } = options
 
-  // Build input messages array
+  // Build input messages array in OpenAI chat format (renders nicely in Langfuse)
   const inputMessages: Array<{ role: string; content: string }> = []
   
   for (const message of prompt.content) {
@@ -68,16 +71,38 @@ const GenAISpanTransformer: Telemetry.SpanTransformer = (options) => {
     }
   }
 
-  // Build output messages array
+  // Build output from response
   const outputText = extractTextFromParts(response as ReadonlyArray<{ type: string; text?: string }>)
+
+  // Input: array of messages (no wrapper, no index)
+  // Output: array with single assistant message (matching input format)
   const outputMessages = outputText 
     ? [{ role: "assistant", content: outputText }]
     : []
 
-  // OpenTelemetry GenAI semantic conventions
-  // @see https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/
-  span.attribute("gen_ai.input.messages", JSON.stringify(inputMessages))
-  span.attribute("gen_ai.output.messages", JSON.stringify(outputMessages))
+  const inputJson = JSON.stringify(inputMessages)
+  const outputJson = JSON.stringify(outputMessages)
+
+  // ==========================================================================
+  // Set span attributes in formats Langfuse expects
+  // ==========================================================================
+
+  // Mark this as a "generation" observation type for Langfuse
+  span.attribute("langfuse.observation.type", "generation")
+
+  // Langfuse SDK format (highest priority)
+  span.attribute("langfuse.observation.input", inputJson)
+  span.attribute("langfuse.observation.output", outputJson)
+
+  // Generic format
+  span.attribute("input", inputJson)
+  span.attribute("output", outputJson)
+
+  // OpenInference format
+  span.attribute("input.value", inputJson)
+  span.attribute("input.mime_type", "application/json")
+  span.attribute("output.value", outputJson)
+  span.attribute("output.mime_type", "application/json")
 }
 
 /**
@@ -93,10 +118,10 @@ const GenAISpanTransformerLayer = Layer.succeed(
 // =============================================================================
 
 const makeLanguageModelLayer = (apiKey: Redacted.Redacted, model: string) =>
-  OpenAiLanguageModel.layer({ model }).pipe(
-    // Provide the span transformer BEFORE the OpenAI layer is built
-    // so it's available during LanguageModel.make construction
-    Layer.provide(GenAISpanTransformerLayer),
+  Layer.mergeAll(
+    OpenAiLanguageModel.layer({ model }),
+    GenAISpanTransformerLayer
+  ).pipe(
     Layer.provide(
       OpenAiClient.layer({ apiKey }).pipe(Layer.provide(FetchHttpClient.layer))
     )
