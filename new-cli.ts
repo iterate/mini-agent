@@ -262,19 +262,66 @@ const runChat = (options: { agent: string; interactive: boolean; message: Option
 // GenAI Span Transformer (for Langfuse/OTEL)
 // =============================================================================
 
+interface CleanMessage {
+  role: "system" | "user" | "assistant"
+  content: string
+}
+
+/** Extract text from Response parts (handles both text and text-delta) */
+const extractResponseText = (parts: ReadonlyArray<{ type: string; text?: string; delta?: string }>): string =>
+  pipe(
+    parts,
+    Arr.filter((p): p is typeof p & { text: string } | typeof p & { delta: string } =>
+      (p.type === "text" && !!p.text) || (p.type === "text-delta" && !!p.delta)
+    ),
+    Arr.map((p) => ("text" in p && p.text) ? p.text : ("delta" in p && p.delta) ? p.delta : ""),
+    Arr.join("")
+  )
+
+/** Convert prompt to clean messages, merging consecutive same-role messages */
+const promptToCleanMessages = (prompt: Prompt.Prompt): CleanMessage[] => {
+  // First extract raw messages
+  const raw: CleanMessage[] = []
+  for (const msg of prompt.content) {
+    if (msg.role === "system") {
+      raw.push({ role: "system", content: msg.content })
+    } else if (msg.role === "user" || msg.role === "assistant") {
+      const text = collectText(msg.content)
+      if (text) raw.push({ role: msg.role, content: text })
+    }
+  }
+
+  // Merge consecutive same-role messages
+  if (raw.length === 0) return []
+  const result: CleanMessage[] = []
+  let current = { ...raw[0]! }
+
+  for (let i = 1; i < raw.length; i++) {
+    const msg = raw[i]!
+    if (msg.role === current.role) {
+      current.content += msg.content
+    } else {
+      result.push(current)
+      current = { ...msg }
+    }
+  }
+  result.push(current)
+
+  return result
+}
+
 const GenAISpanTransformerLayer = Layer.succeed(
   Telemetry.CurrentSpanTransformer,
   ({ prompt, span, response }) => {
-    const input = pipe(
-      prompt.content,
-      Arr.filter((m): m is Prompt.SystemMessage | Prompt.UserMessage | Prompt.AssistantMessage => m.role !== "tool"),
-      Arr.map((m) => ({ role: m.role, content: m.role === "system" ? m.content : collectText(m.content) })),
-      Arr.filter((m) => !!m.content)
-    )
-    const output = collectText(response)
+    // Clean up input: merge consecutive same-role messages
+    const input = promptToCleanMessages(prompt)
+
+    // Extract output text from response parts (handles text + text-delta)
+    const outputText = extractResponseText(response as ReadonlyArray<{ type: string; text?: string; delta?: string }>)
+    const output = outputText ? [{ role: "assistant", content: outputText }] : []
 
     span.attribute("input", JSON.stringify(input))
-    span.attribute("output", JSON.stringify(output ? [{ role: "assistant", content: output }] : []))
+    span.attribute("output", JSON.stringify(output))
   }
 )
 
