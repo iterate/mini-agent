@@ -19,3 +19,4 @@ So I'm incrementally building a chat agent. Initially just a CLI that runs an ag
 - Deploy to cloudflare containers
 - sub-agents
 - agents in long single threaded contexts (like whatsapp convo)
+- client / non-confidential server / confidential server architecture where we can run the servers locally or on durable objects when deployed

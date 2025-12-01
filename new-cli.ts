@@ -1,6 +1,6 @@
-import { Command, Options } from "@effect/cli"
+import { Args, Command, Options } from "@effect/cli"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { FetchHttpClient, Terminal } from "@effect/platform"
+import { FetchHttpClient, FileSystem, Path, Terminal } from "@effect/platform"
 import { Prompt as CliPrompt } from "@effect/cli"
 import { Array as Arr, Effect, Console, Config, Layer, Ref, Cause, Option, pipe, Stream } from "effect"
 import { Chat, Telemetry, Prompt } from "@effect/ai"
@@ -18,9 +18,99 @@ const SYSTEM_PROMPT = `You are a helpful, friendly assistant.
 Keep your responses concise but informative. 
 Use markdown formatting when helpful.`
 
+const AGENTS_DIR = ".agents"
+
+// =============================================================================
+// Agent History - Clean message format
+// =============================================================================
+
+interface StoredMessage {
+  role: "system" | "user" | "assistant"
+  content: string
+}
+
+/** Extract text from Prompt content parts */
+const collectText = (parts: ReadonlyArray<{ type: string; text?: string }>) =>
+  pipe(
+    parts,
+    Arr.filter((p): p is typeof p & { text: string } => p.type === "text" && !!p.text),
+    Arr.map((p) => p.text),
+    Arr.join("")
+  )
+
+/** Extract clean messages from Prompt, merging consecutive same-role messages */
+const extractMessages = (prompt: Prompt.Prompt): StoredMessage[] => {
+  const raw: StoredMessage[] = []
+
+  for (const msg of prompt.content) {
+    if (msg.role === "system") {
+      raw.push({ role: "system", content: msg.content })
+    } else if (msg.role === "user" || msg.role === "assistant") {
+      const text = collectText(msg.content)
+      if (text) raw.push({ role: msg.role, content: text })
+    }
+  }
+
+  // Merge consecutive same-role messages
+  if (raw.length === 0) return []
+  const result: StoredMessage[] = []
+  let current = { ...raw[0]! }
+
+  for (let i = 1; i < raw.length; i++) {
+    const msg = raw[i]!
+    if (msg.role === current.role) {
+      current.content += msg.content
+    } else {
+      result.push(current)
+      current = { ...msg }
+    }
+  }
+  result.push(current)
+
+  return result
+}
+
+const loadAgentHistory = (agentName: string) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const filePath = path.join(AGENTS_DIR, `${agentName}.json`)
+
+    const exists = yield* fs.exists(filePath)
+    if (!exists) return Option.none<StoredMessage[]>()
+
+    const content = yield* fs.readFileString(filePath).pipe(
+      Effect.map((json) => JSON.parse(json) as StoredMessage[]),
+      Effect.map(Option.some),
+      Effect.catchAll(() => Effect.succeed(Option.none<StoredMessage[]>()))
+    )
+    return content
+  })
+
+const saveAgentHistory = (agentName: string, chat: Chat.Service) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem
+    const path = yield* Path.Path
+    const filePath = path.join(AGENTS_DIR, `${agentName}.json`)
+
+    // Ensure directory exists
+    yield* fs.makeDirectory(AGENTS_DIR, { recursive: true }).pipe(
+      Effect.catchAll(() => Effect.void)
+    )
+
+    // Extract clean messages from history
+    const history = yield* Ref.get(chat.history)
+    const messages = extractMessages(history)
+    yield* fs.writeFileString(filePath, JSON.stringify(messages, null, 2))
+  })
+
 // =============================================================================
 // CLI Options
 // =============================================================================
+
+const agentArg = Args.text({ name: "agent" }).pipe(
+  Args.withDescription("Agent name (slug identifier for the conversation)")
+)
 
 const interactiveOption = Options.boolean("interactive").pipe(
   Options.withAlias("i"),
@@ -35,49 +125,65 @@ const messageOption = Options.text("message").pipe(
 )
 
 // =============================================================================
+// History Display
+// =============================================================================
+
+/** Display stored messages */
+const displayHistory = (messages: StoredMessage[]) =>
+  Effect.gen(function* () {
+    const userAssistant = messages.filter((m) => m.role === "user" || m.role === "assistant")
+    if (userAssistant.length === 0) return
+
+    yield* Console.log("─".repeat(50))
+    yield* Console.log("Previous conversation:")
+    yield* Console.log("")
+
+    for (const msg of userAssistant) {
+      const prefix = msg.role === "user" ? "You:" : "Assistant:"
+      yield* Console.log(prefix)
+      yield* Console.log(msg.content)
+      yield* Console.log("")
+    }
+
+    yield* Console.log("─".repeat(50))
+    yield* Console.log("")
+  })
+
+// =============================================================================
 // Chat Handlers
 // =============================================================================
 
-/** Stream a single message and print response */
-const streamSingleMessage = (chat: Chat.Service, message: string) =>
-  Effect.gen(function* () {
-    yield* chat.streamText({ prompt: message }).pipe(
-      Stream.runForEach((part) =>
-        part.type === "text-delta"
-          ? Effect.sync(() => process.stdout.write(part.delta))
-          : Effect.void
-      )
-    )
-    yield* Console.log("") // Final newline
-  })
+/** Stream a message to stdout (Chat automatically records to history) */
+const streamMessage = (chat: Chat.Service, message: string) =>
+  chat.streamText({ prompt: message }).pipe(
+    Stream.runForEach((part) =>
+      part.type === "text-delta"
+        ? Effect.sync(() => process.stdout.write(part.delta))
+        : Effect.void
+    ),
+    Effect.andThen(Console.log("")) // Final newline
+  )
 
-/** Single conversation turn: get input, stream response */
-const conversationTurn = (chat: Chat.Service) =>
+/** Single conversation turn with history persistence */
+const conversationTurn = (chat: Chat.Service, agentName: string) =>
   Effect.gen(function* () {
     const input = yield* CliPrompt.text({ message: "You" })
 
     // Skip empty input
     if (input.trim() === "") return
 
-    // Stream response to stdout
+    // Stream response (Chat automatically updates history)
     yield* Effect.sync(() => process.stdout.write("\n"))
-    yield* chat.streamText({ prompt: input }).pipe(
-      Stream.runForEach((part) =>
-        part.type === "text-delta"
-          ? Effect.sync(() => process.stdout.write(part.delta))
-          : Effect.void
-      )
-    )
-    yield* Console.log("\n")
+    yield* streamMessage(chat, input)
+    yield* Console.log("")
 
-    // Debug: log message count
-    const history = yield* Ref.get(chat.history)
-    yield* Effect.logDebug(`Conversation has ${history.content.length} messages`)
+    // Save updated history
+    yield* saveAgentHistory(agentName, chat)
   })
 
 /** Run conversation turns forever until Ctrl+C */
-const conversationLoop = (chat: Chat.Service) =>
-  conversationTurn(chat).pipe(
+const conversationLoop = (chat: Chat.Service, agentName: string) =>
+  conversationTurn(chat, agentName).pipe(
     Effect.catchIf(
       (error) => !Terminal.isQuitException(error),
       (error) => Console.error(`Error: ${String(error)}`)
@@ -100,16 +206,35 @@ const printTraceLinks = Effect.gen(function* () {
 // Main Command Handler
 // =============================================================================
 
-const runChat = (options: { interactive: boolean; message: Option.Option<string> }) =>
+const runChat = (options: { agent: string; interactive: boolean; message: Option.Option<string> }) =>
   Effect.gen(function* () {
-    const chat = yield* Chat.fromPrompt([
-      { role: "system", content: SYSTEM_PROMPT }
-    ])
+    // Try to load existing history
+    const savedMessages = yield* loadAgentHistory(options.agent)
+
+    // Convert stored messages to Prompt format for Chat initialization
+    const initialPrompt = Option.match(savedMessages, {
+      onNone: () => [{ role: "system" as const, content: SYSTEM_PROMPT }],
+      onSome: (messages) => messages.map((m) =>
+        m.role === "system"
+          ? { role: "system" as const, content: m.content }
+          : { role: m.role, content: [{ type: "text" as const, text: m.content }] }
+      )
+    })
+
+    const chat = yield* Chat.fromPrompt(initialPrompt)
+    const hasHistory = Option.isSome(savedMessages) && savedMessages.value.length > 1
 
     if (options.interactive) {
-      // Interactive mode: multi-turn conversation
-      yield* Console.log("Interactive mode. Press Ctrl+C to exit.\n")
-      yield* conversationLoop(chat).pipe(
+      // Interactive mode
+      yield* Console.log(`Agent: ${options.agent}`)
+
+      if (hasHistory) {
+        yield* displayHistory(savedMessages.value)
+      } else {
+        yield* Console.log("Starting new conversation. Press Ctrl+C to exit.\n")
+      }
+
+      yield* conversationLoop(chat, options.agent).pipe(
         Effect.catchIf(Terminal.isQuitException, () => Effect.void),
         Effect.ensuring(
           printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!")))
@@ -123,9 +248,13 @@ const runChat = (options: { interactive: boolean; message: Option.Option<string>
         return
       }
 
-      yield* streamSingleMessage(chat, message).pipe(
-        Effect.ensuring(printTraceLinks)
-      )
+      // Stream response (Chat updates history automatically)
+      yield* streamMessage(chat, message)
+
+      // Save updated history
+      yield* saveAgentHistory(options.agent, chat)
+
+      yield* printTraceLinks
     }
   }).pipe(Effect.withSpan("chat-session"))
 
@@ -133,23 +262,14 @@ const runChat = (options: { interactive: boolean; message: Option.Option<string>
 // GenAI Span Transformer (for Langfuse/OTEL)
 // =============================================================================
 
-const collectText = (parts: ReadonlyArray<{ type: string; text?: string; delta?: string }>) => pipe(
-  parts,
-  Arr.filter((p): p is typeof p & { text: string } | typeof p & { delta: string } =>
-    (p.type === "text" && !!p.text) || (p.type === "text-delta" && !!p.delta)
-  ),
-  Arr.map(p => p.text ?? p.delta ?? ""),
-  Arr.join("")
-)
-
 const GenAISpanTransformerLayer = Layer.succeed(
   Telemetry.CurrentSpanTransformer,
   ({ prompt, span, response }) => {
     const input = pipe(
       prompt.content,
       Arr.filter((m): m is Prompt.SystemMessage | Prompt.UserMessage | Prompt.AssistantMessage => m.role !== "tool"),
-      Arr.map(m => ({ role: m.role, content: m.role === "system" ? m.content : collectText(m.content) })),
-      Arr.filter(m => !!m.content)
+      Arr.map((m) => ({ role: m.role, content: m.role === "system" ? m.content : collectText(m.content) })),
+      Arr.filter((m) => !!m.content)
     )
     const output = collectText(response)
 
@@ -163,15 +283,8 @@ const GenAISpanTransformerLayer = Layer.succeed(
 // =============================================================================
 
 const makeLanguageModelLayer = (apiKey: Config.Config.Success<typeof OpenAiApiKey>, model: string) =>
-  Layer.mergeAll(
-    OpenAiLanguageModel.layer({ model }),
-    GenAISpanTransformerLayer
-  ).pipe(
-    Layer.provide(
-      OpenAiClient.layer({ apiKey }).pipe(
-        Layer.provide(FetchHttpClient.layer)
-      )
-    )
+  Layer.mergeAll(OpenAiLanguageModel.layer({ model }), GenAISpanTransformerLayer).pipe(
+    Layer.provide(OpenAiClient.layer({ apiKey }).pipe(Layer.provide(FetchHttpClient.layer)))
   )
 
 const LanguageModelLayer = Layer.unwrapEffect(
@@ -188,9 +301,9 @@ const LanguageModelLayer = Layer.unwrapEffect(
 
 const chatCommand = Command.make(
   "chat",
-  { interactive: interactiveOption, message: messageOption },
-  ({ interactive, message }) => runChat({ interactive, message })
-).pipe(Command.withDescription("Chat with an AI assistant"))
+  { agent: agentArg, interactive: interactiveOption, message: messageOption },
+  ({ agent, interactive, message }) => runChat({ agent, interactive, message })
+).pipe(Command.withDescription("Chat with an AI assistant using persistent agent history"))
 
 const cli = Command.run(chatCommand, {
   name: "chat",
@@ -201,18 +314,12 @@ const cli = Command.run(chatCommand, {
 // Main Entry Point
 // =============================================================================
 
-const MainLayer = Layer.mergeAll(
-  LanguageModelLayer,
-  BunContext.layer,
-  createTracingLayer("new-cli")
-)
+const MainLayer = Layer.mergeAll(LanguageModelLayer, BunContext.layer, createTracingLayer("new-cli"))
 
 cli(process.argv).pipe(
   Effect.provide(MainLayer),
   Effect.catchAllCause((cause) =>
-    Cause.isInterruptedOnly(cause)
-      ? Effect.void
-      : Console.error(`Fatal error: ${Cause.pretty(cause)}`)
+    Cause.isInterruptedOnly(cause) ? Effect.void : Console.error(`Fatal error: ${Cause.pretty(cause)}`)
   ),
   BunRuntime.runMain
 )
