@@ -6,13 +6,6 @@
   "private": true,
   "scripts": {
     "prepare": "effect-language-service patch",
-    "typecheck": "tsc --noEmit",
-    "dev": "doppler run -- bun --watch index.ts",
-    "start": "doppler run -- bun index.ts",
-    "server": "doppler run -- bun server.ts",
-    "test": "bun test",
-    "test:unit": "bun test shared/derive.test.ts",
-    "test:e2e": "bun test e2e.test.ts"
   },
   "devDependencies": {
     "@effect/language-service": "^0.57.1",
@@ -30,15 +23,8 @@
     "@effect/platform-bun": "^0.85.0",
     "@effect/rpc": "^0.72.2",
     "@effect/rpc-http": "^0.52.4",
-    "@langfuse/openai": "^4.4.3",
-    "@langfuse/otel": "^4.4.3",
-    "@langfuse/tracing": "^4.4.3",
-    "@opentelemetry/exporter-trace-otlp-proto": "^0.208.0",
-    "@opentelemetry/sdk-node": "^0.208.0",
+    "@opentelemetry/otlp-transformer": "^0.208.0",
     "@opentelemetry/sdk-trace-base": "^2.2.0",
-    "@opentelemetry/sdk-trace-node": "^2.2.0",
-    "effect": "^3.19.8",
-    "langfuse": "^3.38.6",
-    "openai": "^6.9.1"
+    "effect": "^3.19.8"
   }
 }

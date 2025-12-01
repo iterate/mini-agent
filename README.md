@@ -13,7 +13,9 @@ So I'm incrementally building a chat agent. Initially just a CLI that runs an ag
 - Evals (agent evaling agent)
 - Human in the loop approvals
 - Event sourced agent design
-- "Context rules are all you need" / iterate.config.ts
+- "Context rules are all you need" / iterate.config.ts / i18n style approach
 - Multi-user MCP client
 - Hide secrets from LLM agents (via secret proxy)
 - Deploy to cloudflare containers
+- sub-agents
+- agents in long single threaded contexts (like whatsapp convo)

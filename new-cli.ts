@@ -1,7 +1,8 @@
-import { Prompt as CliPrompt } from "@effect/cli"
+import { Command, Options } from "@effect/cli"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { FetchHttpClient, Terminal } from "@effect/platform"
-import { Array as Arr, Effect, Console, Config, Layer, Ref, Cause, Option, pipe } from "effect"
+import { Prompt as CliPrompt } from "@effect/cli"
+import { Array as Arr, Effect, Console, Config, Layer, Ref, Cause, Option, pipe, Stream } from "effect"
 import { Chat, Telemetry, Prompt } from "@effect/ai"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { createTracingLayer, TraceLinks } from "./shared/tracing"
@@ -18,10 +19,39 @@ Keep your responses concise but informative.
 Use markdown formatting when helpful.`
 
 // =============================================================================
-// Chat Loop
+// CLI Options
 // =============================================================================
 
-/** Single conversation turn: get input, generate response, display it */
+const interactiveOption = Options.boolean("interactive").pipe(
+  Options.withAlias("i"),
+  Options.withDescription("Run in interactive mode (multi-turn conversation)"),
+  Options.withDefault(false)
+)
+
+const messageOption = Options.text("message").pipe(
+  Options.withAlias("m"),
+  Options.withDescription("Message to send to the assistant"),
+  Options.optional
+)
+
+// =============================================================================
+// Chat Handlers
+// =============================================================================
+
+/** Stream a single message and print response */
+const streamSingleMessage = (chat: Chat.Service, message: string) =>
+  Effect.gen(function* () {
+    yield* chat.streamText({ prompt: message }).pipe(
+      Stream.runForEach((part) =>
+        part.type === "text-delta"
+          ? Effect.sync(() => process.stdout.write(part.delta))
+          : Effect.void
+      )
+    )
+    yield* Console.log("") // Final newline
+  })
+
+/** Single conversation turn: get input, stream response */
 const conversationTurn = (chat: Chat.Service) =>
   Effect.gen(function* () {
     const input = yield* CliPrompt.text({ message: "You" })
@@ -29,8 +59,16 @@ const conversationTurn = (chat: Chat.Service) =>
     // Skip empty input
     if (input.trim() === "") return
 
-    const response = yield* chat.generateText({ prompt: input })
-    yield* Console.log(`\n${response.text}\n`)
+    // Stream response to stdout
+    yield* Effect.sync(() => process.stdout.write("\n"))
+    yield* chat.streamText({ prompt: input }).pipe(
+      Stream.runForEach((part) =>
+        part.type === "text-delta"
+          ? Effect.sync(() => process.stdout.write(part.delta))
+          : Effect.void
+      )
+    )
+    yield* Console.log("\n")
 
     // Debug: log message count
     const history = yield* Ref.get(chat.history)
@@ -40,7 +78,6 @@ const conversationTurn = (chat: Chat.Service) =>
 /** Run conversation turns forever until Ctrl+C */
 const conversationLoop = (chat: Chat.Service) =>
   conversationTurn(chat).pipe(
-    // Only catch non-quit errors; let QuitException propagate to exit cleanly
     Effect.catchIf(
       (error) => !Terminal.isQuitException(error),
       (error) => Console.error(`Error: ${String(error)}`)
@@ -49,7 +86,7 @@ const conversationLoop = (chat: Chat.Service) =>
   )
 
 /** Print trace links on exit if available */
-const printTraceLinksOnExit = Effect.gen(function* () {
+const printTraceLinks = Effect.gen(function* () {
   const traceLinks = yield* TraceLinks
   const maybeSpan = yield* Effect.currentSpan.pipe(Effect.option)
 
@@ -57,30 +94,51 @@ const printTraceLinksOnExit = Effect.gen(function* () {
     onNone: () => Effect.void,
     onSome: (span) => traceLinks.printLinks(span.traceId)
   })
-
-  yield* Console.log("\nGoodbye!")
 })
 
-/** Main agent loop with proper cleanup */
-const agentLoop = Effect.gen(function* () {
-  const chat = yield* Chat.fromPrompt([
-    { role: "system", content: SYSTEM_PROMPT }
-  ])
-
-  yield* conversationLoop(chat).pipe(
-    Effect.catchIf(Terminal.isQuitException, () => Effect.void),
-    Effect.ensuring(printTraceLinksOnExit)
-  )
-}).pipe(Effect.withSpan("chat-session"))
-
 // =============================================================================
-// GenAI Span Transformer (for Langfuse)
+// Main Command Handler
 // =============================================================================
 
-const collectText = (parts: ReadonlyArray<{ type: string; text?: string }>) => pipe(
+const runChat = (options: { interactive: boolean; message: Option.Option<string> }) =>
+  Effect.gen(function* () {
+    const chat = yield* Chat.fromPrompt([
+      { role: "system", content: SYSTEM_PROMPT }
+    ])
+
+    if (options.interactive) {
+      // Interactive mode: multi-turn conversation
+      yield* Console.log("Interactive mode. Press Ctrl+C to exit.\n")
+      yield* conversationLoop(chat).pipe(
+        Effect.catchIf(Terminal.isQuitException, () => Effect.void),
+        Effect.ensuring(
+          printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!")))
+        )
+      )
+    } else {
+      // Single message mode
+      const message = Option.getOrElse(options.message, () => "")
+      if (message.trim() === "") {
+        yield* Console.error("Error: Please provide a message with -m or use -i for interactive mode")
+        return
+      }
+
+      yield* streamSingleMessage(chat, message).pipe(
+        Effect.ensuring(printTraceLinks)
+      )
+    }
+  }).pipe(Effect.withSpan("chat-session"))
+
+// =============================================================================
+// GenAI Span Transformer (for Langfuse/OTEL)
+// =============================================================================
+
+const collectText = (parts: ReadonlyArray<{ type: string; text?: string; delta?: string }>) => pipe(
   parts,
-  Arr.filter((p): p is typeof p & { text: string } => p.type === "text" && !!p.text),
-  Arr.map(p => p.text),
+  Arr.filter((p): p is typeof p & { text: string } | typeof p & { delta: string } =>
+    (p.type === "text" && !!p.text) || (p.type === "text-delta" && !!p.delta)
+  ),
+  Arr.map(p => p.text ?? p.delta ?? ""),
   Arr.join("")
 )
 
@@ -125,6 +183,21 @@ const LanguageModelLayer = Layer.unwrapEffect(
 )
 
 // =============================================================================
+// CLI Definition
+// =============================================================================
+
+const chatCommand = Command.make(
+  "chat",
+  { interactive: interactiveOption, message: messageOption },
+  ({ interactive, message }) => runChat({ interactive, message })
+).pipe(Command.withDescription("Chat with an AI assistant"))
+
+const cli = Command.run(chatCommand, {
+  name: "chat",
+  version: "1.0.0"
+})
+
+// =============================================================================
 // Main Entry Point
 // =============================================================================
 
@@ -134,13 +207,12 @@ const MainLayer = Layer.mergeAll(
   createTracingLayer("new-cli")
 )
 
-const main = agentLoop.pipe(
+cli(process.argv).pipe(
   Effect.provide(MainLayer),
   Effect.catchAllCause((cause) =>
     Cause.isInterruptedOnly(cause)
       ? Effect.void
       : Console.error(`Fatal error: ${Cause.pretty(cause)}`)
-  )
+  ),
+  BunRuntime.runMain
 )
-
-BunRuntime.runMain(main)
