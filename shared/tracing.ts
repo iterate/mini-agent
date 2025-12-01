@@ -92,6 +92,9 @@ const TraceloopApiKey = Config.option(Config.redacted("TRACELOOP_API_KEY"))
 const TraceloopEndpoint = Config.string("TRACELOOP_ENDPOINT").pipe(
   Config.withDefault("https://api.traceloop.com")
 )
+const TraceloopProjectSlug = Config.string("TRACELOOP_PROJECT_SLUG").pipe(
+  Config.withDefault("default")
+)
 
 // Langfuse - LLM observability & evaluation
 // Uses standard Langfuse env var names from dashboard
@@ -100,7 +103,7 @@ const LangfuseSecretKey = Config.option(Config.redacted("LANGFUSE_SECRET_KEY"))
 const LangfuseBaseUrl = Config.string("LANGFUSE_BASE_URL").pipe(
   Config.withDefault("https://cloud.langfuse.com")
 )
-const LangfuseProject = Config.option(Config.string("LANGFUSE_PROJECT"))
+const LangfuseProjectId = Config.option(Config.string("LANGFUSE_PROJECT_ID"))
 
 // =============================================================================
 // Trace Links Service
@@ -276,6 +279,7 @@ const makeSpanProcessors = (serviceName: string) => Effect.gen(function* () {
   const traceloopKey = yield* TraceloopApiKey
   if (Option.isSome(traceloopKey)) {
     const endpoint = yield* TraceloopEndpoint
+    const projectSlug = yield* TraceloopProjectSlug
     const url = `${endpoint}/v1/traces`
     console.log(`[Tracing] Traceloop enabled → ${url}`)
     processors.push({
@@ -290,16 +294,15 @@ const makeSpanProcessors = (serviceName: string) => Effect.gen(function* () {
         }),
         { scheduledDelayMillis: 100 }
       ),
-      // Placeholder URL - Traceloop dashboard URL format TBD
       buildUrl: (traceId) =>
-        `https://app.traceloop.com/traces/${traceId}`
+        `https://app.traceloop.com/projects/${projectSlug}/trace/${traceId}`
     })
   }
 
   // Langfuse - LLM observability & evaluation
   const langfusePublicKey = yield* LangfusePublicKey
   const langfuseSecretKey = yield* LangfuseSecretKey
-  const langfuseProject = yield* LangfuseProject
+  const langfuseProjectId = yield* LangfuseProjectId
   if (Option.isSome(langfusePublicKey) && Option.isSome(langfuseSecretKey)) {
     const baseUrl = yield* LangfuseBaseUrl
     // Langfuse OTEL endpoint is at /api/public/otel/v1/traces
@@ -321,11 +324,11 @@ const makeSpanProcessors = (serviceName: string) => Effect.gen(function* () {
         }),
         { scheduledDelayMillis: 100 }
       ),
-      // Placeholder URL - actual format depends on project
+      // Langfuse trace URL format: /project/{projectId}/traces?peek={traceId}
       buildUrl: (traceId) => {
-        const project = Option.isSome(langfuseProject) ? langfuseProject.value : "your-project"
+        const projectId = Option.isSome(langfuseProjectId) ? langfuseProjectId.value : "your-project-id"
         const host = new URL(baseUrl).host
-        return `https://${host}/project/${project}/traces/${traceId}`
+        return `https://${host}/project/${projectId}/traces?peek=${traceId}`
       }
     })
   }

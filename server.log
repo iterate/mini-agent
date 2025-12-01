@@ -22,3 +22,27 @@
   http.status: 200
   http.method: POST
   http.url: /rpc
+[19:09:35.453] INFO (#46) http.span.5=0ms: Sent HTTP response
+  http.status: 200
+  http.method: GET
+  http.url: /health
+[19:09:38.333] INFO (#47) http.span.6=2877ms: Sent HTTP response
+  http.status: 200
+  http.method: POST
+  http.url: /rpc
+[19:12:57.927] INFO (#52) http.span.7=0ms: Sent HTTP response
+  http.status: 200
+  http.method: GET
+  http.url: /health
+[19:13:00.391] INFO (#53) http.span.8=2461ms: Sent HTTP response
+  http.status: 200
+  http.method: POST
+  http.url: /rpc
+[19:14:41.854] INFO (#58) http.span.9=0ms: Sent HTTP response
+  http.status: 200
+  http.method: GET
+  http.url: /health
+[19:14:44.647] INFO (#59) http.span.10=2790ms: Sent HTTP response
+  http.status: 200
+  http.method: POST
+  http.url: /rpc

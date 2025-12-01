@@ -7,10 +7,86 @@
 import { Effect, Layer, Stream, Option, Redacted } from "effect"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
-import { LanguageModel } from "@effect/ai"
+import { LanguageModel, Telemetry } from "@effect/ai"
 
 import { LlmRpcs, LlmError } from "../shared/schemas"
 import { OpenAiApiKeyOption, OpenAiModel } from "../shared/config"
+
+// =============================================================================
+// Span Transformer for GenAI Telemetry
+// =============================================================================
+
+/**
+ * Helper to extract text from message parts
+ */
+const extractTextFromParts = (parts: ReadonlyArray<{ type: string; text?: string }>): string => {
+  return parts
+    .filter((part) => part.type === "text" && typeof part.text === "string")
+    .map((part) => part.text as string)
+    .join("")
+}
+
+/**
+ * Custom span transformer that adds prompt/completion content using
+ * OpenTelemetry GenAI semantic conventions.
+ * 
+ * @see https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/
+ */
+const GenAISpanTransformer: Telemetry.SpanTransformer = (options) => {
+  const { prompt, span, response } = options
+
+  // Build input messages array
+  const inputMessages: Array<{ role: string; content: string }> = []
+  
+  for (const message of prompt.content) {
+    switch (message.role) {
+      case "system": {
+        inputMessages.push({
+          role: "system",
+          content: message.content
+        })
+        break
+      }
+      case "user": {
+        const textContent = extractTextFromParts(message.content as ReadonlyArray<{ type: string; text?: string }>)
+        inputMessages.push({
+          role: "user", 
+          content: textContent
+        })
+        break
+      }
+      case "assistant": {
+        const textContent = extractTextFromParts(message.content as ReadonlyArray<{ type: string; text?: string }>)
+        if (textContent) {
+          inputMessages.push({
+            role: "assistant",
+            content: textContent
+          })
+        }
+        break
+      }
+    }
+  }
+
+  // Build output messages array
+  const outputText = extractTextFromParts(response as ReadonlyArray<{ type: string; text?: string }>)
+  const outputMessages = outputText 
+    ? [{ role: "assistant", content: outputText }]
+    : []
+
+  // OpenTelemetry GenAI semantic conventions
+  // @see https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/
+  span.attribute("gen_ai.input.messages", JSON.stringify(inputMessages))
+  span.attribute("gen_ai.output.messages", JSON.stringify(outputMessages))
+}
+
+/**
+ * Layer that provides the GenAI span transformer
+ */
+const GenAISpanTransformerLayer = Layer.succeed(
+  Telemetry.CurrentSpanTransformer,
+  GenAISpanTransformer
+)
 
 // =============================================================================
 // Language Model Layer (memoized)
@@ -18,6 +94,9 @@ import { OpenAiApiKeyOption, OpenAiModel } from "../shared/config"
 
 const makeLanguageModelLayer = (apiKey: Redacted.Redacted, model: string) =>
   OpenAiLanguageModel.layer({ model }).pipe(
+    // Provide the span transformer BEFORE the OpenAI layer is built
+    // so it's available during LanguageModel.make construction
+    Layer.provide(GenAISpanTransformerLayer),
     Layer.provide(
       OpenAiClient.layer({ apiKey }).pipe(Layer.provide(FetchHttpClient.layer))
     )
