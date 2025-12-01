@@ -1,6 +1,5 @@
 import * as NodeSdk from "@effect/opentelemetry/NodeSdk"
 import { diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api"
-import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto"
 import { BatchSpanProcessor, type SpanProcessor, type ReadableSpan, type SpanExporter } from "@opentelemetry/sdk-trace-base"
 import { ExportResultCode, type ExportResult } from "@opentelemetry/core"
 import { JsonTraceSerializer } from "@opentelemetry/otlp-transformer"
@@ -39,15 +38,17 @@ export const withTraceLinks = <A, E, R>(
 
 // Enable OpenTelemetry diagnostic logging to see export errors
 // Set OTEL_LOG_LEVEL=debug for verbose output, or error for only errors
-const otelLogLevel = process.env.OTEL_LOG_LEVEL?.toLowerCase()
-if (otelLogLevel) {
-  const level = otelLogLevel === "debug" ? DiagLogLevel.DEBUG
-    : otelLogLevel === "info" ? DiagLogLevel.INFO
-    : otelLogLevel === "warn" ? DiagLogLevel.WARN
-    : otelLogLevel === "error" ? DiagLogLevel.ERROR
-    : otelLogLevel === "verbose" ? DiagLogLevel.VERBOSE
-    : DiagLogLevel.INFO
-  diag.setLogger(new DiagConsoleLogger(), level)
+// Default to ERROR level so we always see export failures
+const otelLogLevel = process.env.OTEL_LOG_LEVEL?.toLowerCase() ?? "error"
+const diagLevel = otelLogLevel === "debug" ? DiagLogLevel.DEBUG
+  : otelLogLevel === "info" ? DiagLogLevel.INFO
+  : otelLogLevel === "warn" ? DiagLogLevel.WARN
+  : otelLogLevel === "error" ? DiagLogLevel.ERROR
+  : otelLogLevel === "verbose" ? DiagLogLevel.VERBOSE
+  : otelLogLevel === "none" ? DiagLogLevel.NONE
+  : DiagLogLevel.ERROR
+if (diagLevel !== DiagLogLevel.NONE) {
+  diag.setLogger(new DiagConsoleLogger(), diagLevel)
 }
 
 // =============================================================================
@@ -86,6 +87,21 @@ const SentryTeam = Config.string("SENTRY_TEAM").pipe(
   Config.withDefault("iterate-ec")
 )
 
+// Traceloop - LLM observability platform
+const TraceloopApiKey = Config.option(Config.redacted("TRACELOOP_API_KEY"))
+const TraceloopEndpoint = Config.string("TRACELOOP_ENDPOINT").pipe(
+  Config.withDefault("https://api.traceloop.com")
+)
+
+// Langfuse - LLM observability & evaluation
+// Uses standard Langfuse env var names from dashboard
+const LangfusePublicKey = Config.option(Config.redacted("LANGFUSE_PUBLIC_KEY"))
+const LangfuseSecretKey = Config.option(Config.redacted("LANGFUSE_SECRET_KEY"))
+const LangfuseBaseUrl = Config.string("LANGFUSE_BASE_URL").pipe(
+  Config.withDefault("https://cloud.langfuse.com")
+)
+const LangfuseProject = Config.option(Config.string("LANGFUSE_PROJECT"))
+
 // =============================================================================
 // Trace Links Service
 // =============================================================================
@@ -106,26 +122,35 @@ export class TraceLinks extends Context.Tag("TraceLinks")<
 >() {}
 
 // =============================================================================
-// Custom Axiom Exporter (Bun-compatible, uses fetch)
+// Custom Fetch-based OTLP Exporter (Bun-compatible, better error logging)
 // =============================================================================
 
-class AxiomFetchExporter implements SpanExporter {
+interface FetchExporterOptions {
+  name: string
+  url: string
+  headers: Record<string, string>
+}
+
+class FetchOtlpExporter implements SpanExporter {
+  private readonly name: string
   private readonly url: string
   private readonly headers: Record<string, string>
   private readonly serializer = JsonTraceSerializer
 
-  constructor(options: { url: string; apiKey: string; dataset: string }) {
+  constructor(options: FetchExporterOptions) {
+    this.name = options.name
     this.url = options.url
     this.headers = {
-      "Authorization": `Bearer ${options.apiKey}`,
-      "X-Axiom-Dataset": options.dataset,
+      ...options.headers,
       "Content-Type": "application/json"
     }
+    diag.info(`[${this.name}] Configured exporter → ${this.url}`)
   }
 
   export(spans: ReadableSpan[], resultCallback: (result: ExportResult) => void): void {
     const body = this.serializer.serializeRequest(spans)
     if (!body) {
+      diag.error(`[${this.name}] Failed to serialize ${spans.length} spans`)
       resultCallback({ code: ExportResultCode.FAILED })
       return
     }
@@ -137,15 +162,18 @@ class AxiomFetchExporter implements SpanExporter {
     })
       .then(async (response) => {
         if (response.ok) {
+          diag.debug(`[${this.name}] Successfully exported ${spans.length} spans`)
           resultCallback({ code: ExportResultCode.SUCCESS })
         } else {
-          const text = await response.text()
-          diag.error(`Axiom export failed: ${response.status} ${text}`)
+          const text = await response.text().catch(() => "(no body)")
+          console.error(`[${this.name}] Export failed: HTTP ${response.status} - ${text}`)
+          diag.error(`[${this.name}] Export failed: HTTP ${response.status} - ${text}`)
           resultCallback({ code: ExportResultCode.FAILED })
         }
       })
       .catch((error) => {
-        diag.error(`Axiom export error: ${error}`)
+        console.error(`[${this.name}] Export error:`, error)
+        diag.error(`[${this.name}] Export error: ${error}`)
         resultCallback({ code: ExportResultCode.FAILED })
       })
   }
@@ -174,11 +202,14 @@ const makeSpanProcessors = (serviceName: string) => Effect.gen(function* () {
     const endpoint = yield* HoneycombEndpoint
     const team = yield* HoneycombTeam
     const env = yield* HoneycombEnvironment
+    const url = `${endpoint}/v1/traces`
+    console.log(`[Tracing] Honeycomb enabled → ${url}`)
     processors.push({
       name: "Honeycomb",
       processor: new BatchSpanProcessor(
-        new OTLPTraceExporter({
-          url: `${endpoint}/v1/traces`,
+        new FetchOtlpExporter({
+          name: "Honeycomb",
+          url,
           headers: { "x-honeycomb-team": Redacted.value(honeycombKey.value) }
         }),
         { scheduledDelayMillis: 100 }
@@ -188,19 +219,24 @@ const makeSpanProcessors = (serviceName: string) => Effect.gen(function* () {
     })
   }
 
-  // Axiom - use custom fetch-based exporter for Bun compatibility
+  // Axiom
   const axiomKey = yield* AxiomApiKey
   if (Option.isSome(axiomKey)) {
     const dataset = yield* AxiomDataset
     const endpoint = yield* AxiomEndpoint
     const axiomOrg = yield* AxiomOrg
+    const url = `${endpoint}/v1/traces`
+    console.log(`[Tracing] Axiom enabled → ${url}`)
     processors.push({
       name: "Axiom",
       processor: new BatchSpanProcessor(
-        new AxiomFetchExporter({
-          url: `${endpoint}/v1/traces`,
-          apiKey: Redacted.value(axiomKey.value),
-          dataset
+        new FetchOtlpExporter({
+          name: "Axiom",
+          url,
+          headers: {
+            "Authorization": `Bearer ${Redacted.value(axiomKey.value)}`,
+            "X-Axiom-Dataset": dataset
+          }
         }),
         { scheduledDelayMillis: 100 }
       ),
@@ -218,10 +254,12 @@ const makeSpanProcessors = (serviceName: string) => Effect.gen(function* () {
   const sentryKey = yield* SentryPublicKey
   const sentryTeam = yield* SentryTeam
   if (Option.isSome(sentryEndpoint) && Option.isSome(sentryKey)) {
+    console.log(`[Tracing] Sentry enabled → ${sentryEndpoint.value}`)
     processors.push({
       name: "Sentry",
       processor: new BatchSpanProcessor(
-        new OTLPTraceExporter({
+        new FetchOtlpExporter({
+          name: "Sentry",
           url: sentryEndpoint.value,
           headers: {
             "x-sentry-auth": `sentry sentry_key=${Redacted.value(sentryKey.value)}`
@@ -231,6 +269,64 @@ const makeSpanProcessors = (serviceName: string) => Effect.gen(function* () {
       ),
       buildUrl: (traceId) =>
         `https://${sentryTeam}.sentry.io/explore/traces/trace/${traceId}/`
+    })
+  }
+
+  // Traceloop - LLM observability
+  const traceloopKey = yield* TraceloopApiKey
+  if (Option.isSome(traceloopKey)) {
+    const endpoint = yield* TraceloopEndpoint
+    const url = `${endpoint}/v1/traces`
+    console.log(`[Tracing] Traceloop enabled → ${url}`)
+    processors.push({
+      name: "Traceloop",
+      processor: new BatchSpanProcessor(
+        new FetchOtlpExporter({
+          name: "Traceloop",
+          url,
+          headers: {
+            "Authorization": `Bearer ${Redacted.value(traceloopKey.value)}`
+          }
+        }),
+        { scheduledDelayMillis: 100 }
+      ),
+      // Placeholder URL - Traceloop dashboard URL format TBD
+      buildUrl: (traceId) =>
+        `https://app.traceloop.com/traces/${traceId}`
+    })
+  }
+
+  // Langfuse - LLM observability & evaluation
+  const langfusePublicKey = yield* LangfusePublicKey
+  const langfuseSecretKey = yield* LangfuseSecretKey
+  const langfuseProject = yield* LangfuseProject
+  if (Option.isSome(langfusePublicKey) && Option.isSome(langfuseSecretKey)) {
+    const baseUrl = yield* LangfuseBaseUrl
+    // Langfuse OTEL endpoint is at /api/public/otel/v1/traces
+    const url = `${baseUrl.replace(/\/$/, "")}/api/public/otel/v1/traces`
+    // Langfuse uses Basic auth with publicKey:secretKey
+    const authString = Buffer.from(
+      `${Redacted.value(langfusePublicKey.value)}:${Redacted.value(langfuseSecretKey.value)}`
+    ).toString("base64")
+    console.log(`[Tracing] Langfuse enabled → ${url}`)
+    processors.push({
+      name: "Langfuse",
+      processor: new BatchSpanProcessor(
+        new FetchOtlpExporter({
+          name: "Langfuse",
+          url,
+          headers: {
+            "Authorization": `Basic ${authString}`
+          }
+        }),
+        { scheduledDelayMillis: 100 }
+      ),
+      // Placeholder URL - actual format depends on project
+      buildUrl: (traceId) => {
+        const project = Option.isSome(langfuseProject) ? langfuseProject.value : "your-project"
+        const host = new URL(baseUrl).host
+        return `https://${host}/project/${project}/traces/${traceId}`
+      }
     })
   }
 
