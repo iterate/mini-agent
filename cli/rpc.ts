@@ -10,28 +10,33 @@ import { FetchHttpClient } from "@effect/platform"
 import { Console, Effect, Layer, Option, Stream } from "effect"
 import { TaskRpcs, LlmRpcs } from "../shared/schemas"
 import { serverUrlOption } from "./options"
+import { handleError } from "./error"
 
 // =============================================================================
-// Registry of Available RPCs
+// Registry of Available RPCs (with stream metadata)
 // =============================================================================
 
-const RPC_REGISTRY = {
+interface RpcMethodInfo {
+  readonly payload: string
+  readonly returns: string
+  readonly stream: boolean
+}
+
+const RPC_REGISTRY: Record<string, {
+  readonly methods: Record<string, RpcMethodInfo>
+}> = {
   tasks: {
-    group: TaskRpcs,
-    methods: ["list", "add", "toggle", "clear"],
-    schemas: {
-      list: { payload: "{ all?: boolean }", returns: "Task[]" },
-      add: { payload: "{ text: string }", returns: "Task" },
-      toggle: { payload: "{ id: number }", returns: "Task" },
-      clear: { payload: "{}", returns: "{ cleared: number }" }
+    methods: {
+      list: { payload: "{ all?: boolean }", returns: "Task[]", stream: false },
+      add: { payload: "{ text: string }", returns: "Task", stream: false },
+      toggle: { payload: "{ id: number }", returns: "Task", stream: false },
+      clear: { payload: "{}", returns: "{ cleared: number }", stream: false }
     }
   },
   llm: {
-    group: LlmRpcs,
-    methods: ["generate", "generateStream"],
-    schemas: {
-      generate: { payload: "{ prompt: string }", returns: "string" },
-      generateStream: { payload: "{ prompt: string }", returns: "Stream<string>" }
+    methods: {
+      generate: { payload: "{ prompt: string }", returns: "string", stream: false },
+      generateStream: { payload: "{ prompt: string }", returns: "Stream<string>", stream: true }
     }
   }
 } as const
@@ -46,11 +51,10 @@ const listRpcsCommand = Command.make("list", {}, () =>
 
     for (const [groupName, group] of Object.entries(RPC_REGISTRY)) {
       yield* Console.log(`📦 ${groupName}`)
-      for (const method of group.methods) {
-        const schema = (group.schemas as any)[method]
-        yield* Console.log(`   └─ ${method}`)
-        yield* Console.log(`      Payload: ${schema.payload}`)
-        yield* Console.log(`      Returns: ${schema.returns}`)
+      for (const [method, info] of Object.entries(group.methods)) {
+        yield* Console.log(`   └─ ${method}${info.stream ? " (streaming)" : ""}`)
+        yield* Console.log(`      Payload: ${info.payload}`)
+        yield* Console.log(`      Returns: ${info.returns}`)
       }
       yield* Console.log("")
     }
@@ -80,11 +84,14 @@ const callRpcCommand = Command.make(
   },
   ({ serverUrl, group, method, payload }) =>
     Effect.gen(function* () {
-      // Handle optional payload (comes as Option from Args.optional)
-      const payloadStr = Option.isOption(payload) 
-        ? Option.getOrElse(payload, () => "{}") 
-        : (payload ?? "{}")
-      const parsedPayload = JSON.parse(payloadStr)
+      // Safely extract optional payload
+      const payloadStr = Option.getOrElse(payload, () => "{}")
+
+      // Safe JSON parsing
+      const parsedPayload = yield* Effect.try({
+        try: () => JSON.parse(payloadStr) as Record<string, unknown>,
+        catch: (e) => new Error(`Invalid JSON payload: ${e instanceof Error ? e.message : String(e)}`)
+      })
 
       yield* Console.log(`Calling ${group}.${method} with:`)
       yield* Console.log(JSON.stringify(parsedPayload, null, 2))
@@ -94,13 +101,24 @@ const callRpcCommand = Command.make(
         Layer.provide([FetchHttpClient.layer, RpcSerialization.layerNdjson])
       )
 
+      // Get method info for stream detection
+      const groupInfo = RPC_REGISTRY[group]
+      if (!groupInfo) {
+        return yield* Console.error(`Unknown group: ${group}. Available: ${Object.keys(RPC_REGISTRY).join(", ")}`)
+      }
+
+      const methodInfo = groupInfo.methods[method]
+      if (!methodInfo) {
+        return yield* Console.error(`Unknown method: ${method}. Available: ${Object.keys(groupInfo.methods).join(", ")}`)
+      }
+
+      // Call the appropriate RPC group
       if (group === "tasks") {
         yield* RpcClient.make(TaskRpcs).pipe(
           Effect.flatMap((client) => {
-            const m = (client as any)[method]
-            if (!m) {
-              return Console.error(`Unknown method: ${method}`)
-            }
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const m = (client as any)[method] as ((p: unknown) => Effect.Effect<unknown>) | undefined
+            if (!m) return Console.error(`Method not found: ${method}`)
             return Effect.gen(function* () {
               const result = yield* m(parsedPayload)
               yield* Console.log("Result:")
@@ -113,38 +131,35 @@ const callRpcCommand = Command.make(
       } else if (group === "llm") {
         yield* RpcClient.make(LlmRpcs).pipe(
           Effect.flatMap((client) => {
-            const m = (client as any)[method]
-            if (!m) {
-              return Console.error(`Unknown method: ${method}`)
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const m = (client as any)[method] as ((p: unknown) => Stream.Stream<string> | Effect.Effect<unknown>) | undefined
+            if (!m) return Console.error(`Method not found: ${method}`)
+
+            // Branch based on stream metadata
+            if (methodInfo.stream) {
+              return Effect.gen(function* () {
+                yield* Console.log("Streaming result:")
+                const stream = m(parsedPayload) as Stream.Stream<string>
+                yield* Stream.runForEach(stream, (chunk) =>
+                  Effect.sync(() => process.stdout.write(chunk))
+                )
+                yield* Console.log("")
+              })
+            } else {
+              return Effect.gen(function* () {
+                const result = yield* m(parsedPayload) as Effect.Effect<unknown>
+                yield* Console.log("Result:")
+                yield* Console.log(typeof result === "string" ? result : JSON.stringify(result, null, 2))
+              })
             }
-            return Effect.gen(function* () {
-              yield* Console.log("Streaming result:")
-              const stream = m(parsedPayload) as Stream.Stream<string, unknown, never>
-              yield* Stream.runForEach(stream, (chunk) =>
-                Effect.sync(() => process.stdout.write(chunk))
-              )
-              yield* Console.log("")
-            })
           }),
           Effect.scoped,
           Effect.provide(clientLayer)
         )
-      } else {
-        yield* Console.error(`Unknown group: ${group}. Available: tasks, llm`)
       }
     }).pipe(
       Effect.withSpan("cli.rpc.call"),
-      Effect.catchAll((error) =>
-        Effect.gen(function* () {
-          if (typeof error === "object" && error !== null && "_tag" in error) {
-            yield* Console.error(`Error [${(error as { _tag: string })._tag}]: ${JSON.stringify(error)}`)
-          } else if (error instanceof Error) {
-            yield* Console.error(`Error: ${error.message}`)
-          } else {
-            yield* Console.error(`Error: ${String(error)}`)
-          }
-        })
-      )
+      Effect.catchAll(handleError)
     )
 ).pipe(Command.withDescription("Call an RPC procedure with JSON payload"))
 
@@ -158,4 +173,3 @@ export const rpcCommand = Command.make("rpc", {}, () =>
   Command.withDescription("Interactive RPC explorer"),
   Command.withSubcommands([listRpcsCommand, callRpcCommand])
 )
-

@@ -9,6 +9,7 @@ import { Console, Effect, Stream } from "effect"
 import { withLlmClient } from "./client"
 import { serverUrlOption } from "./options"
 import { withTraceLinks } from "../shared/tracing"
+import { handleError } from "./error"
 
 // =============================================================================
 // Generate Command (with streaming option)
@@ -50,24 +51,9 @@ const generateCommand = Command.make(
     ).pipe(
       withTraceLinks,
       Effect.withSpan("cli.llm.generate"),
-      Effect.catchAll((error) => logError(error))
+      Effect.catchAll(handleError)
     )
 ).pipe(Command.withDescription("Generate text with LLM"))
-
-// =============================================================================
-// Error Helper
-// =============================================================================
-
-const logError = (error: unknown) =>
-  Effect.gen(function* () {
-    if (typeof error === "object" && error !== null && "_tag" in error) {
-      yield* Console.error(`Error [${(error as { _tag: string })._tag}]: ${JSON.stringify(error)}`)
-    } else if (error instanceof Error) {
-      yield* Console.error(`Error: ${error.message}`)
-    } else {
-      yield* Console.error(`Error: ${String(error)}`)
-    }
-  })
 
 // =============================================================================
 // Export Group Command

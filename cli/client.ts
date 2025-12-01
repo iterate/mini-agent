@@ -1,21 +1,24 @@
 /**
  * RPC Client Helpers
  * 
- * Shared utilities for creating RPC clients in CLI commands
+ * Shared utilities for creating RPC clients in CLI commands.
+ * Client types are derived from RPC schemas for type safety.
  */
 
 import { RpcClient, RpcSerialization } from "@effect/rpc"
 import { FetchHttpClient, FileSystem } from "@effect/platform"
-import { Effect, Layer, Stream } from "effect"
-import { TaskRpcs, LlmRpcs, Task } from "../shared/schemas"
+import { Effect, Layer } from "effect"
+import { TaskRpcs, LlmRpcs } from "../shared/schemas"
+import { DEFAULT_SERVER_URL } from "../shared/config"
 import { ensureServerRunning } from "./server-utils"
 import type { PlatformError } from "@effect/platform/Error"
+import type { RpcClientError } from "@effect/rpc/RpcClientError"
 
 // =============================================================================
-// Default Configuration
+// Re-export for backwards compatibility
 // =============================================================================
 
-export const DEFAULT_SERVER_URL = "http://localhost:3000/rpc"
+export { DEFAULT_SERVER_URL }
 
 // =============================================================================
 // Client Layer Factory
@@ -27,58 +30,48 @@ const makeClientLayer = (serverUrl: string) =>
   )
 
 // =============================================================================
-// Client Types
+// Derived Client Types (from RPC schemas)
 // =============================================================================
 
-export interface TaskClient {
-  readonly list: (input: { readonly all?: boolean }) => Effect.Effect<ReadonlyArray<Task>>
-  readonly add: (input: { readonly text: string }) => Effect.Effect<Task>
-  readonly toggle: (input: { readonly id: number }) => Effect.Effect<Task>
-  readonly clear: (input: Record<string, never>) => Effect.Effect<{ readonly cleared: number }>
-}
+/** TaskRpcs client type derived from schema */
+export type TaskClient = RpcClient.FromGroup<typeof TaskRpcs, RpcClientError>
 
-export interface LlmClient {
-  readonly generate: (input: { readonly prompt: string }) => Effect.Effect<string>
-  readonly generateStream: (input: { readonly prompt: string }) => Stream.Stream<string>
-}
+/** LlmRpcs client type derived from schema */
+export type LlmClient = RpcClient.FromGroup<typeof LlmRpcs, RpcClientError>
 
 // =============================================================================
 // Scoped Client Helpers (with auto-start)
 // =============================================================================
 
 /**
- * Run an operation with a scoped TaskRpcs client
- * Automatically starts the server if not running
+ * Run an operation with a scoped TaskRpcs client.
+ * Automatically starts the server if not running.
  */
 export const withTaskClient = <A, E>(
   serverUrl: string,
   fn: (client: TaskClient) => Effect.Effect<A, E>
-): Effect.Effect<A, E | Error | PlatformError, FileSystem.FileSystem> =>
+): Effect.Effect<A, E | Error | PlatformError | RpcClientError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    // Ensure server is running before connecting
     yield* ensureServerRunning(serverUrl)
-    
-    const client = yield* RpcClient.make(TaskRpcs)
-    return yield* fn(client as unknown as TaskClient)
+    const client: TaskClient = yield* RpcClient.make(TaskRpcs)
+    return yield* fn(client)
   }).pipe(
     Effect.scoped,
     Effect.provide(makeClientLayer(serverUrl))
   )
 
 /**
- * Run an operation with a scoped LlmRpcs client
- * Automatically starts the server if not running
+ * Run an operation with a scoped LlmRpcs client.
+ * Automatically starts the server if not running.
  */
 export const withLlmClient = <A, E>(
   serverUrl: string,
   fn: (client: LlmClient) => Effect.Effect<A, E>
-): Effect.Effect<A, E | Error | PlatformError, FileSystem.FileSystem> =>
+): Effect.Effect<A, E | Error | PlatformError | RpcClientError, FileSystem.FileSystem> =>
   Effect.gen(function* () {
-    // Ensure server is running before connecting
     yield* ensureServerRunning(serverUrl)
-    
-    const client = yield* RpcClient.make(LlmRpcs)
-    return yield* fn(client as unknown as LlmClient)
+    const client: LlmClient = yield* RpcClient.make(LlmRpcs)
+    return yield* fn(client)
   }).pipe(
     Effect.scoped,
     Effect.provide(makeClientLayer(serverUrl))

@@ -7,7 +7,7 @@ import { $ } from "bun"
 
 const TEST_TASKS_FILE = "test-tasks.json"
 const TEST_PID_FILE = "test-server.pid"
-const TEST_PORT = 3099
+// const TEST_PORT = 3099 // Available for future use
 
 // Parse args respecting quoted strings
 const parseArgs = (args: string): string[] => {
@@ -50,12 +50,6 @@ const cliText = async (args: string) => {
     stderr: result.stderr.toString(),
     exitCode: result.exitCode
   }
-}
-
-// Helper to run server commands with test configuration
-const serverCli = (args: string) => {
-  const argsList = parseArgs(args)
-  return $`TASKS_FILE=${TEST_TASKS_FILE} SERVER_PORT=${TEST_PORT} bun cli.ts server ${argsList}`.nothrow()
 }
 
 // Helper to clean up test files
@@ -124,9 +118,6 @@ describe("Server Management E2E", () => {
     // Start server first
     await $`bun cli.ts server start -d`.quiet()
     await Bun.sleep(1000)
-    
-    // Get original PID
-    const originalPid = await Bun.file("server.pid").text()
     
     // Restart
     await $`bun cli.ts server restart -d`.quiet()

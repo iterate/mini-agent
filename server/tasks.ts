@@ -4,63 +4,32 @@
  * Server-side implementation of TaskRpcs from shared/schemas.ts
  */
 
-import { Effect, Array as Arr, Option } from "effect"
-import { TaskRpcs, Task, TaskId, TaskNotFoundError } from "../shared/schemas"
-
-// =============================================================================
-// In-Memory Task Storage
-// =============================================================================
-
-// Simple in-memory storage (replace with database in production)
-let tasks: Task[] = []
-let nextId = 1
+import { Effect, Layer } from "effect"
+import { TaskRpcs } from "../shared/schemas"
+import { TaskRepository, TaskRepositoryLive } from "./task-repository"
 
 // =============================================================================
 // Handler Implementation
 // =============================================================================
 
-export const TaskHandlers = TaskRpcs.toLayer({
-  list: ({ all }) =>
-    Effect.gen(function* () {
-      if (all) {
-        return tasks
-      }
-      return tasks.filter((t) => !t.done)
-    }).pipe(Effect.withSpan("tasks.list")),
+const TaskHandlersImpl = TaskRpcs.toLayer(
+  Effect.gen(function* () {
+    const repo = yield* TaskRepository
 
-  add: ({ text }) =>
-    Effect.gen(function* () {
-      const task = new Task({
-        id: nextId++ as TaskId,
-        text,
-        done: false
-      })
-      tasks.push(task)
-      return task
-    }).pipe(Effect.withSpan("tasks.add")),
+    return {
+      list: ({ all }) => repo.list({ all }).pipe(Effect.withSpan("tasks.list")),
 
-  toggle: ({ id }) =>
-    Effect.gen(function* () {
-      const index = tasks.findIndex((t) => t.id === id)
-      if (index === -1) {
-        return yield* Effect.fail(new TaskNotFoundError({ id }))
-      }
-      
-      const task = tasks[index]
-      const updated = new Task({
-        ...task,
-        done: !task.done
-      })
-      tasks[index] = updated
-      return updated
-    }).pipe(Effect.withSpan("tasks.toggle")),
+      add: ({ text }) => repo.add(text).pipe(Effect.withSpan("tasks.add")),
 
-  clear: () =>
-    Effect.gen(function* () {
-      const count = tasks.length
-      tasks = []
-      nextId = 1
-      return { cleared: count }
-    }).pipe(Effect.withSpan("tasks.clear"))
-})
+      toggle: ({ id }) => repo.toggle(id).pipe(Effect.withSpan("tasks.toggle")),
 
+      clear: () => repo.clear().pipe(Effect.withSpan("tasks.clear"))
+    }
+  })
+)
+
+// =============================================================================
+// Export with Repository Dependency
+// =============================================================================
+
+export const TaskHandlers = TaskHandlersImpl.pipe(Layer.provide(TaskRepositoryLive))

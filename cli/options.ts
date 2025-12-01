@@ -5,7 +5,7 @@
  */
 
 import { Options } from "@effect/cli"
-import { DEFAULT_SERVER_URL } from "./client"
+import { DEFAULT_SERVER_URL } from "../shared/config"
 
 // =============================================================================
 // Server Connection Options
@@ -21,28 +21,6 @@ export const serverUrlOption = Options.text("server-url").pipe(
 )
 
 // =============================================================================
-// Common Behavior Options
-// =============================================================================
-
-/**
- * JSON output option - for machine-readable output
- */
-export const jsonOutputOption = Options.boolean("json").pipe(
-  Options.withAlias("j"),
-  Options.withDescription("Output as JSON"),
-  Options.withDefault(false)
-)
-
-/**
- * Verbose option - for debugging
- */
-export const verboseOption = Options.boolean("verbose").pipe(
-  Options.withAlias("v"),
-  Options.withDescription("Verbose output"),
-  Options.withDefault(false)
-)
-
-// =============================================================================
 // Server Management Options
 // =============================================================================
 
@@ -54,4 +32,3 @@ export const daemonizeOption = Options.boolean("daemonize").pipe(
   Options.withDescription("Run in background"),
   Options.withDefault(false)
 )
-

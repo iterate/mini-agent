@@ -9,6 +9,7 @@ import { Console, Effect } from "effect"
 import { withTaskClient } from "./client"
 import { serverUrlOption } from "./options"
 import { withTraceLinks } from "../shared/tracing"
+import { handleError } from "./error"
 
 // =============================================================================
 // List Command
@@ -42,7 +43,7 @@ const listCommand = Command.make(
     ).pipe(
       withTraceLinks,
       Effect.withSpan("cli.tasks.list"),
-      Effect.catchAll((error) => logError(error))
+      Effect.catchAll(handleError)
     )
 ).pipe(Command.withDescription("List tasks"))
 
@@ -67,7 +68,7 @@ const addCommand = Command.make(
     ).pipe(
       withTraceLinks,
       Effect.withSpan("cli.tasks.add"),
-      Effect.catchAll((error) => logError(error))
+      Effect.catchAll(handleError)
     )
 ).pipe(Command.withDescription("Add a new task"))
 
@@ -92,7 +93,7 @@ const toggleCommand = Command.make(
     ).pipe(
       withTraceLinks,
       Effect.withSpan("cli.tasks.toggle"),
-      Effect.catchAll((error) => logError(error))
+      Effect.catchAll(handleError)
     )
 ).pipe(Command.withDescription("Toggle a task's done status"))
 
@@ -112,24 +113,9 @@ const clearCommand = Command.make(
     ).pipe(
       withTraceLinks,
       Effect.withSpan("cli.tasks.clear"),
-      Effect.catchAll((error) => logError(error))
+      Effect.catchAll(handleError)
     )
 ).pipe(Command.withDescription("Clear all tasks"))
-
-// =============================================================================
-// Error Helper
-// =============================================================================
-
-const logError = (error: unknown) =>
-  Effect.gen(function* () {
-    if (typeof error === "object" && error !== null && "_tag" in error) {
-      yield* Console.error(`Error [${(error as { _tag: string })._tag}]: ${JSON.stringify(error)}`)
-    } else if (error instanceof Error) {
-      yield* Console.error(`Error: ${error.message}`)
-    } else {
-      yield* Console.error(`Error: ${String(error)}`)
-    }
-  })
 
 // =============================================================================
 // Export Group Command
@@ -141,4 +127,3 @@ export const tasksCommand = Command.make("tasks", {}, () =>
   Command.withDescription("Task management commands"),
   Command.withSubcommands([listCommand, addCommand, toggleCommand, clearCommand])
 )
-

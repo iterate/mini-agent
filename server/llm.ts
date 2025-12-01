@@ -4,19 +4,24 @@
  * Server-side implementation of LlmRpcs from shared/schemas.ts
  */
 
-import { Effect, Layer, Stream, Config, Option } from "effect"
+import { Effect, Layer, Stream, Option, Redacted } from "effect"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { LanguageModel } from "@effect/ai"
 
 import { LlmRpcs, LlmError } from "../shared/schemas"
+import { OpenAiApiKeyOption, OpenAiModel } from "../shared/config"
 
 // =============================================================================
-// OpenAI Configuration
+// Language Model Layer (memoized)
 // =============================================================================
 
-const OpenAiApiKey = Config.redacted("OPENAI_API_KEY")
-const OpenAiApiKeyOption = Config.option(OpenAiApiKey)
+const makeLanguageModelLayer = (apiKey: Redacted.Redacted, model: string) =>
+  OpenAiLanguageModel.layer({ model }).pipe(
+    Layer.provide(
+      OpenAiClient.layer({ apiKey }).pipe(Layer.provide(FetchHttpClient.layer))
+    )
+  )
 
 // =============================================================================
 // Handler Implementation
@@ -25,38 +30,22 @@ const OpenAiApiKeyOption = Config.option(OpenAiApiKey)
 export const LlmHandlers = LlmRpcs.toLayer(
   Effect.gen(function* () {
     const apiKeyOpt = yield* OpenAiApiKeyOption
+    const model = yield* OpenAiModel
 
-    // Create OpenAI layers (shared between handlers)
-    const createLayers = () => {
-      if (Option.isNone(apiKeyOpt)) {
-        return null
-      }
-      const openAiLayer = OpenAiClient.layer({ apiKey: apiKeyOpt.value }).pipe(
-        Layer.provide(FetchHttpClient.layer)
-      )
-      return OpenAiLanguageModel.layer({ model: "gpt-4.1" }).pipe(
-        Layer.provide(openAiLayer)
-      )
-    }
+    // Memoized layer - created once at handler initialization
+    const languageModelLayer = Option.isSome(apiKeyOpt)
+      ? makeLanguageModelLayer(apiKeyOpt.value, model)
+      : null
 
     return {
       // Streaming text generation
       generateStream: ({ prompt }: { prompt: string }) => {
-        const languageModelLayer = createLayers()
-        
         if (!languageModelLayer) {
-          return Stream.fail(
-            new LlmError({ message: "OPENAI_API_KEY not configured" })
-          )
+          return Stream.fail(new LlmError({ message: "OPENAI_API_KEY not configured" }))
         }
 
         return LanguageModel.streamText({ prompt }).pipe(
-          Stream.map((part) => {
-            if (part.type === "text-delta") {
-              return part.delta
-            }
-            return ""
-          }),
+          Stream.map((part) => (part.type === "text-delta" ? part.delta : "")),
           Stream.filter((s) => s.length > 0),
           Stream.catchAllCause((cause) =>
             Stream.fail(new LlmError({ message: String(cause) }))
@@ -68,13 +57,13 @@ export const LlmHandlers = LlmRpcs.toLayer(
       // Non-streaming text generation (returns complete response)
       generate: ({ prompt }: { prompt: string }) =>
         Effect.gen(function* () {
-          const languageModelLayer = createLayers()
-          
           if (!languageModelLayer) {
-            return yield* Effect.fail(
-              new LlmError({ message: "OPENAI_API_KEY not configured" })
-            )
+            return yield* Effect.fail(new LlmError({ message: "OPENAI_API_KEY not configured" }))
           }
+
+          yield* Effect.logDebug("Generating text").pipe(
+            Effect.annotateLogs({ promptLength: prompt.length })
+          )
 
           const response = yield* LanguageModel.generateText({ prompt }).pipe(
             Effect.map((result) => result.text),
@@ -82,6 +71,10 @@ export const LlmHandlers = LlmRpcs.toLayer(
               Effect.fail(new LlmError({ message: String(cause) }))
             ),
             Effect.provide(languageModelLayer)
+          )
+
+          yield* Effect.logDebug("Generation complete").pipe(
+            Effect.annotateLogs({ responseLength: response.length })
           )
 
           return response

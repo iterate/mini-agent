@@ -1,5 +1,6 @@
 {
-  "name": "2025-11-30-effect-cli",
+  "name": "effect-tasks",
+  "version": "1.0.0",
   "module": "index.ts",
   "type": "module",
   "private": true,

@@ -8,18 +8,13 @@ import { RpcServer, RpcSerialization } from "@effect/rpc"
 import { HttpRouter, HttpMiddleware, HttpServerResponse } from "@effect/platform"
 import { BunHttpServer, BunContext } from "@effect/platform-bun"
 import { BunRuntime } from "@effect/platform-bun"
-import { Console, Effect, Layer, Config } from "effect"
+import { Effect, Layer } from "effect"
 
 import { AllRpcs } from "./shared/schemas"
 import { TaskHandlers } from "./server/tasks"
 import { LlmHandlers } from "./server/llm"
 import { createTracingLayer } from "./shared/tracing"
-
-// =============================================================================
-// Configuration
-// =============================================================================
-
-const ServerPort = Config.integer("PORT").pipe(Config.withDefault(3000))
+import { ServerPort } from "./shared/config"
 
 // =============================================================================
 // RPC Layer Composition
@@ -66,8 +61,11 @@ const MainLayer = Layer.merge(TelemetryLive, BunContext.layer)
 
 const main = Effect.gen(function* () {
   const port = yield* ServerPort
-  yield* Console.log(`Starting server on http://localhost:${port}`)
-  yield* Console.log(`RPC endpoint: POST http://localhost:${port}/rpc`)
+
+  yield* Effect.log("Starting server").pipe(
+    Effect.annotateLogs({ port, rpcPath: "/rpc", healthPath: "/health" })
+  )
+
   return yield* Layer.launch(makeServerLayer(port))
 })
 

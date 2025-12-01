@@ -6,29 +6,20 @@
 
 import { Command } from "@effect/cli"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { Console, Effect, Layer } from "effect"
+import { Effect, Layer } from "effect"
 
 import { tasksCommand } from "./cli/tasks"
 import { llmCommand } from "./cli/llm"
 import { serverCommand } from "./cli/server"
 import { rpcCommand } from "./cli/rpc"
 import { createTracingLayer } from "./shared/tracing"
+import pkg from "./package.json"
 
 // =============================================================================
 // Root Command
 // =============================================================================
 
-const rootCommand = Command.make("effect-tasks", {}, () =>
-  Console.log(
-    "effect-tasks CLI\n\n" +
-    "Commands:\n" +
-    "  tasks   - Task management (list, add, toggle, clear)\n" +
-    "  llm     - LLM commands (generate)\n" +
-    "  server  - Server management (start, stop, restart, status)\n" +
-    "  rpc     - Interactive RPC explorer\n\n" +
-    "Use '<command> --help' for more details"
-  )
-).pipe(
+const rootCommand = Command.make("effect-tasks", {}, () => Effect.void).pipe(
   Command.withDescription("Task manager with RPC backend"),
   Command.withSubcommands([tasksCommand, llmCommand, serverCommand, rpcCommand])
 )
@@ -38,13 +29,16 @@ const rootCommand = Command.make("effect-tasks", {}, () =>
 // =============================================================================
 
 const cli = Command.run(rootCommand, {
-  name: "effect-tasks",
-  version: "1.0.0"
+  name: pkg.name,
+  version: pkg.version
 })
 
-const TelemetryLive = createTracingLayer("effect-tasks-cli")
+const TelemetryLive = createTracingLayer("mini-agent-cli") 
 const MainLayer = Layer.mergeAll(BunContext.layer, TelemetryLive)
 
-// Context types are complex due to mixed command sources
-const main = cli(process.argv).pipe(Effect.provide(MainLayer)) as Effect.Effect<void>
-BunRuntime.runMain(main)
+// Run CLI with all required context
+cli(process.argv).pipe(
+  Effect.provide(MainLayer),
+  Effect.catchAllDefect((defect) => Effect.logError("Unexpected error", defect)),
+  BunRuntime.runMain
+)
