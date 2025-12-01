@@ -1,16 +1,10 @@
-/**
- * Simple Agent Loop using @effect/ai Chat
- * 
- * A terminal chat application with alternating user/assistant messages.
- * Uses @effect/cli for interactive prompts and @effect/ai Chat for stateful conversation.
- */
-
 import { Prompt as CliPrompt } from "@effect/cli"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { FetchHttpClient } from "@effect/platform"
-import { Effect, Console, Config, Layer, Ref } from "effect"
-import { Chat } from "@effect/ai"
+import { FetchHttpClient, Terminal } from "@effect/platform"
+import { Array as Arr, Effect, Console, Config, Layer, Ref, Cause, Option, pipe } from "effect"
+import { Chat, Telemetry, Prompt } from "@effect/ai"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
+import { createTracingLayer, TraceLinks } from "./shared/tracing"
 
 // =============================================================================
 // Configuration
@@ -19,73 +13,102 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 const OpenAiApiKey = Config.redacted("OPENAI_API_KEY")
 const OpenAiModel = Config.string("OPENAI_MODEL").pipe(Config.withDefault("gpt-4o-mini"))
 
-// =============================================================================
-// System Prompt
-// =============================================================================
-
 const SYSTEM_PROMPT = `You are a helpful, friendly assistant. 
 Keep your responses concise but informative. 
 Use markdown formatting when helpful.`
 
 // =============================================================================
-// Display Helpers
+// Chat Loop
 // =============================================================================
 
-const formatAssistantResponse = (text: string): string => `\n${text}\n`
+/** Single conversation turn: get input, generate response, display it */
+const conversationTurn = (chat: Chat.Service) =>
+  Effect.gen(function* () {
+    const input = yield* CliPrompt.text({ message: "You" })
 
-// =============================================================================
-// Agent Loop
-// =============================================================================
+    // Skip empty input
+    if (input.trim() === "") return
 
+    const response = yield* chat.generateText({ prompt: input })
+    yield* Console.log(`\n${response.text}\n`)
+
+    // Debug: log message count
+    const history = yield* Ref.get(chat.history)
+    yield* Effect.logDebug(`Conversation has ${history.content.length} messages`)
+  })
+
+/** Run conversation turns forever until Ctrl+C */
+const conversationLoop = (chat: Chat.Service) =>
+  conversationTurn(chat).pipe(
+    // Only catch non-quit errors; let QuitException propagate to exit cleanly
+    Effect.catchIf(
+      (error) => !Terminal.isQuitException(error),
+      (error) => Console.error(`Error: ${String(error)}`)
+    ),
+    Effect.forever
+  )
+
+/** Print trace links on exit if available */
+const printTraceLinksOnExit = Effect.gen(function* () {
+  const traceLinks = yield* TraceLinks
+  const maybeSpan = yield* Effect.currentSpan.pipe(Effect.option)
+
+  yield* Option.match(maybeSpan, {
+    onNone: () => Effect.void,
+    onSome: (span) => traceLinks.printLinks(span.traceId)
+  })
+
+  yield* Console.log("\nGoodbye!")
+})
+
+/** Main agent loop with proper cleanup */
 const agentLoop = Effect.gen(function* () {
-  // Create a chat instance with system prompt
   const chat = yield* Chat.fromPrompt([
     { role: "system", content: SYSTEM_PROMPT }
   ])
 
-  // Main conversation loop
-  while (true) {
-    // Get user input
-    const userInput = yield* CliPrompt.text({
-      message: "You",
-    })
+  yield* conversationLoop(chat).pipe(
+    Effect.catchIf(Terminal.isQuitException, () => Effect.void),
+    Effect.ensuring(printTraceLinksOnExit)
+  )
+}).pipe(Effect.withSpan("chat-session"))
 
-    // Check for exit commands
-    const trimmedInput = userInput.trim().toLowerCase()
-    if (trimmedInput === "exit" || trimmedInput === "quit" || trimmedInput === "q") {
-      yield* Console.log("Goodbye!")
-      break
-    }
+// =============================================================================
+// GenAI Span Transformer (for Langfuse)
+// =============================================================================
 
-    // Skip empty inputs
-    if (trimmedInput === "") {
-      continue
-    }
+const collectText = (parts: ReadonlyArray<{ type: string; text?: string }>) => pipe(
+  parts,
+  Arr.filter((p): p is typeof p & { text: string } => p.type === "text" && !!p.text),
+  Arr.map(p => p.text),
+  Arr.join("")
+)
 
-    // Generate response - Chat automatically manages history
-    const response = yield* chat.generateText({
-      prompt: userInput
-    }).pipe(
-      Effect.catchAll((error) => 
-        Effect.succeed({ text: `Error: ${String(error)}`, content: [] } as { text: string; content: readonly unknown[] })
-      )
+const GenAISpanTransformerLayer = Layer.succeed(
+  Telemetry.CurrentSpanTransformer,
+  ({ prompt, span, response }) => {
+    const input = pipe(
+      prompt.content,
+      Arr.filter((m): m is Prompt.SystemMessage | Prompt.UserMessage | Prompt.AssistantMessage => m.role !== "tool"),
+      Arr.map(m => ({ role: m.role, content: m.role === "system" ? m.content : collectText(m.content) })),
+      Arr.filter(m => !!m.content)
     )
+    const output = collectText(response)
 
-    // Display response
-    yield* Console.log(formatAssistantResponse(response.text))
-
-    // Log conversation stats (debug)
-    const history = yield* Ref.get(chat.history)
-    yield* Effect.logDebug(`Conversation has ${history.content.length} messages`)
+    span.attribute("input", JSON.stringify(input))
+    span.attribute("output", JSON.stringify(output ? [{ role: "assistant", content: output }] : []))
   }
-})
+)
 
 // =============================================================================
 // Layer Setup
 // =============================================================================
 
 const makeLanguageModelLayer = (apiKey: Config.Config.Success<typeof OpenAiApiKey>, model: string) =>
-  OpenAiLanguageModel.layer({ model }).pipe(
+  Layer.mergeAll(
+    OpenAiLanguageModel.layer({ model }),
+    GenAISpanTransformerLayer
+  ).pipe(
     Layer.provide(
       OpenAiClient.layer({ apiKey }).pipe(
         Layer.provide(FetchHttpClient.layer)
@@ -107,13 +130,16 @@ const LanguageModelLayer = Layer.unwrapEffect(
 
 const MainLayer = Layer.mergeAll(
   LanguageModelLayer,
-  BunContext.layer
+  BunContext.layer,
+  createTracingLayer("new-cli")
 )
 
 const main = agentLoop.pipe(
   Effect.provide(MainLayer),
-  Effect.catchAllDefect((defect) => 
-    Console.error(`Fatal error: ${String(defect)}`)
+  Effect.catchAllCause((cause) =>
+    Cause.isInterruptedOnly(cause)
+      ? Effect.void
+      : Console.error(`Fatal error: ${Cause.pretty(cause)}`)
   )
 )
 
