@@ -5,17 +5,22 @@ alwaysApply: true
 ---
 # General
 
-Sacrifice grammar in favour of concision. Write like a good software engineer would write to another.
+- Sacrifice grammar in favour of concision. Write like a good software engineer would write to another.
 
-# Project Conventions
+# What we're building
+
+See README.md for context
+
+# Typescript
+
 - Use bun as runtime and package manager
 - Run using `doppler run -- bun src/main.ts` (for env vars)
 - kebab-case filenames
 - tests using vitest; colocate test files with .test.ts
 - import using .ts extension; no .js
+- Use comments sparingly to explain any additional context and "why" that isn't evident from the code. Don't redundantly describe the code below.
 
-
-# Use of effect
+## Use of effect
 
 <!-- effect-solutions:start -->
 ## Effect Solutions Usage
@@ -29,13 +34,6 @@ Sacrifice grammar in favour of concision. Write like a good software engineer wo
 
 **Effect Patterns Knowledge Base:** Cross-reference with `~/src/github.com/PaulJPhilp/EffectPatterns` for community patterns in `content/` and `packages/`.
 
-## Core Concept: Context
-
-A **Context** is a named, ordered list of events. The only operation is `addEvents`:
-1. Appends input events (UserMessage)
-2. Triggers LLM with full history
-3. Streams back events (TextDelta ephemeral, AssistantMessage persisted)
-4. Persists new events
 
 ## Services with Context.Tag (Canonical Pattern)
 
@@ -183,6 +181,21 @@ Effect.gen(function*() {
 })
 ```
 
+## Vitest test Fixtures (test/fixtures.ts)
+
+Use `test` from `./fixtures.js` for e2e tests needing isolated temp directories:
+
+```typescript
+import { test, expect } from "./fixtures.js"
+
+test("my test", async ({ testDir }) => {
+  // testDir is a unique temp directory for this test
+  // Files written here are preserved for debugging
+})
+```
+
+Suite directory logged once per file; test directory only logged on failure.
+
 ## Testing with testLayer
 
 Use `Layer.sync` for test layers (cleaner than `Layer.effect(Effect.sync(...))`):
@@ -215,89 +228,9 @@ static readonly testLayer = Layer.sync(MyService, () => {
 })
 ```
 
-## Layer Composition
-
-```typescript
-// Service layer with dependencies
-const MyServiceLayer = MyService.layer.pipe(
-  Layer.provide(DependencyService.layer)
-)
-
-// Main layer composition
-const MainLayer = Layer.mergeAll(
-  MyServiceLayer,
-  OtherService.layer,
-  BunContext.layer
-)
-
-// Run
-myEffect.pipe(
-  Effect.provide(MainLayer),
-  BunRuntime.runMain
-)
-```
-
-## Streams
-
-```typescript
-const myStream: Stream.Stream<Event, Error, Deps> = Stream.unwrap(
-  Effect.gen(function*() {
-    const service = yield* SomeService
-    return pipe(
-      service.getData(),
-      Stream.map((item) => transformFn(item)),
-      Stream.tap((item) => Effect.log(`Got: ${item}`))
-    )
-  })
-)
-
-// Run stream
-yield* myStream.pipe(Stream.runForEach((event) => handleEvent(event)))
-```
-
-## File Structure
-
-```
-src/
-├── errors.ts             # TaggedError types
-├── context.model.ts      # Schemas (TaggedClass, branded types)
-├── context.repository.ts # Data access (Context.Tag + layer + testLayer)
-├── context.service.ts    # Domain logic (Context.Tag + layer + testLayer)
-├── config.ts             # Config service (Context.Tag)
-├── llm.ts               # Pure functions
-├── logging.ts           # Logging layer
-├── tracing/             # Infrastructure
-│   ├── index.ts         # Main exports
-│   └── *.ts             # Provider modules
-├── cli.ts               # CLI commands
-└── main.ts              # Entry point
-```
-
-## Import Conventions
-
-```typescript
-// Namespace imports (recommended)
-import { Effect, Layer, Stream, Config, Option } from "effect"
-import { Schema } from "effect"
-
-// Platform imports
-import { FileSystem, Path, Terminal } from "@effect/platform"
-import { BunContext, BunRuntime } from "@effect/platform-bun"
-```
-
 ## Common Patterns
 
 **Generator vs Pipe**: Use `Effect.gen` for business logic with control flow; use `pipe()` for linear transformations.
-
-**Running Effects**: Use `BunRuntime.runMain` for CLI apps. Use `Effect.runFork` for fire-and-forget.
-
-**Avoid tacit/point-free style**:
-```typescript
-// ❌ Bad
-Effect.map(fn)
-// ✅ Good
-Effect.map((x) => fn(x))
-```
 
 **Service interfaces don't leak dependencies** - dependencies are resolved in the layer, not exposed in the service interface.
 
