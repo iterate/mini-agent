@@ -16,6 +16,7 @@ import {
   type MiniAgentConfig as MiniAgentConfigType,
   resolveBaseDir
 } from "./config.js"
+import { ContextRepository } from "./context.repository.js"
 import { ContextService } from "./context.service.js"
 import { createLoggingLayer, type LoggingConfig } from "./logging.js"
 import { createTracingLayer } from "./tracing/index.js"
@@ -102,10 +103,13 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
       const loggingLayer = makeLoggingLayer(config, cliLogLevel)
       const languageModelLayer = makeLanguageModelLayer(config)
 
-      // ContextService requires FileSystem + Path from BunContext
-      const contextServiceLayer = ContextService.Default.pipe(
+      // ContextService requires ContextRepository, which needs FileSystem + Path + AppConfig
+      const contextRepositoryLayer = ContextRepository.layer.pipe(
         Layer.provide(BunContext.layer),
         Layer.provide(appConfigLayer)
+      )
+      const contextServiceLayer = ContextService.layer.pipe(
+        Layer.provide(contextRepositoryLayer)
       )
 
       return Layer.mergeAll(

@@ -26,7 +26,7 @@ export const streamLLMResponse = (
   events: ReadonlyArray<PersistedEvent>
 ): Stream.Stream<ContextEvent, AiError.AiError, LanguageModel.LanguageModel> =>
   Stream.unwrap(
-    Effect.gen(function*() {
+    Effect.fn("streamLLMResponse")(function*() {
       const model = yield* LanguageModel.LanguageModel
       const fullResponseRef = yield* Ref.make("")
 
@@ -52,5 +52,5 @@ export const streamLLMResponse = (
           )
         )
       )
-    })
+    })()
   )

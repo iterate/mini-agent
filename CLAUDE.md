@@ -37,36 +37,48 @@ A **Context** is a named, ordered list of events. The only operation is `addEven
 3. Streams back events (TextDelta ephemeral, AssistantMessage persisted)
 4. Persists new events
 
-## Services with Effect.Service
+## Services with Context.Tag (Canonical Pattern)
+
+Services define a contract (interface) separate from implementation. Use `Context.Tag` with static `layer` and `testLayer` properties:
 
 ```typescript
-export class MyService extends Effect.Service<MyService>()("@app/MyService", {
-  effect: Effect.gen(function*() {
-    const dep = yield* SomeDependency
-
-    // Use Effect.fn for call-site tracing
-    const doSomething = Effect.fn("MyService.doSomething")(
-      function*(input: string) {
-        yield* Effect.log(`Processing: ${input}`)
-        return "result"
-      }
-    )
-
-    return { doSomething }
-  }),
-  dependencies: [SomeDependency.Default],
-  accessors: true
-}) {
-  // Test layer for unit tests
-  static readonly testLayer = Layer.effect(
+class MyService extends Context.Tag("@app/MyService")<
+  MyService,
+  {
+    readonly doSomething: (input: string) => Effect.Effect<string>
+  }
+>() {
+  // Production layer with dependencies
+  static readonly layer = Layer.effect(
     MyService,
-    Effect.sync(() => ({
-      _tag: "MyService" as const,
-      doSomething: (input: string) => Effect.succeed(`mock: ${input}`)
-    } satisfies MyService))
+    Effect.gen(function*() {
+      const dep = yield* SomeDependency
+
+      // Use Effect.fn for call-site tracing
+      const doSomething = Effect.fn("MyService.doSomething")(
+        function*(input: string) {
+          yield* Effect.log(`Processing: ${input}`)
+          return "result"
+        }
+      )
+
+      return MyService.of({ doSomething })
+    })
+  )
+
+  // Test layer with mock implementation
+  static readonly testLayer = Layer.sync(MyService, () =>
+    MyService.of({
+      doSomething: (input) => Effect.succeed(`mock: ${input}`)
+    })
   )
 }
 ```
+
+**Why Context.Tag over Effect.Service:**
+- Supports service-driven development (sketch interfaces before implementations)
+- Explicit separation of contract and implementation
+- Clearer dependency graph
 
 ## Branded Types
 
@@ -173,6 +185,8 @@ Effect.gen(function*() {
 
 ## Testing with testLayer
 
+Use `Layer.sync` for test layers (cleaner than `Layer.effect(Effect.sync(...))`):
+
 ```typescript
 import { describe, expect, it } from "@effect/vitest"
 
@@ -188,18 +202,31 @@ describe("MyService", () => {
 })
 ```
 
+**Test layer pattern:**
+```typescript
+static readonly testLayer = Layer.sync(MyService, () => {
+  // Mutable state is fine in tests - JS is single-threaded
+  const store = new Map<string, Data>()
+  
+  return MyService.of({
+    get: (key) => Effect.succeed(store.get(key)),
+    set: (key, value) => Effect.sync(() => void store.set(key, value))
+  })
+})
+```
+
 ## Layer Composition
 
 ```typescript
 // Service layer with dependencies
-const MyServiceLayer = MyService.Default.pipe(
-  Layer.provide(DependencyService.Default)
+const MyServiceLayer = MyService.layer.pipe(
+  Layer.provide(DependencyService.layer)
 )
 
 // Main layer composition
 const MainLayer = Layer.mergeAll(
   MyServiceLayer,
-  OtherService.Default,
+  OtherService.layer,
   BunContext.layer
 )
 
@@ -234,9 +261,9 @@ yield* myStream.pipe(Stream.runForEach((event) => handleEvent(event)))
 src/
 ├── errors.ts             # TaggedError types
 ├── context.model.ts      # Schemas (TaggedClass, branded types)
-├── context.repository.ts # Data access (Effect.Service + testLayer)
-├── context.service.ts    # Domain logic (Effect.Service + testLayer)
-├── config.ts             # Config service
+├── context.repository.ts # Data access (Context.Tag + layer + testLayer)
+├── context.service.ts    # Domain logic (Context.Tag + layer + testLayer)
+├── config.ts             # Config service (Context.Tag)
 ├── llm.ts               # Pure functions
 ├── logging.ts           # Logging layer
 ├── tracing/             # Infrastructure
@@ -272,7 +299,7 @@ Effect.map(fn)
 Effect.map((x) => fn(x))
 ```
 
-**Service interfaces don't leak dependencies** - deps are in `dependencies` array, not return types.
+**Service interfaces don't leak dependencies** - dependencies are resolved in the layer, not exposed in the service interface.
 
 **Effect.fn for tracing**: Wrap service methods with `Effect.fn("ServiceName.methodName")` for automatic span creation.
 
