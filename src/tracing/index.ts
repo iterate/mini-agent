@@ -138,7 +138,7 @@ export const createTracingLayer = (serviceName: string) =>
                 yield* Effect.logDebug(`→ ${terminalLink(provider.name, url)}`)
               }
             }
-          })
+          }).pipe(Effect.annotateLogs("source", "tracing"))
       })
 
       // Create the NodeSdk layer with ALL processors
@@ -198,4 +198,4 @@ export const withTraceLinks = <A, E, R>(
     }
 
     return yield* effect
-  })
+  }).pipe(Effect.annotateLogs("source", "tracing"))

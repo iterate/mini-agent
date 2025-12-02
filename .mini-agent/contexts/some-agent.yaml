@@ -316,3 +316,91 @@ events:
       Breezes through the trees,  
       Crickets serenade the dusk,  
       Nature's lullaby.  
+  - _tag: UserMessage
+    content: boop
+  - _tag: AssistantMessage
+    content: Boop! How can I help you? 😊
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Morning mist arises,  
+      Cascading over the hills,  
+      A new day awakens.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Desert sands whisper,  
+      Underneath the blazing sun,  
+      Time ebbs like a wave.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Twilight shadows stretch,  
+      Fireflies light the evening path,  
+      Magic lingers near.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Quiet river bends,  
+      Reflections of the dusk glow,  
+      Peace flows with the tide.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Pine cones gather dust,  
+      In the heart of the still woods,  
+      Time whispers softly.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Candlelight flickers,  
+      Shadows dance upon the walls,  
+      Warmth wraps the room tight.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Fields of golden grain,  
+      Windswept whispers through the stalks,  
+      Harvest dreams take flight.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Morning clouds drift slow,  
+      Sunrise breaks in hues of pink,  
+      A day’s promise glows.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Frost clings to the trees,  
+      Nature wears a crystal coat,  
+      Winter's breath is near.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Whispering night breeze,  
+      Moonlight dances on still lakes,  
+      Dreams drift like soft mist.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Vibrant petals bloom,  
+      Colors burst in sunlit fields,  
+      Nature's canvas bright.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Gentle rain falls soft,  
+      Earth drinks deep, a thirst fulfilled,  
+      Life awakens fresh.  

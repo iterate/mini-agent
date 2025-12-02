@@ -209,6 +209,26 @@ Effect.logError("Request failed", { error }).pipe(
 )
 ```
 
+## Log Annotations and Spans
+
+**Annotations** add structured metadata to all logs within an effect scope. Use `Effect.annotateLogs` to attach key-value pairs (e.g., requestId, userId) that appear in every log emitted by nested effects.
+
+**Spans** track execution duration. Wrap an effect with `Effect.withLogSpan("label")` to automatically include timing in logs—useful for performance debugging.
+
+```typescript
+const program = Effect.gen(function*() {
+  yield* Effect.log("Starting")
+  yield* doWork()
+  yield* Effect.log("Done")
+}).pipe(
+  Effect.annotateLogs({ requestId: "abc123", userId: "user42" }),
+  Effect.withLogSpan("processRequest")
+)
+// Logs include: requestId=abc123 userId=user42 processRequest=152ms
+```
+
+See [Effect logging docs](https://effect.website/docs/observability/logging/#log-spans) for details.
+
 ## Vitest test Fixtures (test/fixtures.ts)
 
 Use `test` from `./fixtures.js` for e2e tests needing isolated temp directories:

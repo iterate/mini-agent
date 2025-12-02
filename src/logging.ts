@@ -7,6 +7,7 @@
 import { PlatformLogger } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
 import { Effect, Layer, Logger, LogLevel } from "effect"
+import * as YamlLogger from "./yaml-logger.ts"
 
 // =============================================================================
 // Logging Configuration
@@ -27,7 +28,7 @@ const generateLogFilename = (): string => {
   const pad = (n: number) => n.toString().padStart(2, "0")
   const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
   const time = `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`
-  return `${date}_${time}.json`
+  return `${date}_${time}.yaml`
 }
 
 // =============================================================================
@@ -55,7 +56,7 @@ export const createLoggingLayer = (config: LoggingConfig): Layer.Layer<never> =>
   const stdoutDisabled = config.stdoutLogLevel === LogLevel.None
   const fileDisabled = config.fileLogLevel === LogLevel.None
 
-  // Console logger with level filter
+  // Console logger with level filter (using our custom PrettyLogger)
   const consoleLogger = stdoutDisabled
     ? Logger.none
     : Logger.filterLogLevel(
@@ -81,8 +82,9 @@ export const createLoggingLayer = (config: LoggingConfig): Layer.Layer<never> =>
   const effectiveStdoutLevel = stdoutDisabled ? LogLevel.None : config.stdoutLogLevel
   const globalMinLevel = minLogLevel(effectiveStdoutLevel, config.fileLogLevel)
 
-  // File logger effect (scoped resource)
-  const fileLoggerEffect = Logger.jsonLogger.pipe(
+  // File logger effect (scoped resource) - using our custom YamlLogger
+  // Use makeStringified which returns strings for file output
+  const fileLoggerEffect = YamlLogger.makeStringified().pipe(
     PlatformLogger.toFile(logPath, { batchWindow: "100 millis" }),
     Effect.map((fileLogger) =>
       Logger.filterLogLevel(fileLogger, (level) => LogLevel.greaterThanEqual(level, config.fileLogLevel))
@@ -102,22 +104,6 @@ export const createLoggingLayer = (config: LoggingConfig): Layer.Layer<never> =>
   // minimumLogLevel ensures DEBUG messages reach the file logger even when stdout is INFO
   return Layer.mergeAll(consoleLayer, fileLayer, Logger.minimumLogLevel(globalMinLevel))
 }
-
-// =============================================================================
-// Convenience Functions
-// =============================================================================
-
-/**
- * Console-only logging layer.
- */
-export const consoleLoggingLayer = (level: LogLevel.LogLevel): Layer.Layer<never> =>
-  Logger.replace(
-    Logger.defaultLogger,
-    Logger.filterLogLevel(
-      Logger.prettyLogger(),
-      (l) => LogLevel.greaterThanEqual(l, level)
-    )
-  )
 
 /**
  * Disable all logging.

@@ -29,7 +29,7 @@ export const streamLLMResponse = (
     Effect.fn("streamLLMResponse")(function*() {
       const model = yield* LanguageModel.LanguageModel
       const fullResponseRef = yield* Ref.make("")
-
+      yield* Effect.logDebug("Streaming LLM response")
       return pipe(
         // Convert persisted events to LLM message format
         events.map((event) => event.toLLMMessage()),
