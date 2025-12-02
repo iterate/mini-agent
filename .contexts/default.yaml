@@ -22,3 +22,13 @@ events:
     content: hello
   - _tag: AssistantMessage
     content: Hello again! What would you like to talk about?
+  - _tag: UserMessage
+    content: "Say exactly: HELLO"
+  - _tag: AssistantMessage
+    content: HELLO!
+  - _tag: UserMessage
+    content: "Say exactly: HELLO"
+  - _tag: UserMessage
+    content: "Say exactly: HELLO"
+  - _tag: UserMessage
+    content: "Say exactly: HELLO"

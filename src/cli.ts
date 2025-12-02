@@ -1,35 +1,25 @@
+/**
+ * CLI Commands
+ *
+ * Defines the CLI interface for the chat application.
+ */
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
-import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { FetchHttpClient, FileSystem, Terminal } from "@effect/platform"
-import { Effect, Console, Config, Layer, Cause, Option, Stream } from "effect"
+import { Terminal } from "@effect/platform"
 import { Telemetry, Prompt } from "@effect/ai"
-import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
-import { createTracingLayer, TraceLinks } from "./shared/tracing"
+import { Effect, Console, Layer, Option, Schema, Stream } from "effect"
 import {
-  addEvents,
-  loadContext,
-  getDisplayableEvents
-} from "./shared/context"
-import {
-  UserMessageEvent,
-  isTextDelta,
-  isAssistantMessage,
+  AssistantMessageEvent,
   type ContextEvent,
-  type PersistedEvent
-} from "./shared/schema"
-
-// =============================================================================
-// Configuration
-// =============================================================================
-
-const OpenAiApiKey = Config.redacted("OPENAI_API_KEY")
-const OpenAiModel = Config.string("OPENAI_MODEL").pipe(Config.withDefault("gpt-4o-mini"))
+  type PersistedEvent,
+  TextDeltaEvent,
+  UserMessageEvent
+} from "./context.model.js"
+import { ContextService } from "./context.service.js"
+import { printTraceLinks } from "./tracing/index.js"
 
 // =============================================================================
 // CLI Options
 // =============================================================================
-
-const CONTEXTS_DIR = ".contexts"
 
 const nameOption = Options.text("name").pipe(
   Options.withAlias("n"),
@@ -43,7 +33,6 @@ const messageOption = Options.text("message").pipe(
   Options.optional
 )
 
-
 const rawOption = Options.boolean("raw").pipe(
   Options.withAlias("r"),
   Options.withDescription("Output events as JSON objects, one per line"),
@@ -56,9 +45,8 @@ const showEphemeralOption = Options.boolean("show-ephemeral").pipe(
   Options.withDefault(false)
 )
 
-
 // =============================================================================
-// Event Stream Handler
+// Output Options
 // =============================================================================
 
 interface OutputOptions {
@@ -66,40 +54,10 @@ interface OutputOptions {
   showEphemeral: boolean
 }
 
-/** Handle a single context event based on output options */
-const handleEvent = (event: ContextEvent, options: OutputOptions): Effect.Effect<void> => {
-  if (options.raw) {
-    // Raw mode: output as JSON, one per line
-    // Skip ephemeral events unless explicitly requested
-    if (isTextDelta(event) && !options.showEphemeral) {
-      return Effect.void
-    }
-    return Console.log(JSON.stringify(event, null, 2))
-  }
-  
-  // Normal mode: always stream text deltas, newline after complete response
-  if (isTextDelta(event)) {
-    return Effect.sync(() => process.stdout.write(event.delta))
-  }
-  if (isAssistantMessage(event)) {
-    return Console.log("")
-  }
-  return Effect.void
-}
-
-/** Run the event stream, handling each event */
-const runEventStream = (contextName: string, userMessage: string, options: OutputOptions) => {
-  const userEvent = UserMessageEvent.make({ content: userMessage })
-  return addEvents(contextName, [userEvent]).pipe(
-    Stream.runForEach((event) => handleEvent(event, options))
-  )
-}
-
 // =============================================================================
-// History Display
+// ANSI Styling
 // =============================================================================
 
-// ANSI styling helpers
 const bold = (s: string) => `\x1b[1m${s}\x1b[0m`
 const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`
@@ -110,17 +68,53 @@ const assistantLabel = bold(green("Assistant:"))
 const dimUserLabel = dimCyan("You:")
 const dimAssistantLabel = dimGreen("Assistant:")
 
+// =============================================================================
+// Event Handling
+// =============================================================================
+
+/** Handle a single context event based on output options */
+const handleEvent = (event: ContextEvent, options: OutputOptions): Effect.Effect<void> => {
+  if (options.raw) {
+    if (Schema.is(TextDeltaEvent)(event) && !options.showEphemeral) {
+      return Effect.void
+    }
+    return Console.log(JSON.stringify(event, null, 2))
+  }
+
+  if (Schema.is(TextDeltaEvent)(event)) {
+    return Effect.sync(() => process.stdout.write(event.delta))
+  }
+  if (Schema.is(AssistantMessageEvent)(event)) {
+    return Console.log("")
+  }
+  return Effect.void
+}
+
+/** Run the event stream, handling each event */
+const runEventStream = (contextName: string, userMessage: string, options: OutputOptions) =>
+  Effect.gen(function*() {
+    const contextService = yield* ContextService
+    const userEvent = new UserMessageEvent({ content: userMessage })
+    yield* contextService.addEvents(contextName, [userEvent]).pipe(
+      Stream.runForEach((event) => handleEvent(event, options))
+    )
+  })
+
+// =============================================================================
+// History Display
+// =============================================================================
+
 /** Display previous conversation history */
 const displayHistory = (events: ReadonlyArray<PersistedEvent>) =>
-  Effect.gen(function* () {
-    const displayable = getDisplayableEvents(events)
-    if (displayable.length === 0) return
+  Effect.gen(function*() {
+    const messages = events.filter((e) => e._tag === "UserMessage" || e._tag === "AssistantMessage")
+    if (messages.length === 0) return
 
     yield* Console.log(dim("─".repeat(50)))
     yield* Console.log(dim("Previous conversation:"))
     yield* Console.log("")
 
-    for (const event of displayable) {
+    for (const event of messages) {
       const prefix = event._tag === "UserMessage" ? dimUserLabel : dimAssistantLabel
       yield* Console.log(prefix)
       yield* Console.log(dim(event.content))
@@ -133,7 +127,7 @@ const displayHistory = (events: ReadonlyArray<PersistedEvent>) =>
 
 /** Display raw event history as JSON */
 const displayRawHistory = (events: ReadonlyArray<PersistedEvent>) =>
-  Effect.gen(function* () {
+  Effect.gen(function*() {
     for (const event of events) {
       yield* Console.log(dim(JSON.stringify(event, null, 2)))
     }
@@ -145,13 +139,11 @@ const displayRawHistory = (events: ReadonlyArray<PersistedEvent>) =>
 
 /** Single conversation turn */
 const conversationTurn = (contextName: string, options: OutputOptions) =>
-  Effect.gen(function* () {
+  Effect.gen(function*() {
     const input = yield* CliPrompt.text({ message: bold(cyan("You")) })
 
-    // Skip empty input
     if (input.trim() === "") return
 
-    // Stream response
     if (!options.raw) {
       yield* Console.log(`\n${assistantLabel}`)
     }
@@ -177,30 +169,16 @@ const conversationLoop = (contextName: string, options: OutputOptions) =>
 
 const NEW_CONTEXT_VALUE = "__new__"
 
-/** List all existing context files */
-const listContexts = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem
-  const exists = yield* fs.exists(CONTEXTS_DIR)
-  if (!exists) return []
-  
-  const entries = yield* fs.readDirectory(CONTEXTS_DIR)
-  return entries
-    .filter((name) => name.endsWith(".yaml"))
-    .map((name) => name.replace(/\.yaml$/, ""))
-    .sort()
-})
-
 /** Prompt user to select an existing context or create a new one */
-const selectOrCreateContext = Effect.gen(function* () {
-  const contexts = yield* listContexts
-  
+const selectOrCreateContext = Effect.gen(function*() {
+  const contextService = yield* ContextService
+  const contexts = yield* contextService.list()
+
   if (contexts.length === 0) {
-    // No existing contexts, prompt for new name
     yield* Console.log("No existing contexts found.")
     return yield* CliPrompt.text({ message: "Enter a name for your new context" })
   }
-  
-  // Build choices: "Create new" option first, then existing contexts
+
   const choices = [
     {
       title: "➕ New context",
@@ -213,45 +191,31 @@ const selectOrCreateContext = Effect.gen(function* () {
       description: "Continue with this context"
     }))
   ]
-  
+
   const selected = yield* CliPrompt.select({
     message: "Select context",
     choices
   })
-  
+
   if (selected === NEW_CONTEXT_VALUE) {
     return yield* CliPrompt.text({ message: "Enter a name for your new conversation" })
   }
-  
+
   return selected
-})
-
-// =============================================================================
-// Trace Links
-// =============================================================================
-
-/** Print trace links on exit if available */
-const printTraceLinks = Effect.gen(function* () {
-  const traceLinks = yield* TraceLinks
-  const maybeSpan = yield* Effect.currentSpan.pipe(Effect.option)
-
-  yield* Option.match(maybeSpan, {
-    onNone: () => Effect.void,
-    onSome: (span) => traceLinks.printLinks(span.traceId)
-  })
 })
 
 // =============================================================================
 // Main Command Handler
 // =============================================================================
 
-const runChat = (options: { 
+const runChat = (options: {
   name: Option.Option<string>
   message: Option.Option<string>
   raw: boolean
   showEphemeral: boolean
 }) =>
-  Effect.gen(function* () {
+  Effect.gen(function*() {
+    const contextService = yield* ContextService
     const outputOptions: OutputOptions = { raw: options.raw, showEphemeral: options.showEphemeral }
     const hasMessage = Option.isSome(options.message) && Option.getOrElse(options.message, () => "").trim() !== ""
     const isTTY = process.stdin.isTTY === true
@@ -261,7 +225,7 @@ const runChat = (options: {
       const contextName = Option.isSome(options.name)
         ? Option.getOrElse(options.name, () => "")
         : "default"
-      
+
       const message = Option.getOrElse(options.message, () => "")
       yield* runEventStream(contextName, message, outputOptions)
 
@@ -273,8 +237,8 @@ const runChat = (options: {
       const contextName = Option.isSome(options.name)
         ? Option.getOrElse(options.name, () => "")
         : yield* selectOrCreateContext
-      
-      const existingEvents = yield* loadContext(contextName)
+
+      const existingEvents = yield* contextService.load(contextName)
       const hasHistory = existingEvents.length > 1
 
       if (options.raw) {
@@ -294,13 +258,12 @@ const runChat = (options: {
       yield* conversationLoop(contextName, outputOptions).pipe(
         Effect.catchIf(Terminal.isQuitException, () => Effect.void),
         Effect.ensuring(
-          options.raw 
-            ? Effect.void 
+          options.raw
+            ? Effect.void
             : printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!")))
         )
       )
     } else {
-      // Not a TTY and no message - explain
       yield* Console.error("Error: No TTY detected. Use -m <message> for non-interactive mode.")
     }
   }).pipe(Effect.withSpan("chat-session"))
@@ -322,8 +285,8 @@ interface CleanMessage {
 }
 
 /** Convert prompt to clean messages, merging consecutive same-role messages */
-const promptToCleanMessages = (prompt: Prompt.Prompt): CleanMessage[] => {
-  const raw: CleanMessage[] = []
+const promptToCleanMessages = (prompt: Prompt.Prompt): Array<CleanMessage> => {
+  const raw: Array<CleanMessage> = []
   for (const msg of prompt.content) {
     if (msg.role === "system") {
       raw.push({ role: "system", content: msg.content })
@@ -333,9 +296,8 @@ const promptToCleanMessages = (prompt: Prompt.Prompt): CleanMessage[] => {
     }
   }
 
-  // Merge consecutive same-role messages
   if (raw.length === 0) return []
-  const result: CleanMessage[] = []
+  const result: Array<CleanMessage> = []
   let current = { ...raw[0]! }
 
   for (let i = 1; i < raw.length; i++) {
@@ -352,7 +314,7 @@ const promptToCleanMessages = (prompt: Prompt.Prompt): CleanMessage[] => {
   return result
 }
 
-/** Extract text from Response parts (handles both text and text-delta) */
+/** Extract text from Response parts */
 const extractResponseText = (parts: ReadonlyArray<{ type: string; text?: string; delta?: string }>): string =>
   parts
     .filter((p): p is typeof p & { text: string } | typeof p & { delta: string } =>
@@ -361,9 +323,9 @@ const extractResponseText = (parts: ReadonlyArray<{ type: string; text?: string;
     .map((p) => ("text" in p && p.text) ? p.text : ("delta" in p && p.delta) ? p.delta : "")
     .join("")
 
-const GenAISpanTransformerLayer = Layer.succeed(
+export const GenAISpanTransformerLayer = Layer.succeed(
   Telemetry.CurrentSpanTransformer,
-  ({ prompt, span, response }) => {
+  ({ prompt, response, span }) => {
     const input = promptToCleanMessages(prompt)
     const outputText = extractResponseText(response as ReadonlyArray<{ type: string; text?: string; delta?: string }>)
     const output = outputText ? [{ role: "assistant", content: outputText }] : []
@@ -374,53 +336,23 @@ const GenAISpanTransformerLayer = Layer.succeed(
 )
 
 // =============================================================================
-// Layer Setup
-// =============================================================================
-
-const makeLanguageModelLayer = (apiKey: Config.Config.Success<typeof OpenAiApiKey>, model: string) =>
-  Layer.mergeAll(OpenAiLanguageModel.layer({ model }), GenAISpanTransformerLayer).pipe(
-    Layer.provide(OpenAiClient.layer({ apiKey }).pipe(Layer.provide(FetchHttpClient.layer)))
-  )
-
-const LanguageModelLayer = Layer.unwrapEffect(
-  Effect.gen(function* () {
-    const apiKey = yield* OpenAiApiKey
-    const model = yield* OpenAiModel
-    return makeLanguageModelLayer(apiKey, model)
-  })
-)
-
-// =============================================================================
 // CLI Definition
 // =============================================================================
 
 const chatCommand = Command.make(
   "chat",
-  { 
-    name: nameOption, 
+  {
+    name: nameOption,
     message: messageOption,
     raw: rawOption,
     showEphemeral: showEphemeralOption
   },
-  ({ name, message, raw, showEphemeral }) => 
-    runChat({ name, message, raw, showEphemeral })
+  ({ message, name, raw, showEphemeral }) =>
+    runChat({ message, name, raw, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
-const cli = Command.run(chatCommand, {
+export const cli = Command.run(chatCommand, {
   name: "chat",
   version: "1.0.0"
 })
 
-// =============================================================================
-// Main Entry Point
-// =============================================================================
-
-const MainLayer = Layer.mergeAll(LanguageModelLayer, BunContext.layer, createTracingLayer("new-cli"))
-
-cli(process.argv).pipe(
-  Effect.provide(MainLayer),
-  Effect.catchAllCause((cause) =>
-    Cause.isInterruptedOnly(cause) ? Effect.void : Console.error(`Fatal error: ${Cause.pretty(cause)}`)
-  ),
-  BunRuntime.runMain
-)

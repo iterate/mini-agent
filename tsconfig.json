@@ -1,37 +1,35 @@
 {
   "compilerOptions": {
-    // Environment setup & latest features
-    "lib": ["ESNext"],
-    "target": "ESNext",
-    "module": "Preserve",
+    // Environment
+    "lib": ["ES2022"],
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "moduleDetection": "force",
-    "jsx": "react-jsx",
-    "allowJs": true,
 
-    // Bundler mode
-    "moduleResolution": "bundler",
+    // Bundler mode (Bun handles transpilation)
+    "noEmit": true,
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
-    "noEmit": true,
 
-    // Best practices
+    // Strict type checking (required for Effect)
     "strict": true,
-    "skipLibCheck": true,
+    "exactOptionalPropertyTypes": true,
     "noFallthroughCasesInSwitch": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
-
-    // Effect-recommended strictness
-    "exactOptionalPropertyTypes": true,
     "noUnusedLocals": true,
     "noUnusedParameters": true,
-    "noPropertyAccessFromIndexSignature": false,
+
+    // Other
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "esModuleInterop": false,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
 
     // Effect Language Service
-    "plugins": [
-      {
-        "name": "@effect/language-service"
-      }
-    ]
-  }
+    "plugins": [{ "name": "@effect/language-service" }]
+  },
+  "include": ["src", "test"]
 }
