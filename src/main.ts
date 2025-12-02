@@ -98,7 +98,7 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
         : Option.none()
 
       // Build layers
-      const appConfigLayer = AppConfig.layer(config)
+      const appConfigLayer = AppConfig.fromConfig(config)
       const loggingLayer = makeLoggingLayer(config, cliLogLevel)
       const languageModelLayer = makeLanguageModelLayer(config)
 

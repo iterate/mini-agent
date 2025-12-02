@@ -154,17 +154,56 @@ export type MiniAgentConfig = Config.Config.Success<typeof MiniAgentConfig>
 /**
  * Service providing validated application configuration.
  * Services should depend on this and extract only the config slices they need.
+ *
+ * Pattern from: https://www.effect.solutions/config
+ *
+ * Note: This layer reads from the active ConfigProvider, which should be
+ * set up with the composed provider (CLI → env → YAML → defaults) before
+ * this layer is provided.
  */
-export class AppConfig extends Context.Tag("AppConfig")<
+export class AppConfig extends Context.Tag("@app/AppConfig")<
   AppConfig,
   MiniAgentConfig
 >() {
   /**
-   * Create an AppConfig layer from the given configuration.
+   * Layer that loads config from the active ConfigProvider.
+   * Make sure to set up ConfigProvider before providing this layer.
    */
-  static layer(config: MiniAgentConfig): Layer.Layer<AppConfig> {
+  static readonly layer = Layer.effect(
+    AppConfig,
+    Effect.gen(function*() {
+      const config = yield* MiniAgentConfig
+      return config
+    })
+  )
+
+  /**
+   * Create an AppConfig layer from pre-loaded configuration.
+   * Useful when config is loaded externally (e.g., in main.ts).
+   */
+  static fromConfig(config: MiniAgentConfig): Layer.Layer<AppConfig> {
     return Layer.succeed(AppConfig, config)
   }
+
+  /**
+   * Test layer with default configuration values for unit tests.
+   * See: https://www.effect.solutions/testing
+   */
+  static readonly testLayer = Layer.succeed(
+    AppConfig,
+    {
+      openaiApiKey: Redacted.make("test-api-key"),
+      openaiModel: "gpt-4o-mini",
+      dataStorageDir: ".mini-agent-test",
+      configFile: "test.config.yaml",
+      cwd: Option.none(),
+      logging: {
+        stdoutLevel: LogLevel.None,
+        fileLogPath: Option.none(),
+        fileLogLevel: LogLevel.Debug
+      }
+    } satisfies MiniAgentConfig
+  )
 }
 
 // =============================================================================

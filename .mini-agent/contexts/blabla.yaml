@@ -1,0 +1,14 @@
+events:
+  - _tag: SystemPrompt
+    content: |-
+      You are a helpful, friendly assistant.
+      Keep your responses concise but informative.
+      Use markdown formatting when helpful.
+  - _tag: UserMessage
+    content: "hello\x17"
+  - _tag: AssistantMessage
+    content: Hello! How can I assist you today?
+  - _tag: UserMessage
+    content: haha
+  - _tag: AssistantMessage
+    content: Glad to see you in a good mood! What’s on your mind?

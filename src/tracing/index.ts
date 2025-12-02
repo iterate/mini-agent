@@ -132,7 +132,7 @@ export const createTracingLayer = (serviceName: string) =>
         printLinks: (traceId: string) =>
           Effect.gen(function*() {
             if (activeProviders.length > 0) {
-              yield* Console.log("\n📊 Observability links")
+              yield* Console.log("\n\nExiting...\n\n📊 Observability links")
               for (const provider of activeProviders) {
                 const url = provider.buildUrl(traceId)
                 yield* Console.log(`→ ${terminalLink(provider.name, url)}`)

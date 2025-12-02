@@ -4,9 +4,8 @@
  * Handles file I/O for context persistence. Contexts are stored as YAML files
  * in the configured data storage directory.
  */
-import type { Error as PlatformError } from "@effect/platform"
 import { FileSystem, Path } from "@effect/platform"
-import { Effect, Option, Schema } from "effect"
+import { Effect, Layer, Option, Schema } from "effect"
 import * as YAML from "yaml"
 import { AppConfig } from "./config.js"
 import {
@@ -47,86 +46,14 @@ export class ContextRepository extends Effect.Service<ContextRepository>()("Cont
 
     const getContextPath = (contextName: string) => path.join(contextsDir, `${contextName}.yaml`)
 
-    return {
-      /**
-       * Load events from a context file.
-       * Returns empty array if context doesn't exist.
-       */
-      load: (contextName: string): Effect.Effect<Array<PersistedEventType>, PlatformError.PlatformError> =>
-        Effect.gen(function*() {
-          const filePath = getContextPath(contextName)
-          const exists = yield* fs.exists(filePath)
+    // Service methods wrapped with Effect.fn for call-site tracing
+    // See: https://www.effect.solutions/services-and-layers
 
-          if (!exists) {
-            return []
-          }
-
-          return yield* fs.readFileString(filePath).pipe(
-            Effect.map((yaml) => {
-              const parsed = YAML.parse(yaml) as { events?: Array<unknown> }
-              return decodeEvents(parsed?.events ?? [])
-            }),
-            Effect.catchAll(() => Effect.succeed([] as Array<PersistedEventType>))
-          )
-        }),
-
-      /**
-       * Load events from a context, creating it with default system prompt if it doesn't exist.
-       */
-      loadOrCreate: (contextName: string): Effect.Effect<Array<PersistedEventType>, PlatformError.PlatformError> =>
-        Effect.gen(function*() {
-          const filePath = getContextPath(contextName)
-          const exists = yield* fs.exists(filePath)
-
-          if (!exists) {
-            const initialEvents = [new SystemPromptEvent({ content: DEFAULT_SYSTEM_PROMPT })]
-            yield* save(contextName, initialEvents)
-            return initialEvents
-          }
-
-          return yield* fs.readFileString(filePath).pipe(
-            Effect.map((yaml) => {
-              const parsed = YAML.parse(yaml) as { events?: Array<unknown> }
-              return decodeEvents(parsed?.events ?? [])
-            }),
-            Effect.catchAll(() => Effect.succeed([] as Array<PersistedEventType>))
-          )
-        }),
-
-      /**
-       * Save events to a context file.
-       */
-      save: (
-        contextName: string,
-        events: ReadonlyArray<PersistedEventType>
-      ): Effect.Effect<void, PlatformError.PlatformError> => save(contextName, events),
-
-      /**
-       * List all existing context names.
-       */
-      list: (): Effect.Effect<Array<string>, PlatformError.PlatformError> =>
-        Effect.gen(function*() {
-          const exists = yield* fs.exists(contextsDir)
-          if (!exists) return []
-
-          const entries = yield* fs.readDirectory(contextsDir)
-          return entries
-            .filter((name) => name.endsWith(".yaml"))
-            .map((name) => name.replace(/\.yaml$/, ""))
-            .sort()
-        }),
-
-      /**
-       * Get the contexts directory path.
-       */
-      getContextsDir: () => contextsDir
-    }
-
-    function save(
-      contextName: string,
-      events: ReadonlyArray<PersistedEventType>
-    ): Effect.Effect<void, PlatformError.PlatformError> {
-      return Effect.gen(function*() {
+    /**
+     * Save events to a context file.
+     */
+    const save = Effect.fn("ContextRepository.save")(
+      function*(contextName: string, events: ReadonlyArray<PersistedEventType>) {
         const filePath = getContextPath(contextName)
 
         // Ensure directory exists
@@ -142,8 +69,110 @@ export class ContextRepository extends Effect.Service<ContextRepository>()("Cont
 
         const yaml = YAML.stringify({ events: plainEvents })
         yield* fs.writeFileString(filePath, yaml)
-      })
+      }
+    )
+
+    /**
+     * Load events from a context file.
+     * Returns empty array if context doesn't exist.
+     */
+    const load = Effect.fn("ContextRepository.load")(
+      function*(contextName: string) {
+        const filePath = getContextPath(contextName)
+        const exists = yield* fs.exists(filePath)
+
+        if (!exists) {
+          return [] as Array<PersistedEventType>
+        }
+
+        return yield* fs.readFileString(filePath).pipe(
+          Effect.map((yaml) => {
+            const parsed = YAML.parse(yaml) as { events?: Array<unknown> }
+            return decodeEvents(parsed?.events ?? [])
+          }),
+          Effect.catchAll(() => Effect.succeed([] as Array<PersistedEventType>))
+        )
+      }
+    )
+
+    /**
+     * Load events from a context, creating it with default system prompt if it doesn't exist.
+     */
+    const loadOrCreate = Effect.fn("ContextRepository.loadOrCreate")(
+      function*(contextName: string) {
+        const filePath = getContextPath(contextName)
+        const exists = yield* fs.exists(filePath)
+
+        if (!exists) {
+          const initialEvents = [new SystemPromptEvent({ content: DEFAULT_SYSTEM_PROMPT })]
+          yield* save(contextName, initialEvents)
+          return initialEvents
+        }
+
+        return yield* fs.readFileString(filePath).pipe(
+          Effect.map((yaml) => {
+            const parsed = YAML.parse(yaml) as { events?: Array<unknown> }
+            return decodeEvents(parsed?.events ?? [])
+          }),
+          Effect.catchAll(() => Effect.succeed([] as Array<PersistedEventType>))
+        )
+      }
+    )
+
+    /**
+     * List all existing context names.
+     */
+    const list = Effect.fn("ContextRepository.list")(
+      function*() {
+        const exists = yield* fs.exists(contextsDir)
+        if (!exists) return [] as Array<string>
+
+        const entries = yield* fs.readDirectory(contextsDir)
+        return entries
+          .filter((name) => name.endsWith(".yaml"))
+          .map((name) => name.replace(/\.yaml$/, ""))
+          .sort()
+      }
+    )
+
+    return {
+      load,
+      loadOrCreate,
+      save,
+      list,
+      /**
+       * Get the contexts directory path.
+       */
+      getContextsDir: () => contextsDir
     }
   }),
   accessors: true
-}) {}
+}) {
+  /**
+   * Test layer with in-memory storage for unit tests.
+   * See: https://www.effect.solutions/testing
+   */
+  static testLayer = Layer.effect(
+    ContextRepository,
+    Effect.sync(() => {
+      const store = new Map<string, Array<PersistedEventType>>()
+
+      return {
+        _tag: "ContextRepository" as const,
+        load: (contextName: string) => Effect.succeed(store.get(contextName) ?? []),
+        loadOrCreate: (contextName: string) =>
+          Effect.sync(() => {
+            const existing = store.get(contextName)
+            if (existing) return existing
+            const initial = [new SystemPromptEvent({ content: DEFAULT_SYSTEM_PROMPT })]
+            store.set(contextName, initial)
+            return initial
+          }),
+        save: (contextName: string, events: ReadonlyArray<PersistedEventType>) =>
+          Effect.sync(() => void store.set(contextName, [...events])),
+        list: () => Effect.sync(() => Array.from(store.keys()).sort()),
+        getContextsDir: () => "/test/contexts"
+      } satisfies ContextRepository
+    })
+  )
+}

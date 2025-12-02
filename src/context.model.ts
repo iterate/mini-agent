@@ -13,6 +13,14 @@
 import { Schema } from "effect"
 
 // =============================================================================
+// Branded Types
+// =============================================================================
+
+/** Branded type for context names - prevents mixing with other strings */
+export const ContextName = Schema.String.pipe(Schema.brand("ContextName"))
+export type ContextName = typeof ContextName.Type
+
+// =============================================================================
 // LLM Message Type
 // =============================================================================
 
@@ -71,7 +79,13 @@ export const PersistedEvent = Schema.Union(
 export type PersistedEvent = typeof PersistedEvent.Type
 
 /** All possible context events (persisted + ephemeral) */
-export type ContextEvent = PersistedEvent | TextDeltaEvent
+export const ContextEvent = Schema.Union(
+  SystemPromptEvent,
+  UserMessageEvent,
+  AssistantMessageEvent,
+  TextDeltaEvent
+)
+export type ContextEvent = typeof ContextEvent.Type
 
 // =============================================================================
 // Configuration

@@ -1,4 +1,25 @@
+This project serves three goals:
+
+1. I want to learn effect and evaluate it for use in [iterate](https://iterate.com)
+2. I want to experiment with some ideas I've had about building agents
+3. I am on parental leave, want to code but don't have enough time to do real work, so I do this
+
 # What is this?
+
+
+This is a CLI for chat agent that maintains persistent conversation contexts. You can have multiple named conversations, and each one keeps its full history.
+
+**Interactive mode** (runs an agent loop until you Ctrl+C):
+
+
+
+
+# Side quests (so far)
+
+- Exploring different OTEL tracing providers - and learned about OTEL gen [AI conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/)
+
+
+
 
 I have a few high level goals
 

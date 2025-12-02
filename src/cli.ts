@@ -5,7 +5,7 @@
  */
 import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
-import { Terminal } from "@effect/platform"
+import { type Error as PlatformError, Terminal } from "@effect/platform"
 import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
 import {
   AssistantMessageEvent,
@@ -92,23 +92,35 @@ const dimAssistantLabel = dimGreen("Assistant:")
 // Event Handling
 // =============================================================================
 
-/** Handle a single context event based on output options */
-const handleEvent = (event: ContextEvent, options: OutputOptions): Effect.Effect<void> => {
-  if (options.raw) {
-    if (Schema.is(TextDeltaEvent)(event) && !options.showEphemeral) {
-      return Effect.void
-    }
-    return Console.log(JSON.stringify(event, null, 2))
-  }
+/**
+ * Handle a single context event based on output options.
+ * Uses Terminal service for output instead of direct process access.
+ * See: https://effect.website/docs/platform/terminal/
+ */
+const handleEvent = (
+  event: ContextEvent,
+  options: OutputOptions
+): Effect.Effect<void, PlatformError.PlatformError, Terminal.Terminal> =>
+  Effect.gen(function*() {
+    const terminal = yield* Terminal.Terminal
 
-  if (Schema.is(TextDeltaEvent)(event)) {
-    return Effect.sync(() => process.stdout.write(event.delta))
-  }
-  if (Schema.is(AssistantMessageEvent)(event)) {
-    return Console.log("")
-  }
-  return Effect.void
-}
+    if (options.raw) {
+      if (Schema.is(TextDeltaEvent)(event) && !options.showEphemeral) {
+        return
+      }
+      yield* Console.log(JSON.stringify(event, null, 2))
+      return
+    }
+
+    if (Schema.is(TextDeltaEvent)(event)) {
+      yield* terminal.display(event.delta)
+      return
+    }
+    if (Schema.is(AssistantMessageEvent)(event)) {
+      yield* Console.log("")
+      return
+    }
+  })
 
 /** Run the event stream, handling each event */
 const runEventStream = (contextName: string, userMessage: string, options: OutputOptions) =>
@@ -266,7 +278,7 @@ const runChat = (options: {
           yield* displayRawHistory(existingEvents)
         }
       } else {
-        yield* Console.log(`\nContext: ${contextName}`)
+        yield* Console.log(`\nContext name: ${contextName}`)
 
         if (hasHistory) {
           yield* displayHistory(existingEvents)
