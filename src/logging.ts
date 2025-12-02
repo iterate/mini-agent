@@ -4,7 +4,7 @@
  * Multi-target logging: console (pretty) + file (JSON).
  * Uses PlatformLogger.toFile for proper resource management.
  */
-import { PlatformLogger } from "@effect/platform"
+import { FileSystem, PlatformLogger } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
 import { Effect, Layer, Logger, LogLevel } from "effect"
 import * as YamlLogger from "./yaml-logger.ts"
@@ -75,7 +75,8 @@ export const createLoggingLayer = (config: LoggingConfig): Layer.Layer<never> =>
   }
 
   // File path (baseDir is already resolved to absolute path)
-  const logPath = `${config.baseDir}/logs/${generateLogFilename()}`
+  const logsDir = `${config.baseDir}/logs`
+  const logPath = `${logsDir}/${generateLogFilename()}`
 
   // Determine the global minimum level - lowest of stdout and file levels
   // This allows messages through to whichever logger accepts them
@@ -83,13 +84,17 @@ export const createLoggingLayer = (config: LoggingConfig): Layer.Layer<never> =>
   const globalMinLevel = minLogLevel(effectiveStdoutLevel, config.fileLogLevel)
 
   // File logger effect (scoped resource) - using our custom YamlLogger
-  // Use makeStringified which returns strings for file output
-  const fileLoggerEffect = YamlLogger.makeStringified().pipe(
-    PlatformLogger.toFile(logPath, { batchWindow: "100 millis" }),
-    Effect.map((fileLogger) =>
-      Logger.filterLogLevel(fileLogger, (level) => LogLevel.greaterThanEqual(level, config.fileLogLevel))
+  // Ensure logs directory exists before creating file logger
+  const fileLoggerEffect = Effect.gen(function*() {
+    const fs = yield* FileSystem.FileSystem
+    yield* fs.makeDirectory(logsDir, { recursive: true })
+    return yield* YamlLogger.makeStringified().pipe(
+      PlatformLogger.toFile(logPath, { batchWindow: "100 millis" }),
+      Effect.map((fileLogger) =>
+        Logger.filterLogLevel(fileLogger, (level) => LogLevel.greaterThanEqual(level, config.fileLogLevel))
+      )
     )
-  )
+  })
 
   // Two separate layers:
   // 1. Replace default with console logger (non-scoped, always available)

@@ -113,8 +113,12 @@ export default [
         }
       ]
     }
+  },
+  // Allow console.log in test files
+  {
+    files: ["test/**/*.ts", "**/*.test.ts"],
+    rules: {
+      "no-console": "off"
+    }
   }
 ]
-
-
-

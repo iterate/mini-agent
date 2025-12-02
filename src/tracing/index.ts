@@ -15,12 +15,12 @@ import * as NodeSdk from "@effect/opentelemetry/NodeSdk"
 import { diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api"
 import type { ConfigError } from "effect"
 import { Config, Context, Effect, Layer, Option } from "effect"
-import { axiomProvider } from "./axiom.js"
-import { honeycombProvider } from "./honeycomb.js"
-import { langfuseProvider } from "./langfuse.js"
-import type { ActiveProvider, ProviderConfig } from "./provider.js"
-import { sentryProvider } from "./sentry.js"
-import { traceloopProvider } from "./traceloop.js"
+import { axiomProvider } from "./axiom.ts"
+import { honeycombProvider } from "./honeycomb.ts"
+import { langfuseProvider } from "./langfuse.ts"
+import type { ActiveProvider, ProviderConfig } from "./provider.ts"
+import { sentryProvider } from "./sentry.ts"
+import { traceloopProvider } from "./traceloop.ts"
 
 // =============================================================================
 // OpenTelemetry Diagnostic Logging
@@ -89,7 +89,7 @@ const collectActiveProviders = (serviceName: string): Effect.Effect<Array<Provid
     if (Option.isSome(langfuse)) providers.push(langfuse.value)
 
     return providers
-  })
+  }).pipe(Effect.annotateLogs("source", "tracing"))
 
 // =============================================================================
 // Create Tracing Layer
@@ -198,4 +198,4 @@ export const withTraceLinks = <A, E, R>(
     }
 
     return yield* effect
-  }).pipe(Effect.annotateLogs("source", "tracing"))
+  })

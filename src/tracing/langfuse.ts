@@ -4,8 +4,8 @@
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
 import type { ConfigError } from "effect"
 import { Config, Effect, Option, Redacted } from "effect"
-import { FetchOtlpExporter } from "./exporter.js"
-import type { ProviderConfig } from "./provider.js"
+import { FetchOtlpExporter } from "./exporter.ts"
+import type { ProviderConfig } from "./provider.ts"
 
 const LangfusePublicKey = Config.option(Config.redacted("LANGFUSE_PUBLIC_KEY"))
 const LangfuseSecretKey = Config.option(Config.redacted("LANGFUSE_SECRET_KEY"))

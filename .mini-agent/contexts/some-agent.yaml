@@ -404,3 +404,52 @@ events:
       Gentle rain falls soft,  
       Earth drinks deep, a thirst fulfilled,  
       Life awakens fresh.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Fire crackles softly,  
+      Warmth spreads through the cozy room,  
+      Stories shared by glow.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Pebbles on the path,  
+      Each step tells a thousand tales,  
+      Journey unfolds slow.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Lone owl calls at dusk,  
+      Echoes through the quiet woods,  
+      Night’s watchful embrace.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Sunflowers turning,  
+      Chasing light across the field,  
+      Joy in every bloom.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Raindrops on the pond,  
+      Ripples dance in fleeting waves,  
+      Nature's soft heartbeat.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Mountains touch the sky,  
+      Clouds drift softly, dreams take flight,  
+      Nature's majesty.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Woodlands bathed in light,  
+      Dappled shadows softly play,  
+      Nature's art revealed.  

@@ -4,8 +4,8 @@
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
 import type { ConfigError } from "effect"
 import { Config, Effect, Option, Redacted } from "effect"
-import { FetchOtlpExporter } from "./exporter.js"
-import type { ProviderConfig } from "./provider.js"
+import { FetchOtlpExporter } from "./exporter.ts"
+import type { ProviderConfig } from "./provider.ts"
 
 const HoneycombApiKey = Config.option(Config.redacted("HONEYCOMB_API_KEY"))
 const HoneycombEndpoint = Config.string("HONEYCOMB_ENDPOINT").pipe(

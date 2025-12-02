@@ -197,3 +197,75 @@ describe("CLI options", () => {
     expect(output).toContain("--config")
   })
 })
+
+// =============================================================================
+// Logging Tests
+// =============================================================================
+
+describe("Logging", () => {
+  describe("stdout log level filtering", () => {
+    test("debug messages hidden at info level (default)", async ({ testDir }) => {
+      const output = await Effect.runPromise(runCli(testDir, "log-test"))
+
+      expect(output).toContain("LOG_TEST_DONE")
+      expect(output).toContain("INFO_MESSAGE")
+      expect(output).not.toContain("DEBUG_MESSAGE")
+    })
+
+    test("debug messages shown at debug level", async ({ testDir }) => {
+      const output = await Effect.runPromise(
+        runCli(testDir, "--stdout-log-level", "debug", "log-test")
+      )
+
+      expect(output).toContain("LOG_TEST_DONE")
+      expect(output).toContain("DEBUG_MESSAGE")
+      expect(output).toContain("INFO_MESSAGE")
+    })
+
+    test("no log messages at error level (only errors shown)", async ({ testDir }) => {
+      const output = await Effect.runPromise(
+        runCli(testDir, "--stdout-log-level", "error", "log-test")
+      )
+
+      expect(output).toContain("LOG_TEST_DONE")
+      expect(output).toContain("ERROR_MESSAGE")
+      expect(output).not.toContain("INFO_MESSAGE")
+      expect(output).not.toContain("DEBUG_MESSAGE")
+    })
+
+    test("no log messages when stdout logging disabled", async ({ testDir }) => {
+      const output = await Effect.runPromise(
+        runCli(testDir, "--stdout-log-level", "none", "log-test")
+      )
+
+      expect(output).toContain("LOG_TEST_DONE")
+      expect(output).not.toContain("INFO_MESSAGE")
+      expect(output).not.toContain("DEBUG_MESSAGE")
+      expect(output).not.toContain("ERROR_MESSAGE")
+    })
+  })
+
+  describe("file logging", () => {
+    test("creates log file with debug messages", async ({ testDir }) => {
+      await Effect.runPromise(runCli(testDir, "log-test"))
+
+      // Wait for file logger to flush (batchWindow is 100ms)
+      await new Promise((resolve) => setTimeout(resolve, 200))
+
+      // Log file should be created in testDir/.mini-agent/logs/
+      const logsDir = path.join(testDir, ".mini-agent", "logs")
+      expect(fs.existsSync(logsDir)).toBe(true)
+
+      const logFiles = fs.readdirSync(logsDir)
+      expect(logFiles.length).toBeGreaterThan(0)
+
+      // Read the log file and verify it contains debug messages
+      const logPath = path.join(logsDir, logFiles[0]!)
+      const logContent = fs.readFileSync(logPath, "utf-8")
+
+      // File logger should capture DEBUG even when stdout is INFO
+      expect(logContent).toContain("DEBUG_MESSAGE")
+      expect(logContent).toContain("INFO_MESSAGE")
+    })
+  })
+})

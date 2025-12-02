@@ -4,8 +4,8 @@
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
 import type { ConfigError } from "effect"
 import { Config, Effect, Option, Redacted } from "effect"
-import { FetchOtlpExporter } from "./exporter.js"
-import type { ProviderConfig } from "./provider.js"
+import { FetchOtlpExporter } from "./exporter.ts"
+import type { ProviderConfig } from "./provider.ts"
 
 const SentryOtlpEndpoint = Config.option(Config.string("SENTRY_OTLP_ENDPOINT"))
 const SentryPublicKey = Config.option(Config.redacted("SENTRY_PUBLIC_KEY"))

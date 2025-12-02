@@ -5,7 +5,7 @@
  * See: https://www.effect.solutions/error-handling
  */
 import { Schema } from "effect"
-import { ContextName } from "./context.model.js"
+import { ContextName } from "./context.model.ts"
 
 // =============================================================================
 // Context Errors

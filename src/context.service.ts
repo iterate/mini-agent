@@ -20,10 +20,10 @@ import {
   SystemPromptEvent,
   TextDeltaEvent,
   type UserMessageEvent
-} from "./context.model.js"
-import { ContextRepository } from "./context.repository.js"
-import type { ContextLoadError, ContextSaveError } from "./errors.js"
-import { streamLLMResponse } from "./llm.js"
+} from "./context.model.ts"
+import { ContextRepository } from "./context.repository.ts"
+import type { ContextLoadError, ContextSaveError } from "./errors.ts"
+import { streamLLMResponse } from "./llm.ts"
 
 // =============================================================================
 // Context Service

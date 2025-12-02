@@ -6,7 +6,7 @@
  */
 import { type AiError, LanguageModel } from "@effect/ai"
 import { Effect, Option, pipe, Ref, Stream } from "effect"
-import { AssistantMessageEvent, type ContextEvent, type PersistedEvent, TextDeltaEvent } from "./context.model.js"
+import { AssistantMessageEvent, type ContextEvent, type PersistedEvent, TextDeltaEvent } from "./context.model.ts"
 
 // =============================================================================
 // LLM Response Streaming

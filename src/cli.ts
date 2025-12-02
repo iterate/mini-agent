@@ -13,9 +13,9 @@ import {
   type PersistedEvent,
   TextDeltaEvent,
   UserMessageEvent
-} from "./context.model.js"
-import { ContextService } from "./context.service.js"
-import { printTraceLinks } from "./tracing/index.js"
+} from "./context.model.ts"
+import { ContextService } from "./context.service.ts"
+import { printTraceLinks } from "./tracing/index.ts"
 
 // =============================================================================
 // Global CLI Options
@@ -393,6 +393,28 @@ const chatCommand = Command.make(
   ({ message, name, raw, showEphemeral }) => runChat({ message, name, raw, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
+// =============================================================================
+// Log-Test Command (for testing logging/tracing)
+// =============================================================================
+
+/**
+ * Log-test command that emits log messages at all levels.
+ * Used for testing logging configuration.
+ */
+const logTestCommand = Command.make(
+  "log-test",
+  {},
+  () =>
+    Effect.gen(function*() {
+      yield* Effect.logTrace("TRACE_MESSAGE")
+      yield* Effect.logDebug("DEBUG_MESSAGE")
+      yield* Effect.logInfo("INFO_MESSAGE")
+      yield* Effect.logWarning("WARN_MESSAGE")
+      yield* Effect.logError("ERROR_MESSAGE")
+      yield* Console.log("LOG_TEST_DONE")
+    })
+).pipe(Command.withDescription("Emit test log messages at all levels (for testing logging config)"))
+
 // Root command with global options
 const rootCommand = Command.make(
   "mini-agent",
@@ -402,7 +424,7 @@ const rootCommand = Command.make(
     stdoutLogLevel: stdoutLogLevelOption
   }
 ).pipe(
-  Command.withSubcommands([chatCommand]),
+  Command.withSubcommands([chatCommand, logTestCommand]),
   Command.withDescription("AI assistant with persistent context and comprehensive configuration")
 )
 

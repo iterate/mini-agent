@@ -1,5 +1,5 @@
 /**
- * YAML logger.
+ * JSON logger.
  *
  * Based on https://github.com/sukovanej/effect-log
  * Original author: Milan Suk (sukovanej)
@@ -14,7 +14,6 @@ import type * as Layer from "effect/Layer"
 import * as List from "effect/List"
 import * as Logger from "effect/Logger"
 import type * as LogLevel from "effect/LogLevel"
-import * as YAML from "yaml"
 
 /** @internal */
 const serializeUnknown = (value: unknown): string => {
@@ -106,17 +105,13 @@ export const make: (options?: Partial<Options>) => Logger.Logger<unknown, void> 
 
   return Logger.make((logOptions) => {
     const tags = buildLogRecord(_options, logOptions)
-    // Use --- document separator for valid multi-document YAML
-    // lineWidth: 0 disables line wrapping
-    // eslint-disable-next-line no-console
-    console.log("---\n" + YAML.stringify(tags, { lineWidth: 0 }))
+    console.log(JSON.stringify(tags))
   })
 }
 
 /**
- * Creates a YAML logger that returns the YAML string instead of writing to console.
+ * Creates a JSON logger that returns the JSON string instead of writing to console.
  * Useful for file-based logging with PlatformLogger.toFile.
- * Each entry is prefixed with --- for valid multi-document YAML.
  *
  * @category constructors
  * @since 1.0.0
@@ -126,9 +121,7 @@ export const makeStringified: (options?: Partial<Options>) => Logger.Logger<unkn
 
   return Logger.make((logOptions) => {
     const tags = buildLogRecord(_options, logOptions)
-    // Use --- document separator for valid multi-document YAML
-    // lineWidth: 0 disables line wrapping
-    return "---\n" + YAML.stringify(tags, { lineWidth: 0 })
+    return JSON.stringify(tags)
   })
 }
 
@@ -139,3 +132,4 @@ export const makeStringified: (options?: Partial<Options>) => Logger.Logger<unkn
 export const layer: (
   options?: Partial<Options>
 ) => Layer.Layer<never, never, never> = (options) => Logger.replace(Logger.defaultLogger, make(options ?? {}))
+

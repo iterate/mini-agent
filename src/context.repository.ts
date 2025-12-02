@@ -7,15 +7,15 @@
 import { FileSystem, Path } from "@effect/platform"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import * as YAML from "yaml"
-import { AppConfig } from "./config.js"
+import { AppConfig } from "./config.ts"
 import {
   ContextName,
   DEFAULT_SYSTEM_PROMPT,
   PersistedEvent,
   type PersistedEvent as PersistedEventType,
   SystemPromptEvent
-} from "./context.model.js"
-import { ContextLoadError, ContextSaveError } from "./errors.js"
+} from "./context.model.ts"
+import { ContextLoadError, ContextSaveError } from "./errors.ts"
 
 // =============================================================================
 // Event Decoding Helper

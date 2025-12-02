@@ -7,7 +7,7 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
-import { cli, GenAISpanTransformerLayer } from "./cli.js"
+import { cli, GenAISpanTransformerLayer } from "./cli.ts"
 import {
   AppConfig,
   extractConfigPath,
@@ -15,11 +15,11 @@ import {
   MiniAgentConfig,
   type MiniAgentConfig as MiniAgentConfigType,
   resolveBaseDir
-} from "./config.js"
-import { ContextRepository } from "./context.repository.js"
-import { ContextService } from "./context.service.js"
-import { createLoggingLayer } from "./logging.js"
-import { createTracingLayer } from "./tracing/index.js"
+} from "./config.ts"
+import { ContextRepository } from "./context.repository.ts"
+import { ContextService } from "./context.service.ts"
+import { createLoggingLayer } from "./logging.ts"
+import { createTracingLayer } from "./tracing/index.ts"
 
 // =============================================================================
 // Layer Factories
@@ -73,37 +73,27 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
       const buildLayers = Effect.gen(function*() {
         yield* Effect.logDebug("Using config", config)
 
-        const configLayer = Layer.setConfigProvider(configProvider)
+        // Store layer references for memoization (effect-solutions pattern)
+        const configProviderLayer = Layer.setConfigProvider(configProvider)
         const appConfigLayer = AppConfig.fromConfig(config)
         const languageModelLayer = makeLanguageModelLayer(config)
+        const tracingLayer = createTracingLayer("mini-agent")
 
-        const contextRepositoryLayer = ContextRepository.layer.pipe(
-          Layer.provide(BunContext.layer),
-          Layer.provide(appConfigLayer)
-        )
-        const contextServiceLayer = ContextService.layer.pipe(
-          Layer.provide(contextRepositoryLayer)
-        )
-
-        const tracingLayer = createTracingLayer("mini-agent").pipe(
-          Layer.provide(loggingLayer)
-        )
-
-        return Layer.mergeAll(
-          configLayer,
-          appConfigLayer,
-          contextServiceLayer,
-          languageModelLayer,
-          BunContext.layer,
-          tracingLayer
+        // Compose using Layer.provideMerge chain (effect-solutions pattern)
+        // Dependencies are resolved from layers later in the chain
+        return ContextService.layer.pipe(
+          Layer.provideMerge(ContextRepository.layer),
+          Layer.provideMerge(languageModelLayer),
+          Layer.provideMerge(tracingLayer),
+          Layer.provideMerge(appConfigLayer),
+          Layer.provideMerge(configProviderLayer),
+          Layer.provideMerge(loggingLayer),
+          Layer.provideMerge(BunContext.layer)
         )
       })
 
-      // Build with logging, then merge logging into output
-      return Layer.merge(
-        Layer.unwrapEffect(buildLayers.pipe(Effect.provide(loggingLayer))),
-        loggingLayer
-      )
+      // Build with logging for Effect.logDebug
+      return Layer.unwrapEffect(buildLayers.pipe(Effect.provide(loggingLayer)))
     }).pipe(
       Effect.provide(BunContext.layer)
     )
