@@ -21,6 +21,14 @@ See README.md for context
 - Use comments sparingly to explain any additional context and "why" that isn't evident from the code. Don't redundantly describe the code below.
 - DO NOT use nodejs imports like node:fs etc - you must use @effect/platform/FileSystem and @effect/platform/Path instead (read source if you need to grok it)
 
+## Scripts
+
+- `bun run typecheck` — tsc only
+- `bun run lint` / `bun run lint:fix` — eslint only
+- `bun run check` — typecheck + lint
+- `bun run check:fix` — typecheck + lint:fix
+- `bun run test` / `bun run test:watch` — vitest
+
 ## Use of effect
 
 <!-- effect-solutions:start -->
