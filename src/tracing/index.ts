@@ -14,7 +14,7 @@
 import * as NodeSdk from "@effect/opentelemetry/NodeSdk"
 import { diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api"
 import type { ConfigError } from "effect"
-import { Config, Console, Context, Effect, Layer, Option } from "effect"
+import { Config, Context, Effect, Layer, Option } from "effect"
 import { axiomProvider } from "./axiom.js"
 import { honeycombProvider } from "./honeycomb.js"
 import { langfuseProvider } from "./langfuse.js"
@@ -132,10 +132,10 @@ export const createTracingLayer = (serviceName: string) =>
         printLinks: (traceId: string) =>
           Effect.gen(function*() {
             if (activeProviders.length > 0) {
-              yield* Console.log("\n\nExiting...\n\n📊 Observability links")
+              yield* Effect.logDebug("Exiting...")
               for (const provider of activeProviders) {
                 const url = provider.buildUrl(traceId)
-                yield* Console.log(`→ ${terminalLink(provider.name, url)}`)
+                yield* Effect.logDebug(`→ ${terminalLink(provider.name, url)}`)
               }
             }
           })
@@ -158,7 +158,7 @@ export const createTracingLayer = (serviceName: string) =>
       return Layer.merge(nodeSdkLayer, traceLinksLayer)
     }).pipe(
       Effect.catchAll((error) =>
-        Console.error(`Tracing setup failed: ${error}`).pipe(
+        Effect.logWarning("Tracing setup failed, continuing without tracing", { error: String(error) }).pipe(
           Effect.map(() =>
             Layer.succeed(TraceLinks, {
               providers: [],

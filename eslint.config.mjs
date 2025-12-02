@@ -52,6 +52,7 @@ export default [
     },
 
     rules: {
+      "no-console": "error",
       "no-fallthrough": "off",
       "no-irregular-whitespace": "off",
       "object-shorthand": "error",

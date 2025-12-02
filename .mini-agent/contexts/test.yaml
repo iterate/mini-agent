@@ -5,6 +5,6 @@ events:
       Keep your responses concise but informative.
       Use markdown formatting when helpful.
   - _tag: UserMessage
-    content: "Say exactly: RAW_TEST"
+    content: say hello
   - _tag: AssistantMessage
-    content: RAW_TEST
+    content: Hello! How can I assist you today?

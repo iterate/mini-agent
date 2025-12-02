@@ -26,7 +26,7 @@ export const axiomProvider = (): Effect.Effect<Option.Option<ProviderConfig>, Co
     const axiomOrg = yield* AxiomOrg
     const url = `${endpoint}/v1/traces`
 
-    console.log(`[Tracing] Axiom enabled → ${url}`)
+    yield* Effect.logDebug(`Axiom enabled → ${url}`)
 
     return Option.some({
       name: "Axiom",

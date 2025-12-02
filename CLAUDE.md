@@ -19,6 +19,7 @@ See README.md for context
 - tests using vitest; colocate test files with .test.ts
 - import using .ts extension; no .js
 - Use comments sparingly to explain any additional context and "why" that isn't evident from the code. Don't redundantly describe the code below.
+- DO NOT use nodejs imports like node:fs etc - you must use @effect/platform/FileSystem and @effect/platform/Path instead (read source if you need to grok it)
 
 ## Use of effect
 
@@ -179,6 +180,33 @@ Effect.gen(function*() {
   const terminal = yield* Terminal.Terminal
   yield* terminal.display(text)
 })
+```
+
+## Logging vs User Output
+
+Two different output mechanisms:
+
+**`Effect.log*`** = Observability logging (timestamps, levels, goes to file)
+```typescript
+yield* Effect.log("Processing request")      // info (stdout + file)
+yield* Effect.logDebug("Detailed state")     // debug (file only by default)
+yield* Effect.logWarning("Retrying...")      // warn
+yield* Effect.logError("Failed", { error })  // error with structured data
+```
+
+**`Console.log/error`** = Direct user output (chat messages, JSON, prompts)
+```typescript
+yield* Console.log(assistantMessage)  // User-facing output
+yield* Console.error("Error: ...")    // User-visible error
+```
+
+Config defaults: stdout=info, file=debug (in `.mini-agent/logs/mini-agent.log`).
+
+For errors, do BOTH - log for observability AND show user:
+```typescript
+Effect.logError("Request failed", { error }).pipe(
+  Effect.flatMap(() => Console.error(`Error: ${error}`))
+)
 ```
 
 ## Vitest test Fixtures (test/fixtures.ts)

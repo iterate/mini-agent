@@ -32,8 +32,15 @@ export const cwdOption = Options.directory("cwd").pipe(
   Options.optional
 )
 
-export const logLevelOption = Options.choice("log-level", ["trace", "debug", "info", "warn", "error", "none"]).pipe(
-  Options.withDescription("Stdout log level"),
+export const stdoutLogLevelOption = Options.choice("stdout-log-level", [
+  "trace",
+  "debug",
+  "info",
+  "warn",
+  "error",
+  "none"
+]).pipe(
+  Options.withDescription("Stdout log level (overrides config)"),
   Options.optional
 )
 
@@ -190,7 +197,10 @@ const conversationLoop = (contextName: string, options: OutputOptions) =>
   conversationTurn(contextName, options).pipe(
     Effect.catchIf(
       (error) => !Terminal.isQuitException(error),
-      (error) => Console.error(`Error: ${String(error)}`)
+      (error) =>
+        Effect.logError("Conversation error", { error: String(error) }).pipe(
+          Effect.flatMap(() => Console.error(`Error: ${String(error)}`))
+        )
     ),
     Effect.forever
   )
@@ -247,6 +257,7 @@ const runChat = (options: {
   showEphemeral: boolean
 }) =>
   Effect.gen(function*() {
+    yield* Effect.logDebug("Starting chat session")
     const contextService = yield* ContextService
     const outputOptions: OutputOptions = { raw: options.raw, showEphemeral: options.showEphemeral }
     const hasMessage = Option.isSome(options.message) && Option.getOrElse(options.message, () => "").trim() !== ""
@@ -388,7 +399,7 @@ const rootCommand = Command.make(
   {
     configFile: configFileOption,
     cwd: cwdOption,
-    logLevel: logLevelOption
+    stdoutLogLevel: stdoutLogLevelOption
   }
 ).pipe(
   Command.withSubcommands([chatCommand]),

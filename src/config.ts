@@ -77,8 +77,8 @@ export const makeConfigProvider = (configPath: string, args: ReadonlyArray<strin
     const defaultsProvider = ConfigProvider.fromMap(
       new Map([
         ["DATA_STORAGE_DIR", ".mini-agent"],
-        ["LOGGING_STDOUT_LOG_LEVEL", "info"],
-        ["LOGGING_FILE_LOG_LEVEL", "debug"]
+        ["STDOUT_LOG_LEVEL", "info"],
+        ["FILE_LOG_LEVEL", "debug"]
       ])
     )
 
@@ -95,13 +95,16 @@ export const makeConfigProvider = (configPath: string, args: ReadonlyArray<strin
 
 /**
  * Parse a log level string into a LogLevel, supporting 'none' to disable logging.
+ * Handles case-insensitive input (e.g., "info", "INFO", "Info" all work).
  */
 const logLevelConfig = (name: string) =>
   Config.string(name).pipe(
     Config.map((s): LogLevel.LogLevel => {
       const level = s.toLowerCase()
       if (level === "none" || level === "off") return LogLevel.None
-      return LogLevel.fromLiteral(level as LogLevel.Literal)
+      // Capitalize first letter for LogLevel.fromLiteral (expects "Info" not "info")
+      const capitalized = level.charAt(0).toUpperCase() + level.slice(1)
+      return LogLevel.fromLiteral(capitalized as LogLevel.Literal)
     })
   )
 
@@ -133,16 +136,13 @@ export const MiniAgentConfig = Config.all({
   // Working directory override
   cwd: Config.string("CWD").pipe(Config.option),
 
-  // Logging configuration
-  logging: Config.all({
-    stdoutLevel: logLevelConfig("STDOUT_LOG_LEVEL").pipe(
-      Config.withDefault(LogLevel.Info)
-    ),
-    fileLogPath: Config.string("FILE_LOG_PATH").pipe(Config.option),
-    fileLogLevel: logLevelConfig("FILE_LOG_LEVEL").pipe(
-      Config.withDefault(LogLevel.Debug)
-    )
-  }).pipe(Config.nested("LOGGING"))
+  // Logging configuration (flat, not nested)
+  stdoutLogLevel: logLevelConfig("STDOUT_LOG_LEVEL").pipe(
+    Config.withDefault(LogLevel.Info)
+  ),
+  fileLogLevel: logLevelConfig("FILE_LOG_LEVEL").pipe(
+    Config.withDefault(LogLevel.Debug)
+  )
 })
 
 export type MiniAgentConfig = Config.Config.Success<typeof MiniAgentConfig>
@@ -184,26 +184,6 @@ export class AppConfig extends Context.Tag("@app/AppConfig")<
   static fromConfig(config: MiniAgentConfig): Layer.Layer<AppConfig> {
     return Layer.succeed(AppConfig, config)
   }
-
-  /**
-   * Test layer with default configuration values for unit tests.
-   * See: https://www.effect.solutions/testing
-   */
-  static readonly testLayer = Layer.succeed(
-    AppConfig,
-    {
-      openaiApiKey: Redacted.make("test-api-key"),
-      openaiModel: "gpt-4o-mini",
-      dataStorageDir: ".mini-agent-test",
-      configFile: "test.config.yaml",
-      cwd: Option.none(),
-      logging: {
-        stdoutLevel: LogLevel.None,
-        fileLogPath: Option.none(),
-        fileLogLevel: LogLevel.Debug
-      }
-    } satisfies MiniAgentConfig
-  )
 }
 
 // =============================================================================

@@ -106,7 +106,7 @@ const MiniAgentConfig = Config.all({
   
   // Logging configuration
   logging: Config.all({
-    stdoutLevel: logLevelConfig("STDOUT_LOG_LEVEL").pipe(
+    stdoutLogLevel: logLevelConfig("STDOUT_LOG_LEVEL").pipe(
       Config.withDefault(LogLevel.Info)
     ),
     fileLogPath: Config.string("LOG_FILE_PATH").pipe(Config.option),
@@ -149,7 +149,7 @@ class AppLogger extends Context.Tag("AppLogger")<
     AppLogger,
     Effect.gen(function* () {
       const config = yield* AppConfig
-      const { stdoutLevel, fileLogPath, fileLogLevel } = config.logging
+      const { stdoutLogLevel, fileLogPath, fileLogLevel } = config.logging
       // Implementation uses only these specific values
       return {
         info: (msg) => Effect.log(msg),
@@ -191,7 +191,7 @@ import { NodeFileSystem } from "@effect/platform-node"
 import * as Path from "node:path"
 
 interface LoggingConfig {
-  stdoutLevel: LogLevel.LogLevel
+  stdoutLogLevel: LogLevel.LogLevel
   fileLogPath: Option.Option<string>
   fileLogLevel: LogLevel.LogLevel
   baseDir: string  // Resolved from cwd + dataStorageDir
@@ -201,11 +201,11 @@ const createLoggingLayer = (config: LoggingConfig) => {
   // Console logger with stdout level filter
   const consoleLogger = Logger.filterLogLevel(
     Logger.prettyLoggerDefault,
-    (level) => LogLevel.greaterThanEqual(level, config.stdoutLevel)
+    (level) => LogLevel.greaterThanEqual(level, config.stdoutLogLevel)
   )
 
   // If stdout is 'none', use Logger.none for console
-  const effectiveConsoleLogger = LogLevel.lessThan(config.stdoutLevel, LogLevel.None)
+  const effectiveConsoleLogger = LogLevel.lessThan(config.stdoutLogLevel, LogLevel.None)
     ? Logger.map(consoleLogger, Option.getOrUndefined)
     : Logger.none
 
@@ -336,7 +336,7 @@ const makeMainLayer = (args: string[]) =>
 
       // Build logging layer
       const loggingLayer = createLoggingLayer({
-        stdoutLevel: config.logging.stdoutLevel,
+        stdoutLogLevel: config.logging.stdoutLogLevel,
         fileLogPath: config.logging.fileLogPath,
         fileLogLevel: config.logging.fileLogLevel,
         baseDir

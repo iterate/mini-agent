@@ -30,7 +30,7 @@ export const langfuseProvider = (): Effect.Effect<Option.Option<ProviderConfig>,
       `${Redacted.value(publicKey.value)}:${Redacted.value(secretKey.value)}`
     ).toString("base64")
 
-    console.log(`[Tracing] Langfuse enabled → ${url}`)
+    yield* Effect.logDebug(`Langfuse enabled → ${url}`)
 
     return Option.some({
       name: "Langfuse",

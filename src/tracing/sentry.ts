@@ -21,7 +21,7 @@ export const sentryProvider = (): Effect.Effect<Option.Option<ProviderConfig>, C
 
     if (Option.isNone(endpoint) || Option.isNone(key)) return Option.none()
 
-    console.log(`[Tracing] Sentry enabled → ${endpoint.value}`)
+    yield* Effect.logDebug(`Sentry enabled → ${endpoint.value}`)
 
     return Option.some({
       name: "Sentry",

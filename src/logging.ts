@@ -1,23 +1,33 @@
 /**
  * Logging Module
  *
- * Provides multi-target logging with separate log levels for stdout and file output.
- * Uses Effect's Logger module with @effect/platform for file logging.
+ * Multi-target logging: console (pretty) + file (JSON).
+ * Uses PlatformLogger.toFile for proper resource management.
  */
-import { FileSystem, PlatformLogger } from "@effect/platform"
+import { PlatformLogger } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
-import { Console, Effect, Layer, Logger, LogLevel, Option } from "effect"
-import * as Path from "node:path"
+import { Effect, Layer, Logger, LogLevel } from "effect"
 
 // =============================================================================
 // Logging Configuration
 // =============================================================================
 
 export interface LoggingConfig {
-  readonly stdoutLevel: LogLevel.LogLevel
-  readonly fileLogPath: Option.Option<string>
+  readonly stdoutLogLevel: LogLevel.LogLevel
   readonly fileLogLevel: LogLevel.LogLevel
   readonly baseDir: string
+}
+
+// =============================================================================
+// Timestamp Filename
+// =============================================================================
+
+const generateLogFilename = (): string => {
+  const now = new Date()
+  const pad = (n: number) => n.toString().padStart(2, "0")
+  const date = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
+  const time = `${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}`
+  return `${date}_${time}.json`
 }
 
 // =============================================================================
@@ -25,97 +35,72 @@ export interface LoggingConfig {
 // =============================================================================
 
 /**
- * Create a logging layer based on configuration.
+ * Compute the minimum (most verbose) of two log levels.
+ * Used to set the global minimum so messages reach all configured loggers.
+ */
+const minLogLevel = (a: LogLevel.LogLevel, b: LogLevel.LogLevel): LogLevel.LogLevel => LogLevel.lessThan(a, b) ? a : b
+
+/**
+ * Create logging layer with console + optional JSON file output.
  *
- * Supports:
- * - Console logging with configurable level (or disabled with LogLevel.None)
- * - File logging with separate level and path (optional)
- * - Both outputs can be combined or used independently
+ * Architecture:
+ * - Console logger replaces the default logger (non-scoped)
+ * - File logger is added via addScoped (scoped resource, properly cleaned up)
+ * - minimumLogLevel set to the most verbose level to allow messages through
  *
- * If file logging fails to initialize, falls back to console-only logging.
+ * IMPORTANT: BunRuntime.runMain adds its own pretty logger by default.
+ * Use { disablePrettyLogger: true } to prevent duplicate console output.
  */
 export const createLoggingLayer = (config: LoggingConfig): Layer.Layer<never> => {
-  // Check if stdout is disabled (None level)
-  const stdoutDisabled = config.stdoutLevel === LogLevel.None
-  const fileDisabled = Option.isNone(config.fileLogPath) || config.fileLogLevel === LogLevel.None
+  const stdoutDisabled = config.stdoutLogLevel === LogLevel.None
+  const fileDisabled = config.fileLogLevel === LogLevel.None
 
-  // Console logger with stdout level filter
+  // Console logger with level filter
   const consoleLogger = stdoutDisabled
     ? Logger.none
     : Logger.filterLogLevel(
-      Logger.prettyLoggerDefault,
-      (level) => LogLevel.greaterThanEqual(level, config.stdoutLevel)
+      Logger.prettyLogger(),
+      (level) => LogLevel.greaterThanEqual(level, config.stdoutLogLevel)
     )
 
-  // If no file logging, just use console logger
+  // No file logging - just console
   if (fileDisabled) {
-    return Logger.replace(Logger.defaultLogger, consoleLogger)
-  }
-
-  // Resolve file path relative to baseDir
-  const filePath = Option.getOrThrow(config.fileLogPath)
-  const resolvedPath = Path.isAbsolute(filePath)
-    ? filePath
-    : Path.join(config.baseDir, filePath)
-
-  // Ensure log directory exists, then create file logger
-  const fileLoggerEffect = Effect.gen(function*() {
-    const fs = yield* FileSystem.FileSystem
-    const logDir = Path.dirname(resolvedPath)
-
-    // Create directory if it doesn't exist
-    yield* fs.makeDirectory(logDir, { recursive: true }).pipe(
-      Effect.catchAll(() => Effect.void)
-    )
-
-    // Now create the file logger
-    return yield* Logger.jsonLogger.pipe(
-      PlatformLogger.toFile(resolvedPath, { batchWindow: "100 millis" })
-    )
-  })
-
-  if (stdoutDisabled) {
-    // File logging only
-    const filteredFileLoggerEffect = Effect.map(fileLoggerEffect, (fileLogger) =>
-      Logger.filterLogLevel(
-        fileLogger,
-        (level) => LogLevel.greaterThanEqual(level, config.fileLogLevel)
-      ))
-
-    return Logger.replaceScoped(Logger.defaultLogger, filteredFileLoggerEffect).pipe(
-      Layer.provide(BunContext.layer),
-      // If file logging fails, fall back to no logging (since console is disabled)
-      Layer.catchAll((error) =>
-        Layer.effectDiscard(Console.error(`File logging failed: ${error}`)).pipe(
-          Layer.merge(Logger.replace(Logger.defaultLogger, Logger.none))
-        )
-      )
+    // Set minimum to stdout level (or All if disabled)
+    const minLevel = stdoutDisabled ? LogLevel.All : config.stdoutLogLevel
+    return Layer.merge(
+      Logger.replace(Logger.defaultLogger, consoleLogger),
+      Logger.minimumLogLevel(minLevel)
     )
   }
 
-  // Create combined logger effect - both console and file
-  const combinedLoggerEffect = Effect.map(fileLoggerEffect, (fileLogger) => {
-    const filteredFile = Logger.filterLogLevel(
-      fileLogger,
-      (level) => LogLevel.greaterThanEqual(level, config.fileLogLevel)
-    )
+  // File path (baseDir is already resolved to absolute path)
+  const logPath = `${config.baseDir}/logs/${generateLogFilename()}`
 
-    // Map the file logger to void output to match console logger
-    const normalizedFile = Logger.map(filteredFile, () => undefined as void)
+  // Determine the global minimum level - lowest of stdout and file levels
+  // This allows messages through to whichever logger accepts them
+  const effectiveStdoutLevel = stdoutDisabled ? LogLevel.None : config.stdoutLogLevel
+  const globalMinLevel = minLogLevel(effectiveStdoutLevel, config.fileLogLevel)
 
-    // Combine both loggers
-    return Logger.zipRight(consoleLogger, normalizedFile)
-  })
-
-  return Logger.replaceScoped(Logger.defaultLogger, combinedLoggerEffect).pipe(
-    Layer.provide(BunContext.layer),
-    // If file logging fails, fall back to console-only logging
-    Layer.catchAll((error) =>
-      Layer.effectDiscard(Console.error(`File logging failed, using console only: ${error}`)).pipe(
-        Layer.merge(Logger.replace(Logger.defaultLogger, consoleLogger))
-      )
+  // File logger effect (scoped resource)
+  const fileLoggerEffect = Logger.jsonLogger.pipe(
+    PlatformLogger.toFile(logPath, { batchWindow: "100 millis" }),
+    Effect.map((fileLogger) =>
+      Logger.filterLogLevel(fileLogger, (level) => LogLevel.greaterThanEqual(level, config.fileLogLevel))
     )
   )
+
+  // Two separate layers:
+  // 1. Replace default with console logger (non-scoped, always available)
+  // 2. Add file logger (scoped, cleaned up properly without breaking console)
+  const consoleLayer = Logger.replace(Logger.defaultLogger, consoleLogger)
+  const fileLayer = Logger.addScoped(fileLoggerEffect).pipe(
+    Layer.provide(BunContext.layer),
+    Layer.catchAll(() => Layer.empty)
+  )
+
+  // Console replaces default logger, file logger is added separately
+  // minimumLogLevel ensures DEBUG messages reach the file logger even when stdout is INFO
+  return Layer.mergeAll(consoleLayer, fileLayer, Logger.minimumLogLevel(globalMinLevel))
 }
 
 // =============================================================================
@@ -123,13 +108,13 @@ export const createLoggingLayer = (config: LoggingConfig): Layer.Layer<never> =>
 // =============================================================================
 
 /**
- * Create a simple console-only logging layer with the given level.
+ * Console-only logging layer.
  */
 export const consoleLoggingLayer = (level: LogLevel.LogLevel): Layer.Layer<never> =>
   Logger.replace(
     Logger.defaultLogger,
     Logger.filterLogLevel(
-      Logger.prettyLoggerDefault,
+      Logger.prettyLogger(),
       (l) => LogLevel.greaterThanEqual(l, level)
     )
   )

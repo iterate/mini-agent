@@ -1,9 +1,0 @@
-# Test configuration file
-DATA_STORAGE_DIR: ".test-agent"
-
-LOGGING:
-  STDOUT_LOG_LEVEL: "debug"
-  FILE_LOG_PATH: "logs/test.log"
-  FILE_LOG_LEVEL: "debug"
-
-

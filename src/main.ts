@@ -6,7 +6,7 @@
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { Cause, Console, Effect, Layer, LogLevel, Option } from "effect"
+import { Cause, Effect, Layer } from "effect"
 import { cli, GenAISpanTransformerLayer } from "./cli.js"
 import {
   AppConfig,
@@ -18,7 +18,7 @@ import {
 } from "./config.js"
 import { ContextRepository } from "./context.repository.js"
 import { ContextService } from "./context.service.js"
-import { createLoggingLayer, type LoggingConfig } from "./logging.js"
+import { createLoggingLayer } from "./logging.js"
 import { createTracingLayer } from "./tracing/index.js"
 
 // =============================================================================
@@ -43,26 +43,12 @@ const makeLanguageModelLayer = (config: MiniAgentConfigType) =>
 /**
  * Create the logging layer from configuration.
  */
-const makeLoggingLayer = (config: MiniAgentConfigType, cliLogLevel: Option.Option<string>) => {
-  // CLI log level overrides config
-  const stdoutLevel = Option.match(cliLogLevel, {
-    onNone: () => config.logging.stdoutLevel,
-    onSome: (level) => {
-      const l = level.toLowerCase()
-      if (l === "none" || l === "off") return LogLevel.None
-      return LogLevel.fromLiteral(l as LogLevel.Literal)
-    }
-  })
-
-  const loggingConfig: LoggingConfig = {
-    stdoutLevel,
-    fileLogPath: config.logging.fileLogPath,
-    fileLogLevel: config.logging.fileLogLevel,
+const makeLoggingLayer = (config: MiniAgentConfigType) =>
+  createLoggingLayer({
+    stdoutLogLevel: config.stdoutLogLevel,
+    fileLogLevel: config.fileLogLevel,
     baseDir: resolveBaseDir(config)
-  }
-
-  return createLoggingLayer(loggingConfig)
-}
+  })
 
 // =============================================================================
 // Main Layer Composition
@@ -75,54 +61,50 @@ const makeLoggingLayer = (config: MiniAgentConfigType, cliLogLevel: Option.Optio
 const makeMainLayer = (args: ReadonlyArray<string>) =>
   Layer.unwrapEffect(
     Effect.gen(function*() {
-      // Extract config file path from args
+      // Phase 1: Load config (no logging yet)
       const configPath = extractConfigPath(args)
+      const configProvider = yield* makeConfigProvider(configPath, args)
+      const config = yield* MiniAgentConfig.pipe(Effect.withConfigProvider(configProvider))
 
-      // Build composed ConfigProvider (CLI → env → YAML → defaults)
-      const provider = yield* makeConfigProvider(configPath, args)
-      const configLayer = Layer.setConfigProvider(provider)
+      // Build logging layer for both construction and runtime
+      const loggingLayer = makeLoggingLayer(config)
 
-      // Load and validate configuration
-      const config = yield* MiniAgentConfig.pipe(
-        Effect.withConfigProvider(provider)
-      )
+      // Phase 2: Build layers with logging available for debug output
+      const buildLayers = Effect.gen(function*() {
+        yield* Effect.logDebug("Using config", config)
 
-      yield* Effect.log(`Configuration loaded from: ${configPath}`)
-      yield* Effect.logDebug(`Data storage directory: ${config.dataStorageDir}`)
-      yield* Effect.logDebug(`OpenAI model: ${config.openaiModel}`)
+        const configLayer = Layer.setConfigProvider(configProvider)
+        const appConfigLayer = AppConfig.fromConfig(config)
+        const languageModelLayer = makeLanguageModelLayer(config)
 
-      // Extract --log-level from CLI args for override
-      const logLevelIdx = args.findIndex((a) => a === "--log-level")
-      const nextArg = logLevelIdx >= 0 ? args[logLevelIdx + 1] : undefined
-      const cliLogLevel: Option.Option<string> = nextArg !== undefined
-        ? Option.some(nextArg)
-        : Option.none()
+        const contextRepositoryLayer = ContextRepository.layer.pipe(
+          Layer.provide(BunContext.layer),
+          Layer.provide(appConfigLayer)
+        )
+        const contextServiceLayer = ContextService.layer.pipe(
+          Layer.provide(contextRepositoryLayer)
+        )
 
-      // Build layers
-      const appConfigLayer = AppConfig.fromConfig(config)
-      const loggingLayer = makeLoggingLayer(config, cliLogLevel)
-      const languageModelLayer = makeLanguageModelLayer(config)
+        const tracingLayer = createTracingLayer("mini-agent").pipe(
+          Layer.provide(loggingLayer)
+        )
 
-      // ContextService requires ContextRepository, which needs FileSystem + Path + AppConfig
-      const contextRepositoryLayer = ContextRepository.layer.pipe(
-        Layer.provide(BunContext.layer),
-        Layer.provide(appConfigLayer)
-      )
-      const contextServiceLayer = ContextService.layer.pipe(
-        Layer.provide(contextRepositoryLayer)
-      )
+        return Layer.mergeAll(
+          configLayer,
+          appConfigLayer,
+          contextServiceLayer,
+          languageModelLayer,
+          BunContext.layer,
+          tracingLayer
+        )
+      })
 
-      return Layer.mergeAll(
-        configLayer,
-        appConfigLayer,
-        loggingLayer,
-        contextServiceLayer,
-        languageModelLayer,
-        BunContext.layer,
-        createTracingLayer("mini-agent")
+      // Build with logging, then merge logging into output
+      return Layer.merge(
+        Layer.unwrapEffect(buildLayers.pipe(Effect.provide(loggingLayer))),
+        loggingLayer
       )
     }).pipe(
-      // Provide BunContext for config loading (FileSystem access)
       Effect.provide(BunContext.layer)
     )
   )
@@ -136,7 +118,7 @@ const args = process.argv.slice(2)
 cli(process.argv).pipe(
   Effect.provide(makeMainLayer(args)),
   Effect.catchAllCause((cause) =>
-    Cause.isInterruptedOnly(cause) ? Effect.void : Console.error(`Fatal error: ${Cause.pretty(cause)}`)
+    Cause.isInterruptedOnly(cause) ? Effect.void : Effect.logError(`Fatal error: ${Cause.pretty(cause)}`)
   ),
-  BunRuntime.runMain
+  (effect) => BunRuntime.runMain(effect, { disablePrettyLogger: true })
 )

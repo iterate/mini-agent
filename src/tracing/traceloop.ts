@@ -24,7 +24,7 @@ export const traceloopProvider = (): Effect.Effect<Option.Option<ProviderConfig>
     const projectSlug = yield* TraceloopProjectSlug
     const url = `${endpoint}/v1/traces`
 
-    console.log(`[Tracing] Traceloop enabled → ${url}`)
+    yield* Effect.logDebug(`Traceloop enabled → ${url}`)
 
     return Option.some({
       name: "Traceloop",

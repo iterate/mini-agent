@@ -1,0 +1,318 @@
+events:
+  - _tag: SystemPrompt
+    content: |-
+      You are a helpful, friendly assistant.
+      Keep your responses concise but informative.
+      Use markdown formatting when helpful.
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Whispers through the trees,  
+      Autumn leaves dance to the ground,  
+      Nature's breath slows down.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Moonlight on still lakes,  
+      Ripples weave a silver thread,  
+      Night's gentle embrace.  
+  - _tag: UserMessage
+    content: tell another haiku
+  - _tag: AssistantMessage
+    content: |-
+      Cherry blossoms fall,  
+      Spring's soft touch upon the breeze,  
+      Moments fleeting, sweet.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      In the silent night,  
+      Stars twinkle like distant dreams,  
+      Time drifts into peace.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Winter's breath is cold,  
+      Silent snow cloaks the dark earth,  
+      Whispers of stillness.  
+  - _tag: UserMessage
+    content: say hi
+  - _tag: AssistantMessage
+    content: Hi there! How can I help you today?
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Sunrise paints the sky,  
+      Golden hues embrace the dawn,  
+      A new day awakes.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Mountains kiss the sky,  
+      Clouds drift softly, dreams take flight,  
+      Nature's grand embrace.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Rippling river flows,  
+      Carrying whispers of time,  
+      Eternal journey.  
+  - _tag: UserMessage
+    content: hi
+  - _tag: AssistantMessage
+    content: Hi! How's your day going?
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Gentle rain descends,  
+      Earth drinks deep with quiet thirst,  
+      Life awakens fresh.  
+  - _tag: UserMessage
+    content: hi
+  - _tag: AssistantMessage
+    content: Hello again! What’s on your mind?
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Leaves crunch underfoot,  
+      Autumn's chill wraps the warm earth,  
+      Seasons shift and sigh.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Stars bloom in the night,  
+      Constellations tell their tales,  
+      Whispers of the past.  
+  - _tag: UserMessage
+    content: ok
+  - _tag: AssistantMessage
+    content: Got it! If you need anything else or have another request, just let me
+      know!
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Morning dew glistens,  
+      Awakening the soft grass,  
+      Nature’s fresh embrace.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Lonely lighthouse stands,  
+      Guiding ships through stormy seas,  
+      Hope in darkest nights.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Fireflies gently glow,  
+      Dancing in the summer breeze,  
+      Night’s magic unfolds.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Snowflakes softly fall,  
+      Blanketing the world in white,  
+      Frozen dreams take flight.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Cicadas hum loud,  
+      Summer’s warmth stretches the days,  
+      Life sings in the heat.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Waves crash on the shore,  
+      Salty breeze and seagull cries,  
+      Nature's symphony.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Petals drift like dreams,  
+      In the garden's quiet heart,  
+      Beauty fades away.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Hidden in the mist,  
+      Ancient trees whisper secrets,  
+      Time stands still once more.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Golden fields sway soft,  
+      Nature's bounty under sun,  
+      Harvest dreams take root.  Golden fields sway soft,  
+      Nature's bounty under sun,  
+      Harvest dreams take root.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Pebbles in the stream,  
+      Water sings a gentle song,  
+      Life's quiet rhythm.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Frost upon the glass,  
+      Winter's breath whispers of chill,  
+      Silence wraps the dawn.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Morning light breaks through,  
+      Chasing shadows from the night,  
+      Hope begins to rise.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Clouds drift overhead,  
+      A canvas of dreams unspooled,  
+      Sky’s ever-changing.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Dewdrops on the leaf,  
+      Nature's jewels in the morn,  
+      A fleeting embrace.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Sunset paints the sky,  
+      Fiery hues of gold and red,  
+      Day bids night farewell.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Bamboo sways gently,  
+      Whispers of the wind’s soft song,  
+      Nature’s calm ballet.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Tides pull at the shore,  
+      Moonlight dances on the waves,  
+      Secrets of the deep.  
+  - _tag: UserMessage
+    content: hi
+  - _tag: AssistantMessage
+    content: Hi there! How can I assist you today?
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Spring rain softly falls,  
+      Awakening sleeping blooms,  
+      Life bursts into song.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Whispers in the fog,  
+      Mystery cloaks the quiet,  
+      Nature holds its breath.  
+  - _tag: UserMessage
+    content: hi
+  - _tag: AssistantMessage
+    content: Hello! What’s up?
+  - _tag: UserMessage
+    content: hi
+  - _tag: AssistantMessage
+    content: Hi again! How can I help you?
+  - _tag: UserMessage
+    content: hi
+  - _tag: AssistantMessage
+    content: Hi! How’s your day going?
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Stars twinkle above,  
+      Night wraps the world in stillness,  
+      Dreams take flight on high.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Autumn's chill arrives,  
+      Leaves dance in a fiery swirl,  
+      Time's soft, fleeting touch.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Quiet forest sighs,  
+      Sunlight filters through the pines,  
+      Nature's calm embrace.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Lanterns in the night,  
+      Guiding souls through shadows deep,  
+      Hope's flicker remains.  
+  - _tag: AssistantMessage
+    content: |-
+      Gentle waves caress,  
+      Seashells whisper tales of old,  
+      Ocean's timeless song.  
+  - _tag: UserMessage
+    content: say hello
+  - _tag: AssistantMessage
+    content: Hello! How can I assist you today?
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Misty morning rise,  
+      Mountains shrouded in soft gray,  
+      Nature's hush revealed.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Snowdrops peek through frost,  
+      Winter’s grip begins to fade,  
+      Hope springs forth anew.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Stars fall like soft rain,  
+      Wishes whispered on the breeze,  
+      Night's magic unfolds.  
+  - _tag: UserMessage
+    content: tell haiku
+  - _tag: AssistantMessage
+    content: |-
+      Breezes through the trees,  
+      Crickets serenade the dusk,  
+      Nature's lullaby.  

@@ -49,13 +49,11 @@ export class FetchOtlpExporter implements SpanExporter {
           resultCallback({ code: ExportResultCode.SUCCESS })
         } else {
           const text = await response.text().catch(() => "(no body)")
-          console.error(`[${this.name}] Export failed: HTTP ${response.status} - ${text}`)
           diag.error(`[${this.name}] Export failed: HTTP ${response.status} - ${text}`)
           resultCallback({ code: ExportResultCode.FAILED })
         }
       })
       .catch((error) => {
-        console.error(`[${this.name}] Export error:`, error)
         diag.error(`[${this.name}] Export error: ${error}`)
         resultCallback({ code: ExportResultCode.FAILED })
       })

@@ -30,7 +30,7 @@ export const honeycombProvider = (
     const env = yield* HoneycombEnvironment
     const url = `${endpoint}/v1/traces`
 
-    console.log(`[Tracing] Honeycomb enabled → ${url}`)
+    yield* Effect.logDebug(`Honeycomb enabled → ${url}`)
 
     return Option.some({
       name: "Honeycomb",
