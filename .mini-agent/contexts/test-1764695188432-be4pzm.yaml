@@ -1,0 +1,15 @@
+events:
+  - _tag: SystemPrompt
+    content: |-
+      You are a helpful, friendly assistant.
+      Keep your responses concise but informative.
+      Use markdown formatting when helpful.
+  - _tag: UserMessage
+    content: My favorite color is blue
+  - _tag: AssistantMessage
+    content: That's great! Blue is often associated with calmness, trust, and
+      stability. Do you have a favorite shade of blue, like navy, sky, or teal?
+  - _tag: UserMessage
+    content: What is my favorite color?
+  - _tag: AssistantMessage
+    content: Your favorite color is blue!

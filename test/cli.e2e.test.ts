@@ -8,10 +8,11 @@
  */
 import { Command } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
-import { describe, expect, it } from "@effect/vitest"
 import { Effect } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
+import { describe } from "vitest"
+import { expect, test } from "./fixtures.js"
 
 // =============================================================================
 // Test Helpers
@@ -20,14 +21,18 @@ import * as path from "node:path"
 const TestLayer = BunContext.layer
 
 const CLI_PATH = path.resolve(__dirname, "../src/main.ts")
-const TEST_CONTEXTS_DIR = ".mini-agent/contexts"
 
-/** Run the CLI with given args and return stdout */
-const runCli = (...args: Array<string>) =>
-  Command.make("bun", CLI_PATH, ...args).pipe(
+/** Context name used in tests - safe to reuse since each test has isolated testDir */
+const TEST_CONTEXT = "test-context"
+
+/** Run the CLI with given args and return stdout. Pass cwd to isolate file output. */
+const runCli = (cwd: string | undefined, ...args: Array<string>) => {
+  const cwdArgs = cwd ? ["--cwd", cwd] : []
+  return Command.make("bun", CLI_PATH, ...cwdArgs, ...args).pipe(
     Command.string,
     Effect.provide(TestLayer)
   )
+}
 
 /** Extract JSON output from CLI response (strips tracing logs and other output) */
 const extractJsonOutput = (output: string): string => {
@@ -50,232 +55,145 @@ const extractJsonOutput = (output: string): string => {
   return ""
 }
 
-/** Clean up test context files */
-const cleanupTestContext = (contextName: string) =>
-  Effect.sync(() => {
-    const contextPath = path.join(TEST_CONTEXTS_DIR, `${contextName}.yaml`)
-    if (fs.existsSync(contextPath)) {
-      fs.unlinkSync(contextPath)
-    }
-  })
-
-/** Generate unique test context name */
-const uniqueContextName = () => `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-
 // =============================================================================
 // Tests
 // =============================================================================
 
 describe("CLI", () => {
   describe("--help", () => {
-    it.effect("shows help message with chat subcommand", () =>
-      Effect.gen(function*() {
-        const output = yield* runCli("--help")
-        // Root help should mention the chat subcommand
-        expect(output).toContain("chat")
-        expect(output).toContain("mini-agent")
-        expect(output).toContain("--config")
-      }))
+    test("shows help message with chat subcommand", async () => {
+      const output = await Effect.runPromise(runCli(undefined, "--help"))
+      // Root help should mention the chat subcommand
+      expect(output).toContain("chat")
+      expect(output).toContain("mini-agent")
+      expect(output).toContain("--config")
+    })
 
-    it.effect("shows chat-specific help", () =>
-      Effect.gen(function*() {
-        const output = yield* runCli("chat", "--help")
-        // Chat subcommand help should show chat options
-        expect(output).toContain("--name")
-        expect(output).toContain("--message")
-        expect(output).toContain("--raw")
-      }))
+    test("shows chat-specific help", async () => {
+      const output = await Effect.runPromise(runCli(undefined, "chat", "--help"))
+      // Chat subcommand help should show chat options
+      expect(output).toContain("--name")
+      expect(output).toContain("--message")
+      expect(output).toContain("--raw")
+    })
 
-    it.effect("shows version with --version", () =>
-      Effect.gen(function*() {
-        const output = yield* runCli("--version")
-        expect(output).toContain("1.0.0")
-      }))
+    test("shows version with --version", async () => {
+      const output = await Effect.runPromise(runCli(undefined, "--version"))
+      expect(output).toContain("1.0.0")
+    })
   })
 
   describe("non-interactive mode (-m)", () => {
-    it.effect("sends a message and gets a response", () =>
-      Effect.gen(function*() {
-        const contextName = uniqueContextName()
+    test("sends a message and gets a response", { timeout: 30000 }, async ({ testDir }) => {
+      const output = await Effect.runPromise(
+        runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Say exactly: TEST_RESPONSE_123")
+      )
 
-        const output = yield* runCli(
-          "chat",
-          "-n",
-          contextName,
-          "-m",
-          "Say exactly: TEST_RESPONSE_123"
-        ).pipe(
-          Effect.ensuring(cleanupTestContext(contextName))
-        )
+      // Should contain some response (we can't predict exact LLM output)
+      expect(output.length).toBeGreaterThan(0)
+    })
 
-        // Should contain some response (we can't predict exact LLM output)
-        expect(output.length).toBeGreaterThan(0)
-      }), { timeout: 30000 })
+    test("uses 'default' context when no name provided", { timeout: 30000 }, async ({ testDir }) => {
+      const output = await Effect.runPromise(
+        runCli(testDir, "chat", "-m", "Say exactly: HELLO")
+      )
 
-    it.effect("uses 'default' context when no name provided", () =>
-      Effect.gen(function*() {
-        const output = yield* runCli(
-          "chat",
-          "-m",
-          "Say exactly: HELLO"
-        )
-
-        expect(output.length).toBeGreaterThan(0)
-      }), { timeout: 30000 })
+      expect(output.length).toBeGreaterThan(0)
+    })
   })
 
   describe("--raw mode", () => {
-    it.effect("outputs JSON events", () =>
-      Effect.gen(function*() {
-        const contextName = uniqueContextName()
+    test("outputs JSON events", { timeout: 30000 }, async ({ testDir }) => {
+      const output = await Effect.runPromise(
+        runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Say exactly: RAW_TEST", "--raw")
+      )
 
-        const output = yield* runCli(
-          "chat",
-          "-n",
-          contextName,
-          "-m",
-          "Say exactly: RAW_TEST",
-          "--raw"
-        ).pipe(
-          Effect.ensuring(cleanupTestContext(contextName))
-        )
+      const jsonOutput = extractJsonOutput(output)
+      // Should contain JSON with _tag field
+      expect(jsonOutput).toContain("\"_tag\"")
+      expect(jsonOutput).toContain("\"AssistantMessage\"")
+    })
 
-        const jsonOutput = extractJsonOutput(output)
-        // Should contain JSON with _tag field
-        expect(jsonOutput).toContain("\"_tag\"")
-        expect(jsonOutput).toContain("\"AssistantMessage\"")
-      }), { timeout: 30000 })
+    test("includes ephemeral events with --show-ephemeral", { timeout: 30000 }, async ({ testDir }) => {
+      const output = await Effect.runPromise(
+        runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Say hello", "--raw", "--show-ephemeral")
+      )
 
-    it.effect("includes ephemeral events with --show-ephemeral", () =>
-      Effect.gen(function*() {
-        const contextName = uniqueContextName()
-
-        const output = yield* runCli(
-          "chat",
-          "-n",
-          contextName,
-          "-m",
-          "Say hello",
-          "--raw",
-          "--show-ephemeral"
-        ).pipe(
-          Effect.ensuring(cleanupTestContext(contextName))
-        )
-
-        const jsonOutput = extractJsonOutput(output)
-        // Should contain TextDelta events when showing ephemeral
-        expect(jsonOutput).toContain("\"TextDelta\"")
-      }), { timeout: 30000 })
+      const jsonOutput = extractJsonOutput(output)
+      // Should contain TextDelta events when showing ephemeral
+      expect(jsonOutput).toContain("\"TextDelta\"")
+    })
   })
 
   describe("context persistence", () => {
-    it.effect("creates context file on first message", () =>
-      Effect.gen(function*() {
-        const contextName = uniqueContextName()
-        const contextPath = path.join(TEST_CONTEXTS_DIR, `${contextName}.yaml`)
+    test("creates context file on first message", { timeout: 30000 }, async ({ testDir }) => {
+      await Effect.runPromise(
+        runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Hello")
+      )
 
-        yield* runCli(
-          "chat",
-          "-n",
-          contextName,
-          "-m",
-          "Hello"
-        )
+      // Context file should exist in testDir/.mini-agent/contexts/
+      const contextPath = path.join(testDir, ".mini-agent", "contexts", `${TEST_CONTEXT}.yaml`)
+      expect(fs.existsSync(contextPath)).toBe(true)
+    })
 
-        // Context file should exist
-        const exists = fs.existsSync(contextPath)
-        expect(exists).toBe(true)
+    test("maintains conversation history across calls", { timeout: 60000 }, async ({ testDir }) => {
+      // First message
+      await Effect.runPromise(
+        runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "My favorite color is blue")
+      )
 
-        // Clean up
-        yield* cleanupTestContext(contextName)
-      }), { timeout: 30000 })
+      // Second message asking about the first - use raw mode to get JSON
+      const output = await Effect.runPromise(
+        runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "What is my favorite color?", "--raw")
+      )
 
-    it.effect("maintains conversation history across calls", () =>
-      Effect.gen(function*() {
-        const contextName = uniqueContextName()
-
-        // First message
-        yield* runCli(
-          "chat",
-          "-n",
-          contextName,
-          "-m",
-          "My favorite color is blue"
-        )
-
-        // Second message asking about the first - use raw mode to get JSON
-        const output = yield* runCli(
-          "chat",
-          "-n",
-          contextName,
-          "-m",
-          "What is my favorite color?",
-          "--raw"
-        ).pipe(
-          Effect.ensuring(cleanupTestContext(contextName))
-        )
-
-        const jsonOutput = extractJsonOutput(output)
-        // Response should be JSON with AssistantMessage containing "blue"
-        expect(jsonOutput).toContain("\"AssistantMessage\"")
-        expect(jsonOutput.toLowerCase()).toContain("blue")
-      }), { timeout: 60000 })
+      const jsonOutput = extractJsonOutput(output)
+      // Response should be JSON with AssistantMessage containing "blue"
+      expect(jsonOutput).toContain("\"AssistantMessage\"")
+      expect(jsonOutput.toLowerCase()).toContain("blue")
+    })
   })
 
   describe("error handling", () => {
-    it.effect("returns non-empty output on valid request", () =>
-      Effect.gen(function*() {
-        const contextName = uniqueContextName()
+    test("returns non-empty output on valid request", { timeout: 30000 }, async ({ testDir }) => {
+      const output = await Effect.runPromise(
+        runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Say hello")
+      )
 
-        const output = yield* runCli(
-          "chat",
-          "-n",
-          contextName,
-          "-m",
-          "Say hello"
-        ).pipe(
-          Effect.ensuring(cleanupTestContext(contextName))
-        )
-
-        // Should have some output
-        expect(output.length).toBeGreaterThan(0)
-      }), { timeout: 30000 })
+      // Should have some output
+      expect(output.length).toBeGreaterThan(0)
+    })
   })
 })
 
 describe("CLI options", () => {
-  it.effect("-n is alias for --name", () =>
-    Effect.gen(function*() {
-      const output = yield* runCli("chat", "--help")
-      expect(output).toContain("-n")
-      expect(output).toContain("--name")
-    }))
+  test("-n is alias for --name", async () => {
+    const output = await Effect.runPromise(runCli(undefined, "chat", "--help"))
+    expect(output).toContain("-n")
+    expect(output).toContain("--name")
+  })
 
-  it.effect("-m is alias for --message", () =>
-    Effect.gen(function*() {
-      const output = yield* runCli("chat", "--help")
-      expect(output).toContain("-m")
-      expect(output).toContain("--message")
-    }))
+  test("-m is alias for --message", async () => {
+    const output = await Effect.runPromise(runCli(undefined, "chat", "--help"))
+    expect(output).toContain("-m")
+    expect(output).toContain("--message")
+  })
 
-  it.effect("-r is alias for --raw", () =>
-    Effect.gen(function*() {
-      const output = yield* runCli("chat", "--help")
-      expect(output).toContain("-r")
-      expect(output).toContain("--raw")
-    }))
+  test("-r is alias for --raw", async () => {
+    const output = await Effect.runPromise(runCli(undefined, "chat", "--help"))
+    expect(output).toContain("-r")
+    expect(output).toContain("--raw")
+  })
 
-  it.effect("-e is alias for --show-ephemeral", () =>
-    Effect.gen(function*() {
-      const output = yield* runCli("chat", "--help")
-      expect(output).toContain("-e")
-      expect(output).toContain("--show-ephemeral")
-    }))
+  test("-e is alias for --show-ephemeral", async () => {
+    const output = await Effect.runPromise(runCli(undefined, "chat", "--help"))
+    expect(output).toContain("-e")
+    expect(output).toContain("--show-ephemeral")
+  })
 
-  it.effect("-c is alias for --config", () =>
-    Effect.gen(function*() {
-      const output = yield* runCli("--help")
-      expect(output).toContain("-c")
-      expect(output).toContain("--config")
-    }))
+  test("-c is alias for --config", async () => {
+    const output = await Effect.runPromise(runCli(undefined, "--help"))
+    expect(output).toContain("-c")
+    expect(output).toContain("--config")
+  })
 })

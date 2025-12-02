@@ -65,3 +65,4 @@ export class FetchOtlpExporter implements SpanExporter {
     return Promise.resolve()
   }
 }
+

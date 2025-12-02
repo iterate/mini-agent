@@ -68,3 +68,4 @@ export class LLMError extends Schema.TaggedError<LLMError>()(
     cause: Schema.optional(Schema.Defect)
   }
 ) {}
+
