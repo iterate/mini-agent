@@ -20,3 +20,5 @@ So I'm incrementally building a chat agent. Initially just a CLI that runs an ag
 - sub-agents
 - agents in long single threaded contexts (like whatsapp convo)
 - client / non-confidential server / confidential server architecture where we can run the servers locally or on durable objects when deployed
+- interruption and turn-taking behaviours
+- tracing
