@@ -4,14 +4,9 @@
  * Pure function that takes persisted events and produces a stream of context events.
  * This is the core LLM interaction - converting conversation history into a response stream.
  */
+import { type AiError, LanguageModel } from "@effect/ai"
 import { Effect, Option, pipe, Ref, Stream } from "effect"
-import { AiError, LanguageModel } from "@effect/ai"
-import {
-  AssistantMessageEvent,
-  type ContextEvent,
-  type PersistedEvent,
-  TextDeltaEvent
-} from "./context.model.js"
+import { AssistantMessageEvent, type ContextEvent, type PersistedEvent, TextDeltaEvent } from "./context.model.js"
 
 // =============================================================================
 // LLM Response Streaming
@@ -41,9 +36,7 @@ export const streamLLMResponse = (
         // Stream the LLM response
         (messages) => model.streamText({ prompt: messages }),
         // Extract text deltas
-        Stream.filterMap((part) =>
-          part.type === "text-delta" ? Option.some(part.delta) : Option.none()
-        ),
+        Stream.filterMap((part) => part.type === "text-delta" ? Option.some(part.delta) : Option.none()),
         // Accumulate full response and emit TextDelta events
         Stream.mapEffect((delta) =>
           Ref.update(fullResponseRef, (t) => t + delta).pipe(
@@ -61,4 +54,3 @@ export const streamLLMResponse = (
       )
     })
   )
-

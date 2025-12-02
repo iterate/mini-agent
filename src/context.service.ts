@@ -10,10 +10,9 @@
  * 3. Streams back new events (TextDelta ephemeral, AssistantMessage persisted)
  * 4. Persists the new events to the context file
  */
-import { Error as PlatformError } from "@effect/platform"
-import { AiError, LanguageModel } from "@effect/ai"
-import { Effect, pipe, Stream } from "effect"
-import { Schema } from "effect"
+import type { AiError, LanguageModel } from "@effect/ai"
+import type { Error as PlatformError } from "@effect/platform"
+import { Effect, pipe, Schema, Stream } from "effect"
 import {
   type ContextEvent,
   PersistedEvent,
@@ -74,9 +73,9 @@ export class ContextService extends Effect.Service<ContextService>()("ContextSer
           Stream.tap((event) =>
             Schema.is(PersistedEvent)(event)
               ? Effect.gen(function*() {
-                  const current = yield* repo.load(contextName)
-                  yield* repo.save(contextName, [...current, event])
-                })
+                const current = yield* repo.load(contextName)
+                yield* repo.save(contextName, [...current, event])
+              })
               : Effect.void
           )
         ),
@@ -90,11 +89,9 @@ export class ContextService extends Effect.Service<ContextService>()("ContextSer
       /**
        * List all context names.
        */
-      list: (): Effect.Effect<Array<string>, PlatformError.PlatformError> =>
-        repo.list()
+      list: (): Effect.Effect<Array<string>, PlatformError.PlatformError> => repo.list()
     }
   }),
   dependencies: [ContextRepository.Default],
   accessors: true
 }) {}
-

@@ -24,4 +24,3 @@ export interface ActiveProvider {
 
 /** Effect that optionally returns a provider config */
 export type ProviderEffect = Effect.Effect<Option.Option<ProviderConfig>, ConfigError.ConfigError, never>
-

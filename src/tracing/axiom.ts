@@ -2,7 +2,8 @@
  * Axiom Tracing Provider
  */
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
-import { Config, ConfigError, Effect, Option, Redacted } from "effect"
+import type { ConfigError } from "effect"
+import { Config, Effect, Option, Redacted } from "effect"
 import { FetchOtlpExporter } from "./exporter.js"
 import type { ProviderConfig } from "./provider.js"
 
@@ -42,10 +43,9 @@ export const axiomProvider = (): Effect.Effect<Option.Option<ProviderConfig>, Co
       ),
       ...(Option.isSome(axiomOrg)
         ? {
-            buildUrl: (traceId: string) =>
-              `https://app.axiom.co/${axiomOrg.value}/stream/${dataset}?traceId=${traceId}&traceDataset=${dataset}`
-          }
+          buildUrl: (traceId: string) =>
+            `https://app.axiom.co/${axiomOrg.value}/stream/${dataset}?traceId=${traceId}&traceDataset=${dataset}`
+        }
         : {})
     })
   })
-

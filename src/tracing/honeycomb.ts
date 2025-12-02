@@ -2,7 +2,8 @@
  * Honeycomb Tracing Provider
  */
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
-import { Config, ConfigError, Effect, Option, Redacted } from "effect"
+import type { ConfigError } from "effect"
+import { Config, Effect, Option, Redacted } from "effect"
 import { FetchOtlpExporter } from "./exporter.js"
 import type { ProviderConfig } from "./provider.js"
 
@@ -17,7 +18,9 @@ const HoneycombEnvironment = Config.string("HONEYCOMB_ENVIRONMENT").pipe(
   Config.withDefault("test")
 )
 
-export const honeycombProvider = (serviceName: string): Effect.Effect<Option.Option<ProviderConfig>, ConfigError.ConfigError> =>
+export const honeycombProvider = (
+  serviceName: string
+): Effect.Effect<Option.Option<ProviderConfig>, ConfigError.ConfigError> =>
   Effect.gen(function*() {
     const key = yield* HoneycombApiKey
     if (Option.isNone(key)) return Option.none()
@@ -43,4 +46,3 @@ export const honeycombProvider = (serviceName: string): Effect.Effect<Option.Opt
         `https://ui.honeycomb.io/${team}/environments/${env}/datasets/${serviceName}/trace?trace_id=${traceId}`
     })
   })
-

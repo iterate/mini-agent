@@ -2,7 +2,8 @@
  * Traceloop Tracing Provider (LLM Observability)
  */
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
-import { Config, ConfigError, Effect, Option, Redacted } from "effect"
+import type { ConfigError } from "effect"
+import { Config, Effect, Option, Redacted } from "effect"
 import { FetchOtlpExporter } from "./exporter.js"
 import type { ProviderConfig } from "./provider.js"
 
@@ -37,8 +38,6 @@ export const traceloopProvider = (): Effect.Effect<Option.Option<ProviderConfig>
         }),
         { scheduledDelayMillis: 100 }
       ),
-      buildUrl: (traceId) =>
-        `https://app.traceloop.com/projects/${projectSlug}/trace/${traceId}`
+      buildUrl: (traceId) => `https://app.traceloop.com/projects/${projectSlug}/trace/${traceId}`
     })
   })
-

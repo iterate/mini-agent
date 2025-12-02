@@ -4,9 +4,9 @@
  * Bun-compatible OTLP exporter with better error logging than the default.
  */
 import { diag } from "@opentelemetry/api"
-import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base"
-import { ExportResultCode, type ExportResult } from "@opentelemetry/core"
+import { type ExportResult, ExportResultCode } from "@opentelemetry/core"
 import { JsonTraceSerializer } from "@opentelemetry/otlp-transformer"
+import type { ReadableSpan, SpanExporter } from "@opentelemetry/sdk-trace-base"
 
 export interface FetchExporterOptions {
   name: string
@@ -65,5 +65,3 @@ export class FetchOtlpExporter implements SpanExporter {
     return Promise.resolve()
   }
 }
-
-

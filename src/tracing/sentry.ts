@@ -2,7 +2,8 @@
  * Sentry Tracing Provider
  */
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
-import { Config, ConfigError, Effect, Option, Redacted } from "effect"
+import type { ConfigError } from "effect"
+import { Config, Effect, Option, Redacted } from "effect"
 import { FetchOtlpExporter } from "./exporter.js"
 import type { ProviderConfig } from "./provider.js"
 
@@ -34,8 +35,6 @@ export const sentryProvider = (): Effect.Effect<Option.Option<ProviderConfig>, C
         }),
         { scheduledDelayMillis: 100 }
       ),
-      buildUrl: (traceId) =>
-        `https://${team}.sentry.io/explore/traces/trace/${traceId}/`
+      buildUrl: (traceId) => `https://${team}.sentry.io/explore/traces/trace/${traceId}/`
     })
   })
-

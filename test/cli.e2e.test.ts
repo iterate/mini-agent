@@ -3,11 +3,13 @@
  *
  * Tests the CLI functionality using Effect Command to run the actual CLI process.
  * These tests verify the CLI works correctly with different options.
+ *
+ * NOTE: This is actually an eval - the LLM is in the loop. Will get to proper evals later.
  */
 import { Command } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
-import { Effect } from "effect"
 import { describe, expect, it } from "@effect/vitest"
+import { Effect } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
 
@@ -18,7 +20,7 @@ import * as path from "node:path"
 const TestLayer = BunContext.layer
 
 const CLI_PATH = path.resolve(__dirname, "../src/main.ts")
-const TEST_CONTEXTS_DIR = ".contexts"
+const TEST_CONTEXTS_DIR = ".mini-agent/contexts"
 
 /** Run the CLI with given args and return stdout */
 const runCli = (...args: Array<string>) =>
@@ -27,12 +29,25 @@ const runCli = (...args: Array<string>) =>
     Effect.provide(TestLayer)
   )
 
-/** Extract JSON output from CLI response (strips tracing logs) */
+/** Extract JSON output from CLI response (strips tracing logs and other output) */
 const extractJsonOutput = (output: string): string => {
-  // Find lines that start with { (JSON objects)
-  const lines = output.split("\n")
-  const jsonLines = lines.filter((line) => line.trim().startsWith("{"))
-  return jsonLines.join("\n")
+  // Extract JSON objects that contain _tag field (event objects)
+  // The JSON is pretty-printed across multiple lines
+  const jsonPattern = /^\{[^{}]*"_tag"[^{}]*\}$/gm
+  const matches = output.match(jsonPattern)
+  if (matches) {
+    return matches.join("\n")
+  }
+  // Fallback: extract all text between first { and last } that contains _tag
+  const startIdx = output.indexOf("{")
+  const endIdx = output.lastIndexOf("}")
+  if (startIdx !== -1 && endIdx !== -1 && startIdx < endIdx) {
+    const jsonSection = output.slice(startIdx, endIdx + 1)
+    if (jsonSection.includes("\"_tag\"")) {
+      return jsonSection
+    }
+  }
+  return ""
 }
 
 /** Clean up test context files */
@@ -53,22 +68,29 @@ const uniqueContextName = () => `test-${Date.now()}-${Math.random().toString(36)
 
 describe("CLI", () => {
   describe("--help", () => {
-    it.effect("shows help message", () =>
+    it.effect("shows help message with chat subcommand", () =>
       Effect.gen(function*() {
         const output = yield* runCli("--help")
+        // Root help should mention the chat subcommand
         expect(output).toContain("chat")
+        expect(output).toContain("mini-agent")
+        expect(output).toContain("--config")
+      }))
+
+    it.effect("shows chat-specific help", () =>
+      Effect.gen(function*() {
+        const output = yield* runCli("chat", "--help")
+        // Chat subcommand help should show chat options
         expect(output).toContain("--name")
         expect(output).toContain("--message")
         expect(output).toContain("--raw")
-      })
-    )
+      }))
 
     it.effect("shows version with --version", () =>
       Effect.gen(function*() {
         const output = yield* runCli("--version")
         expect(output).toContain("1.0.0")
-      })
-    )
+      }))
   })
 
   describe("non-interactive mode (-m)", () => {
@@ -77,28 +99,29 @@ describe("CLI", () => {
         const contextName = uniqueContextName()
 
         const output = yield* runCli(
-          "-n", contextName,
-          "-m", "Say exactly: TEST_RESPONSE_123"
+          "chat",
+          "-n",
+          contextName,
+          "-m",
+          "Say exactly: TEST_RESPONSE_123"
         ).pipe(
           Effect.ensuring(cleanupTestContext(contextName))
         )
 
         // Should contain some response (we can't predict exact LLM output)
         expect(output.length).toBeGreaterThan(0)
-      }),
-      { timeout: 30000 }
-    )
+      }), { timeout: 30000 })
 
     it.effect("uses 'default' context when no name provided", () =>
       Effect.gen(function*() {
         const output = yield* runCli(
-          "-m", "Say exactly: HELLO"
+          "chat",
+          "-m",
+          "Say exactly: HELLO"
         )
 
         expect(output.length).toBeGreaterThan(0)
-      }),
-      { timeout: 30000 }
-    )
+      }), { timeout: 30000 })
   })
 
   describe("--raw mode", () => {
@@ -107,8 +130,11 @@ describe("CLI", () => {
         const contextName = uniqueContextName()
 
         const output = yield* runCli(
-          "-n", contextName,
-          "-m", "Say exactly: RAW_TEST",
+          "chat",
+          "-n",
+          contextName,
+          "-m",
+          "Say exactly: RAW_TEST",
           "--raw"
         ).pipe(
           Effect.ensuring(cleanupTestContext(contextName))
@@ -116,19 +142,20 @@ describe("CLI", () => {
 
         const jsonOutput = extractJsonOutput(output)
         // Should contain JSON with _tag field
-        expect(jsonOutput).toContain('"_tag"')
-        expect(jsonOutput).toContain('"AssistantMessage"')
-      }),
-      { timeout: 30000 }
-    )
+        expect(jsonOutput).toContain("\"_tag\"")
+        expect(jsonOutput).toContain("\"AssistantMessage\"")
+      }), { timeout: 30000 })
 
     it.effect("includes ephemeral events with --show-ephemeral", () =>
       Effect.gen(function*() {
         const contextName = uniqueContextName()
 
         const output = yield* runCli(
-          "-n", contextName,
-          "-m", "Say hello",
+          "chat",
+          "-n",
+          contextName,
+          "-m",
+          "Say hello",
           "--raw",
           "--show-ephemeral"
         ).pipe(
@@ -137,10 +164,8 @@ describe("CLI", () => {
 
         const jsonOutput = extractJsonOutput(output)
         // Should contain TextDelta events when showing ephemeral
-        expect(jsonOutput).toContain('"TextDelta"')
-      }),
-      { timeout: 30000 }
-    )
+        expect(jsonOutput).toContain("\"TextDelta\"")
+      }), { timeout: 30000 })
   })
 
   describe("context persistence", () => {
@@ -150,8 +175,11 @@ describe("CLI", () => {
         const contextPath = path.join(TEST_CONTEXTS_DIR, `${contextName}.yaml`)
 
         yield* runCli(
-          "-n", contextName,
-          "-m", "Hello"
+          "chat",
+          "-n",
+          contextName,
+          "-m",
+          "Hello"
         )
 
         // Context file should exist
@@ -160,9 +188,7 @@ describe("CLI", () => {
 
         // Clean up
         yield* cleanupTestContext(contextName)
-      }),
-      { timeout: 30000 }
-    )
+      }), { timeout: 30000 })
 
     it.effect("maintains conversation history across calls", () =>
       Effect.gen(function*() {
@@ -170,14 +196,20 @@ describe("CLI", () => {
 
         // First message
         yield* runCli(
-          "-n", contextName,
-          "-m", "My favorite color is blue"
+          "chat",
+          "-n",
+          contextName,
+          "-m",
+          "My favorite color is blue"
         )
 
         // Second message asking about the first - use raw mode to get JSON
         const output = yield* runCli(
-          "-n", contextName,
-          "-m", "What is my favorite color?",
+          "chat",
+          "-n",
+          contextName,
+          "-m",
+          "What is my favorite color?",
           "--raw"
         ).pipe(
           Effect.ensuring(cleanupTestContext(contextName))
@@ -185,11 +217,9 @@ describe("CLI", () => {
 
         const jsonOutput = extractJsonOutput(output)
         // Response should be JSON with AssistantMessage containing "blue"
-        expect(jsonOutput).toContain('"AssistantMessage"')
+        expect(jsonOutput).toContain("\"AssistantMessage\"")
         expect(jsonOutput.toLowerCase()).toContain("blue")
-      }),
-      { timeout: 60000 }
-    )
+      }), { timeout: 60000 })
   })
 
   describe("error handling", () => {
@@ -198,51 +228,54 @@ describe("CLI", () => {
         const contextName = uniqueContextName()
 
         const output = yield* runCli(
-          "-n", contextName,
-          "-m", "Say hello"
+          "chat",
+          "-n",
+          contextName,
+          "-m",
+          "Say hello"
         ).pipe(
           Effect.ensuring(cleanupTestContext(contextName))
         )
 
         // Should have some output
         expect(output.length).toBeGreaterThan(0)
-      }),
-      { timeout: 30000 }
-    )
+      }), { timeout: 30000 })
   })
 })
 
 describe("CLI options", () => {
   it.effect("-n is alias for --name", () =>
     Effect.gen(function*() {
-      const output = yield* runCli("--help")
+      const output = yield* runCli("chat", "--help")
       expect(output).toContain("-n")
       expect(output).toContain("--name")
-    })
-  )
+    }))
 
   it.effect("-m is alias for --message", () =>
     Effect.gen(function*() {
-      const output = yield* runCli("--help")
+      const output = yield* runCli("chat", "--help")
       expect(output).toContain("-m")
       expect(output).toContain("--message")
-    })
-  )
+    }))
 
   it.effect("-r is alias for --raw", () =>
     Effect.gen(function*() {
-      const output = yield* runCli("--help")
+      const output = yield* runCli("chat", "--help")
       expect(output).toContain("-r")
       expect(output).toContain("--raw")
-    })
-  )
+    }))
 
   it.effect("-e is alias for --show-ephemeral", () =>
     Effect.gen(function*() {
-      const output = yield* runCli("--help")
+      const output = yield* runCli("chat", "--help")
       expect(output).toContain("-e")
       expect(output).toContain("--show-ephemeral")
-    })
-  )
-})
+    }))
 
+  it.effect("-c is alias for --config", () =>
+    Effect.gen(function*() {
+      const output = yield* runCli("--help")
+      expect(output).toContain("-c")
+      expect(output).toContain("--config")
+    }))
+})

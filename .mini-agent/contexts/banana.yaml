@@ -1,0 +1,11 @@
+events:
+  - _tag: SystemPrompt
+    content: |-
+      You are a helpful, friendly assistant.
+      Keep your responses concise but informative.
+      Use markdown formatting when helpful.
+  - _tag: UserMessage
+    content: some message
+  - _tag: AssistantMessage
+    content: Sure! What kind of message would you like to create? A greeting, a
+      motivational quote, or something specific? Let me know!

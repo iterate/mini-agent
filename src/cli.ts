@@ -3,10 +3,10 @@
  *
  * Defines the CLI interface for the chat application.
  */
+import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
 import { Terminal } from "@effect/platform"
-import { Telemetry, Prompt } from "@effect/ai"
-import { Effect, Console, Layer, Option, Schema, Stream } from "effect"
+import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
 import {
   AssistantMessageEvent,
   type ContextEvent,
@@ -18,7 +18,27 @@ import { ContextService } from "./context.service.js"
 import { printTraceLinks } from "./tracing/index.js"
 
 // =============================================================================
-// CLI Options
+// Global CLI Options
+// =============================================================================
+
+export const configFileOption = Options.file("config").pipe(
+  Options.withAlias("c"),
+  Options.withDescription("Path to YAML config file"),
+  Options.optional
+)
+
+export const cwdOption = Options.directory("cwd").pipe(
+  Options.withDescription("Working directory override"),
+  Options.optional
+)
+
+export const logLevelOption = Options.choice("log-level", ["trace", "debug", "info", "warn", "error", "none"]).pipe(
+  Options.withDescription("Stdout log level"),
+  Options.optional
+)
+
+// =============================================================================
+// Chat Command Options
 // =============================================================================
 
 const nameOption = Options.text("name").pipe(
@@ -347,12 +367,23 @@ const chatCommand = Command.make(
     raw: rawOption,
     showEphemeral: showEphemeralOption
   },
-  ({ message, name, raw, showEphemeral }) =>
-    runChat({ message, name, raw, showEphemeral })
+  ({ message, name, raw, showEphemeral }) => runChat({ message, name, raw, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
-export const cli = Command.run(chatCommand, {
-  name: "chat",
+// Root command with global options
+const rootCommand = Command.make(
+  "mini-agent",
+  {
+    configFile: configFileOption,
+    cwd: cwdOption,
+    logLevel: logLevelOption
+  }
+).pipe(
+  Command.withSubcommands([chatCommand]),
+  Command.withDescription("AI assistant with persistent context and comprehensive configuration")
+)
+
+export const cli = Command.run(rootCommand, {
+  name: "mini-agent",
   version: "1.0.0"
 })
-

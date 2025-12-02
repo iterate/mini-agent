@@ -2,7 +2,8 @@
  * Langfuse Tracing Provider (LLM Observability & Evaluation)
  */
 import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base"
-import { Config, ConfigError, Effect, Option, Redacted } from "effect"
+import type { ConfigError } from "effect"
+import { Config, Effect, Option, Redacted } from "effect"
 import { FetchOtlpExporter } from "./exporter.js"
 import type { ProviderConfig } from "./provider.js"
 
@@ -50,4 +51,3 @@ export const langfuseProvider = (): Effect.Effect<Option.Option<ProviderConfig>,
       }
     })
   })
-

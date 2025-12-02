@@ -13,25 +13,32 @@
  */
 import * as NodeSdk from "@effect/opentelemetry/NodeSdk"
 import { diag, DiagConsoleLogger, DiagLogLevel } from "@opentelemetry/api"
-import { Config, ConfigError, Console, Context, Effect, Layer, Option } from "effect"
-import type { ActiveProvider, ProviderConfig } from "./provider.js"
-import { honeycombProvider } from "./honeycomb.js"
+import type { ConfigError } from "effect"
+import { Config, Console, Context, Effect, Layer, Option } from "effect"
 import { axiomProvider } from "./axiom.js"
+import { honeycombProvider } from "./honeycomb.js"
+import { langfuseProvider } from "./langfuse.js"
+import type { ActiveProvider, ProviderConfig } from "./provider.js"
 import { sentryProvider } from "./sentry.js"
 import { traceloopProvider } from "./traceloop.js"
-import { langfuseProvider } from "./langfuse.js"
 
 // =============================================================================
 // OpenTelemetry Diagnostic Logging
 // =============================================================================
 
 const otelLogLevel = process.env.OTEL_LOG_LEVEL?.toLowerCase() ?? "error"
-const diagLevel = otelLogLevel === "debug" ? DiagLogLevel.DEBUG
-  : otelLogLevel === "info" ? DiagLogLevel.INFO
-  : otelLogLevel === "warn" ? DiagLogLevel.WARN
-  : otelLogLevel === "error" ? DiagLogLevel.ERROR
-  : otelLogLevel === "verbose" ? DiagLogLevel.VERBOSE
-  : otelLogLevel === "none" ? DiagLogLevel.NONE
+const diagLevel = otelLogLevel === "debug" ?
+  DiagLogLevel.DEBUG
+  : otelLogLevel === "info" ?
+  DiagLogLevel.INFO
+  : otelLogLevel === "warn" ?
+  DiagLogLevel.WARN
+  : otelLogLevel === "error" ?
+  DiagLogLevel.ERROR
+  : otelLogLevel === "verbose" ?
+  DiagLogLevel.VERBOSE
+  : otelLogLevel === "none" ?
+  DiagLogLevel.NONE
   : DiagLogLevel.ERROR
 
 if (diagLevel !== DiagLogLevel.NONE) {
@@ -97,71 +104,71 @@ const collectActiveProviders = (serviceName: string): Effect.Effect<Array<Provid
  * @param serviceName - Name of the service (appears in trace UI)
  * @returns Layer providing OpenTelemetry SDK and TraceLinks service
  */
-export const createTracingLayer = (serviceName: string) => Layer.unwrapEffect(
-  Effect.gen(function*() {
-    const serviceVersion = yield* ServiceVersion
-    const providers = yield* collectActiveProviders(serviceName)
+export const createTracingLayer = (serviceName: string) =>
+  Layer.unwrapEffect(
+    Effect.gen(function*() {
+      const serviceVersion = yield* ServiceVersion
+      const providers = yield* collectActiveProviders(serviceName)
 
-    if (providers.length === 0) {
-      // No providers configured, provide empty TraceLinks
-      return Layer.succeed(TraceLinks, {
-        providers: [],
-        printLinks: () => Effect.void
-      })
-    }
-
-    // Build active providers list for trace URLs
-    const activeProviders: Array<ActiveProvider> = providers
-      .filter((p) => p.buildUrl !== undefined)
-      .map((p) => ({ name: p.name, buildUrl: p.buildUrl! }))
-
-    // Terminal hyperlink helper (OSC 8 escape sequence)
-    const terminalLink = (text: string, url: string): string =>
-      `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\`
-
-    // Create TraceLinks service
-    const traceLinksLayer = Layer.succeed(TraceLinks, {
-      providers: activeProviders,
-      printLinks: (traceId: string) =>
-        Effect.gen(function*() {
-          if (activeProviders.length > 0) {
-            yield* Console.log("\n📊 Observability links")
-            for (const provider of activeProviders) {
-              const url = provider.buildUrl(traceId)
-              yield* Console.log(`→ ${terminalLink(provider.name, url)}`)
-            }
-          }
+      if (providers.length === 0) {
+        // No providers configured, provide empty TraceLinks
+        return Layer.succeed(TraceLinks, {
+          providers: [],
+          printLinks: () => Effect.void
         })
-    })
+      }
 
-    // Create the NodeSdk layer with ALL processors
-    // CRITICAL: shutdownTimeout ensures spans flush before CLI exits
-    const nodeSdkLayer = NodeSdk.layer(() => ({
-      resource: {
-        serviceName,
-        serviceVersion,
-        attributes: {
-          "deployment.environment": process.env.NODE_ENV ?? "development"
-        }
-      },
-      spanProcessor: providers.map((p) => p.processor),
-      shutdownTimeout: "5 seconds"
-    }))
+      // Build active providers list for trace URLs
+      const activeProviders: Array<ActiveProvider> = providers
+        .filter((p) => p.buildUrl !== undefined)
+        .map((p) => ({ name: p.name, buildUrl: p.buildUrl! }))
 
-    return Layer.merge(nodeSdkLayer, traceLinksLayer)
-  }).pipe(
-    Effect.catchAll((error) =>
-      Console.error(`Tracing setup failed: ${error}`).pipe(
-        Effect.map(() =>
-          Layer.succeed(TraceLinks, {
-            providers: [],
-            printLinks: () => Effect.void
+      // Terminal hyperlink helper (OSC 8 escape sequence)
+      const terminalLink = (text: string, url: string): string => `\x1b]8;;${url}\x1b\\${text}\x1b]8;;\x1b\\`
+
+      // Create TraceLinks service
+      const traceLinksLayer = Layer.succeed(TraceLinks, {
+        providers: activeProviders,
+        printLinks: (traceId: string) =>
+          Effect.gen(function*() {
+            if (activeProviders.length > 0) {
+              yield* Console.log("\n📊 Observability links")
+              for (const provider of activeProviders) {
+                const url = provider.buildUrl(traceId)
+                yield* Console.log(`→ ${terminalLink(provider.name, url)}`)
+              }
+            }
           })
+      })
+
+      // Create the NodeSdk layer with ALL processors
+      // CRITICAL: shutdownTimeout ensures spans flush before CLI exits
+      const nodeSdkLayer = NodeSdk.layer(() => ({
+        resource: {
+          serviceName,
+          serviceVersion,
+          attributes: {
+            "deployment.environment": process.env.NODE_ENV ?? "development"
+          }
+        },
+        spanProcessor: providers.map((p) => p.processor),
+        shutdownTimeout: "5 seconds"
+      }))
+
+      return Layer.merge(nodeSdkLayer, traceLinksLayer)
+    }).pipe(
+      Effect.catchAll((error) =>
+        Console.error(`Tracing setup failed: ${error}`).pipe(
+          Effect.map(() =>
+            Layer.succeed(TraceLinks, {
+              providers: [],
+              printLinks: () => Effect.void
+            })
+          )
         )
       )
     )
   )
-)
 
 // =============================================================================
 // Helper for printing trace links
@@ -192,4 +199,3 @@ export const withTraceLinks = <A, E, R>(
 
     return yield* effect
   })
-

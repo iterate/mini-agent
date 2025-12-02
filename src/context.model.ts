@@ -80,4 +80,3 @@ export type ContextEvent = PersistedEvent | TextDeltaEvent
 export const DEFAULT_SYSTEM_PROMPT = `You are a helpful, friendly assistant.
 Keep your responses concise but informative.
 Use markdown formatting when helpful.`
-
