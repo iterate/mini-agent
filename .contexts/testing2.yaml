@@ -1,0 +1,118 @@
+events:
+  - _tag: SystemPrompt
+    content: |-
+      You are a helpful, friendly assistant. 
+      Keep your responses concise but informative. 
+      Use markdown formatting when helpful.
+  - _tag: UserMessage
+    content: hi
+  - _tag: AssistantMessage
+    content: Hello! How can I assist you today?
+  - _tag: UserMessage
+    content: test
+  - _tag: AssistantMessage
+    content: Test successful! How can I help you further?
+  - _tag: UserMessage
+    content: tell me a long story
+  - _tag: AssistantMessage
+    content: >-
+      ### The Tale of the Wandering Star
+
+
+      Once upon a time, in a land far beyond our own, there was a beautiful
+      kingdom named Luminara. It was a place where the sun always shone bright,
+      flowers bloomed in vibrant colors, and the rivers flowed with
+      crystal-clear waters. However, this kingdom had a secret: at the center of
+      Luminara lay a hidden forest, where the magical Wandering Star was said to
+      dwell.
+
+
+      The Wandering Star was no ordinary star; it was a mystical entity that
+      granted wishes to those pure of heart. Many sought after this star, but
+      few ever found it. The king of Luminara, a kind and wise ruler named King
+      Cedric, declared that whoever could bring back the star would be rewarded
+      with anything their heart desired.
+
+
+      One day, a young girl named Elara, known for her adventurous spirit and
+      kind heart, heard about the Wandering Star. Unlike others who sought it
+      for wealth or power, she simply wished for happiness for her family, who
+      had fallen on hard times. Inspired by stories of brave quests, she decided
+      to embark on her own journey to find the star.
+
+
+      Before setting off, Elara visited the village elder, an old woman with
+      eyes that sparkled like the night sky. The elder warned her, "The path to
+      the Wandering Star is filled with challenges, but remember, pure
+      intentions will guide you through."
+
+
+      With a backpack full of provisions, Elara donned her sturdy boots and set
+      off into the hidden forest. The air was filled with the sweet scent of
+      pine, and the sounds of chirping birds accompanied her as she ventured
+      deeper into the woods. After hours of walking, she came upon a river that
+      sparkled like diamonds in the sunlight, blocking her path.
+
+
+      Unsure how to cross, she pondered her options when suddenly, a wise old
+      frog appeared on a lily pad. "To cross the river, you must answer my
+      riddle: I am not alive, but I can grow; I don’t have lungs, but I need
+      air. What am I?"
+
+
+      Elara thought for a moment and replied, "Fire!" The frog nodded
+      approvingly and granted her passage across the river. With a thankful
+      heart, she continued her journey.
+
+
+      As night fell, Elara found a clearing where the stars twinkled brightly
+      above. Exhausted, she laid down to rest. In her dreams, she saw the
+      Wandering Star—a brilliant, glowing orb that danced among the clouds. She
+      awoke with renewed determination.
+
+
+      The next day, she moved forward, facing a tall mountain that loomed ahead.
+      Climbing its steep slopes, Elara met a gentle giant named Thorne, who was
+      deeply sad because a storm had taken away his only friend, a sparrow.
+      Seeing his sorrow, Elara offered to help him find the bird. Together, they
+      searched until they found the sparrow trapped beneath a fallen branch.
+
+
+      With the bird freed, Thorne smiled broadly and said, "You have shown great
+      kindness. I will help you find the Wandering Star." He picked her up
+      gently and, with his long strides, they soared above the mountain tops,
+      reaching the other side of the forest.
+
+
+      Finally, they arrived at a shimmering lake said to be home to the
+      Wandering Star. As they approached the water’s edge, the surface began to
+      swirl, and out emerged the Star itself, radiant and mesmerizing.
+
+
+      Elara stepped forward, her heart racing with excitement. "Wandering Star,
+      I do not seek riches or fame. I only wish for my family's happiness."
+
+
+      The Star glowed brighter and spoke in a voice as gentle as a breeze, "Your
+      pure heart has led you here, young one. You shall have your wish."
+
+
+      In that moment, a warm light enveloped Elara, filling her with a sense of
+      joy and love. As she returned to her village with Thorne by her side, she
+      found her family's troubles had vanished. They were together again,
+      laughter echoing in their home.
+
+
+      King Cedric, hearing of her noble quest, bestowed upon her the title of
+      Luminary, guardian of wishes. Elara and Thorne became legends in Luminara,
+      reminding all that true magic lies within a kind heart.
+
+
+      And from that day forward, the kingdom flourished, where love, friendship,
+      and kindness reigned supreme.
+
+
+      ### The End
+
+
+      Would you like to hear another story or discuss something else?
