@@ -1,20 +1,22 @@
-import { Args, Command, Options, Prompt as CliPrompt } from "@effect/cli"
+import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { FetchHttpClient, Terminal } from "@effect/platform"
+import { FetchHttpClient, FileSystem, Terminal } from "@effect/platform"
 import { Effect, Console, Config, Layer, Cause, Option, Stream } from "effect"
 import { Telemetry, Prompt } from "@effect/ai"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { createTracingLayer, TraceLinks } from "./shared/tracing"
 import {
-  runWithContext,
+  addEvents,
   loadContext,
-  getDisplayableEvents,
+  getDisplayableEvents
+} from "./shared/context"
+import {
   UserMessageEvent,
   isTextDelta,
   isAssistantMessage,
   type ContextEvent,
   type PersistedEvent
-} from "./shared/context"
+} from "./shared/schema"
 
 // =============================================================================
 // Configuration
@@ -27,21 +29,20 @@ const OpenAiModel = Config.string("OPENAI_MODEL").pipe(Config.withDefault("gpt-4
 // CLI Options
 // =============================================================================
 
-const contextArg = Args.text({ name: "context" }).pipe(
-  Args.withDescription("Context name (slug identifier for the conversation)")
-)
+const CONTEXTS_DIR = ".contexts"
 
-const interactiveOption = Options.boolean("interactive").pipe(
-  Options.withAlias("i"),
-  Options.withDescription("Run in interactive mode (multi-turn conversation)"),
-  Options.withDefault(false)
+const nameOption = Options.text("name").pipe(
+  Options.withAlias("n"),
+  Options.withDescription("Context name (slug identifier for the conversation)"),
+  Options.optional
 )
 
 const messageOption = Options.text("message").pipe(
   Options.withAlias("m"),
-  Options.withDescription("Message to send to the assistant"),
+  Options.withDescription("Message to send (non-interactive single-turn mode)"),
   Options.optional
 )
+
 
 const rawOption = Options.boolean("raw").pipe(
   Options.withAlias("r"),
@@ -55,6 +56,7 @@ const showEphemeralOption = Options.boolean("show-ephemeral").pipe(
   Options.withDefault(false)
 )
 
+
 // =============================================================================
 // Event Stream Handler
 // =============================================================================
@@ -66,19 +68,16 @@ interface OutputOptions {
 
 /** Handle a single context event based on output options */
 const handleEvent = (event: ContextEvent, options: OutputOptions): Effect.Effect<void> => {
-  const isEphemeral = isTextDelta(event)
-  
-  // Skip ephemeral events if not requested
-  if (isEphemeral && !options.showEphemeral) {
-    return Effect.void
-  }
-  
   if (options.raw) {
     // Raw mode: output as JSON, one per line
+    // Skip ephemeral events unless explicitly requested
+    if (isTextDelta(event) && !options.showEphemeral) {
+      return Effect.void
+    }
     return Console.log(JSON.stringify(event, null, 2))
   }
   
-  // Normal mode: stream text deltas, newline after complete response
+  // Normal mode: always stream text deltas, newline after complete response
   if (isTextDelta(event)) {
     return Effect.sync(() => process.stdout.write(event.delta))
   }
@@ -91,7 +90,7 @@ const handleEvent = (event: ContextEvent, options: OutputOptions): Effect.Effect
 /** Run the event stream, handling each event */
 const runEventStream = (contextName: string, userMessage: string, options: OutputOptions) => {
   const userEvent = UserMessageEvent.make({ content: userMessage })
-  return runWithContext(contextName, [userEvent]).pipe(
+  return addEvents(contextName, [userEvent]).pipe(
     Stream.runForEach((event) => handleEvent(event, options))
   )
 }
@@ -100,25 +99,44 @@ const runEventStream = (contextName: string, userMessage: string, options: Outpu
 // History Display
 // =============================================================================
 
+// ANSI styling helpers
+const bold = (s: string) => `\x1b[1m${s}\x1b[0m`
+const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`
+const green = (s: string) => `\x1b[32m${s}\x1b[0m`
+const dim = (s: string) => `\x1b[90m${s}\x1b[0m`
+const dimCyan = (s: string) => `\x1b[38;5;66m${s}\x1b[0m`
+const dimGreen = (s: string) => `\x1b[38;5;65m${s}\x1b[0m`
+const assistantLabel = bold(green("Assistant:"))
+const dimUserLabel = dimCyan("You:")
+const dimAssistantLabel = dimGreen("Assistant:")
+
 /** Display previous conversation history */
 const displayHistory = (events: ReadonlyArray<PersistedEvent>) =>
   Effect.gen(function* () {
     const displayable = getDisplayableEvents(events)
     if (displayable.length === 0) return
 
-    yield* Console.log("─".repeat(50))
-    yield* Console.log("Previous conversation:")
+    yield* Console.log(dim("─".repeat(50)))
+    yield* Console.log(dim("Previous conversation:"))
     yield* Console.log("")
 
     for (const event of displayable) {
-      const prefix = event._tag === "UserMessage" ? "You:" : "Assistant:"
+      const prefix = event._tag === "UserMessage" ? dimUserLabel : dimAssistantLabel
       yield* Console.log(prefix)
-      yield* Console.log(event.content)
+      yield* Console.log(dim(event.content))
       yield* Console.log("")
     }
 
-    yield* Console.log("─".repeat(50))
+    yield* Console.log(dim("─".repeat(50)))
     yield* Console.log("")
+  })
+
+/** Display raw event history as JSON */
+const displayRawHistory = (events: ReadonlyArray<PersistedEvent>) =>
+  Effect.gen(function* () {
+    for (const event of events) {
+      yield* Console.log(dim(JSON.stringify(event, null, 2)))
+    }
   })
 
 // =============================================================================
@@ -128,14 +146,14 @@ const displayHistory = (events: ReadonlyArray<PersistedEvent>) =>
 /** Single conversation turn */
 const conversationTurn = (contextName: string, options: OutputOptions) =>
   Effect.gen(function* () {
-    const input = yield* CliPrompt.text({ message: "You" })
+    const input = yield* CliPrompt.text({ message: bold(cyan("You")) })
 
     // Skip empty input
     if (input.trim() === "") return
 
     // Stream response
     if (!options.raw) {
-      yield* Effect.sync(() => process.stdout.write("\n"))
+      yield* Console.log(`\n${assistantLabel}`)
     }
     yield* runEventStream(contextName, input, options)
     if (!options.raw) {
@@ -152,6 +170,61 @@ const conversationLoop = (contextName: string, options: OutputOptions) =>
     ),
     Effect.forever
   )
+
+// =============================================================================
+// Context Selection
+// =============================================================================
+
+const NEW_CONTEXT_VALUE = "__new__"
+
+/** List all existing context files */
+const listContexts = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem
+  const exists = yield* fs.exists(CONTEXTS_DIR)
+  if (!exists) return []
+  
+  const entries = yield* fs.readDirectory(CONTEXTS_DIR)
+  return entries
+    .filter((name) => name.endsWith(".yaml"))
+    .map((name) => name.replace(/\.yaml$/, ""))
+    .sort()
+})
+
+/** Prompt user to select an existing context or create a new one */
+const selectOrCreateContext = Effect.gen(function* () {
+  const contexts = yield* listContexts
+  
+  if (contexts.length === 0) {
+    // No existing contexts, prompt for new name
+    yield* Console.log("No existing contexts found.")
+    return yield* CliPrompt.text({ message: "Enter a name for your new context" })
+  }
+  
+  // Build choices: "Create new" option first, then existing contexts
+  const choices = [
+    {
+      title: "➕ New context",
+      value: NEW_CONTEXT_VALUE,
+      description: "Start fresh with a new context"
+    },
+    ...contexts.map((name) => ({
+      title: name,
+      value: name,
+      description: "Continue with this context"
+    }))
+  ]
+  
+  const selected = yield* CliPrompt.select({
+    message: "Select context",
+    choices
+  })
+  
+  if (selected === NEW_CONTEXT_VALUE) {
+    return yield* CliPrompt.text({ message: "Enter a name for your new conversation" })
+  }
+  
+  return selected
+})
 
 // =============================================================================
 // Trace Links
@@ -173,23 +246,43 @@ const printTraceLinks = Effect.gen(function* () {
 // =============================================================================
 
 const runChat = (options: { 
-  context: string
-  interactive: boolean
+  name: Option.Option<string>
   message: Option.Option<string>
   raw: boolean
   showEphemeral: boolean
 }) =>
   Effect.gen(function* () {
     const outputOptions: OutputOptions = { raw: options.raw, showEphemeral: options.showEphemeral }
-    
-    // Load existing context to check for history
-    const existingEvents = yield* loadContext(options.context)
-    const hasHistory = existingEvents.length > 1
+    const hasMessage = Option.isSome(options.message) && Option.getOrElse(options.message, () => "").trim() !== ""
+    const isTTY = process.stdin.isTTY === true
 
-    if (options.interactive) {
-      // Interactive mode
+    if (hasMessage) {
+      // Non-interactive: single message mode
+      const contextName = Option.isSome(options.name)
+        ? Option.getOrElse(options.name, () => "")
+        : "default"
+      
+      const message = Option.getOrElse(options.message, () => "")
+      yield* runEventStream(contextName, message, outputOptions)
+
       if (!options.raw) {
-        yield* Console.log(`Context: ${options.context}`)
+        yield* printTraceLinks
+      }
+    } else if (isTTY) {
+      // Interactive mode
+      const contextName = Option.isSome(options.name)
+        ? Option.getOrElse(options.name, () => "")
+        : yield* selectOrCreateContext
+      
+      const existingEvents = yield* loadContext(contextName)
+      const hasHistory = existingEvents.length > 1
+
+      if (options.raw) {
+        if (hasHistory) {
+          yield* displayRawHistory(existingEvents)
+        }
+      } else {
+        yield* Console.log(`\nContext: ${contextName}`)
 
         if (hasHistory) {
           yield* displayHistory(existingEvents)
@@ -198,7 +291,7 @@ const runChat = (options: {
         }
       }
 
-      yield* conversationLoop(options.context, outputOptions).pipe(
+      yield* conversationLoop(contextName, outputOptions).pipe(
         Effect.catchIf(Terminal.isQuitException, () => Effect.void),
         Effect.ensuring(
           options.raw 
@@ -207,19 +300,8 @@ const runChat = (options: {
         )
       )
     } else {
-      // Single message mode
-      const message = Option.getOrElse(options.message, () => "")
-      if (message.trim() === "") {
-        yield* Console.error("Error: Please provide a message with -m or use -i for interactive mode")
-        return
-      }
-
-      // Stream response
-      yield* runEventStream(options.context, message, outputOptions)
-
-      if (!options.raw) {
-        yield* printTraceLinks
-      }
+      // Not a TTY and no message - explain
+      yield* Console.error("Error: No TTY detected. Use -m <message> for non-interactive mode.")
     }
   }).pipe(Effect.withSpan("chat-session"))
 
@@ -315,14 +397,13 @@ const LanguageModelLayer = Layer.unwrapEffect(
 const chatCommand = Command.make(
   "chat",
   { 
-    context: contextArg, 
-    interactive: interactiveOption, 
+    name: nameOption, 
     message: messageOption,
     raw: rawOption,
     showEphemeral: showEphemeralOption
   },
-  ({ context, interactive, message, raw, showEphemeral }) => 
-    runChat({ context, interactive, message, raw, showEphemeral })
+  ({ name, message, raw, showEphemeral }) => 
+    runChat({ name, message, raw, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
 const cli = Command.run(chatCommand, {

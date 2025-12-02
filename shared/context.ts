@@ -1,8 +1,16 @@
-import { Schema } from "effect"
 import { FileSystem, Path, Error as PlatformError } from "@effect/platform"
-import { Effect, Stream, Ref } from "effect"
-import { LanguageModel, AiError } from "@effect/ai"
+import { Effect, Stream, pipe } from "effect"
+import { AiError, LanguageModel } from "@effect/ai"
 import * as YAML from "yaml"
+import {
+  PersistedEvent,
+  SystemPromptEvent,
+  UserMessageEvent,
+  AssistantMessageEvent,
+  isPersisted
+} from "./schema.ts"
+import type { ContextEvent } from "./schema.ts"
+import { makeLLMRequest } from "./llm-request.ts"
 
 // =============================================================================
 // Configuration
@@ -15,57 +23,6 @@ Keep your responses concise but informative.
 Use markdown formatting when helpful.`
 
 // =============================================================================
-// Event Schemas (using TaggedStruct for idiomatic tagged unions)
-// =============================================================================
-
-/** System prompt event - sets the AI's behavior */
-export const SystemPromptEvent = Schema.TaggedStruct("SystemPrompt", {
-  content: Schema.String
-})
-export type SystemPromptEvent = typeof SystemPromptEvent.Type
-
-/** User message event - input from the user */
-export const UserMessageEvent = Schema.TaggedStruct("UserMessage", {
-  content: Schema.String
-})
-export type UserMessageEvent = typeof UserMessageEvent.Type
-
-/** Assistant message event - complete response from the AI */
-export const AssistantMessageEvent = Schema.TaggedStruct("AssistantMessage", {
-  content: Schema.String
-})
-export type AssistantMessageEvent = typeof AssistantMessageEvent.Type
-
-/** Text delta event - streaming chunk (ephemeral, never persisted) */
-export const TextDeltaEvent = Schema.TaggedStruct("TextDelta", {
-  delta: Schema.String
-})
-export type TextDeltaEvent = typeof TextDeltaEvent.Type
-
-// =============================================================================
-// Union Types
-// =============================================================================
-
-/** Schema for persisted events (non-ephemeral) */
-export const PersistedEvent = Schema.Union(
-  SystemPromptEvent,
-  UserMessageEvent,
-  AssistantMessageEvent
-)
-export type PersistedEvent = typeof PersistedEvent.Type
-
-/** All possible context events */
-export type ContextEvent = PersistedEvent | TextDeltaEvent
-
-// =============================================================================
-// Type Guards (using Schema.is for type-safe schema-based checking)
-// =============================================================================
-
-export const isTextDelta = Schema.is(TextDeltaEvent)
-export const isAssistantMessage = Schema.is(AssistantMessageEvent)
-export const isPersisted = Schema.is(PersistedEvent)
-
-// =============================================================================
 // Context File Operations
 // =============================================================================
 
@@ -76,8 +33,17 @@ const getContextPath = (contextName: string) =>
     return path.join(CONTEXTS_DIR, `${contextName}.yaml`)
   })
 
-/** Load events from a context file, returns empty array if file doesn't exist */
-export const loadContext = (contextName: string): Effect.Effect<
+/** Options for loading a context */
+interface LoadContextOptions {
+  /** If true, creates context with default system prompt when it doesn't exist */
+  readonly createIfMissing?: boolean
+}
+
+/** Load events from a context file */
+export const loadContext = (
+  contextName: string,
+  options: LoadContextOptions = {}
+): Effect.Effect<
   PersistedEvent[],
   PlatformError.PlatformError,
   FileSystem.FileSystem | Path.Path
@@ -87,7 +53,14 @@ export const loadContext = (contextName: string): Effect.Effect<
     const filePath = yield* getContextPath(contextName)
 
     const exists = yield* fs.exists(filePath)
-    if (!exists) return []
+    if (!exists) {
+      if (options.createIfMissing) {
+        const initialEvents = [SystemPromptEvent.make({ content: DEFAULT_SYSTEM_PROMPT })]
+        yield* saveContext(contextName, initialEvents)
+        return initialEvents
+      }
+      return []
+    }
 
     const content = yield* fs.readFileString(filePath).pipe(
       Effect.map((yaml) => {
@@ -99,8 +72,8 @@ export const loadContext = (contextName: string): Effect.Effect<
     return content
   })
 
-/** Save events to a context file */
-export const saveContext = (
+/** Save events to a context file (internal) */
+const saveContext = (
   contextName: string,
   events: ReadonlyArray<PersistedEvent>
 ): Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> =>
@@ -123,130 +96,51 @@ export const saveContext = (
     yield* fs.writeFileString(filePath, yaml)
   })
 
-/** Append a single event to a context file */
-const appendEvent = (
-  contextName: string,
-  event: PersistedEvent,
-  currentEvents: Ref.Ref<PersistedEvent[]>
-): Effect.Effect<void, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> =>
-  Effect.gen(function* () {
-    yield* Ref.update(currentEvents, (events) => [...events, event])
-    const events = yield* Ref.get(currentEvents)
-    yield* saveContext(contextName, events)
-  })
-
-// =============================================================================
-// Pure LLM Request (Inner Effect)
-// =============================================================================
-
 /**
- * Makes an LLM request with the given events.
- * This is a pure function with no file system dependency.
+ * Appends events to a context, filtering to only persistable events.
+ * Creates the context with a default system prompt if it doesn't exist.
  * 
- * @param events - Array of persisted events to use as conversation history
- * @returns Stream of context events (TextDelta for streaming, AssistantMessage at end)
+ * @returns The full list of events after appending
  */
-export const makeLLMRequest = (
-  events: ReadonlyArray<PersistedEvent>
-): Stream.Stream<ContextEvent, AiError.AiError, LanguageModel.LanguageModel> =>
-  Stream.unwrap(
-    Effect.gen(function* () {
-      const model = yield* LanguageModel.LanguageModel
-
-      // Build messages array for the LLM
-      const messages = events.map((event) => {
-        switch (event._tag) {
-          case "SystemPrompt":
-            return { role: "system" as const, content: event.content }
-          case "UserMessage":
-            return { role: "user" as const, content: event.content }
-          case "AssistantMessage":
-            return { role: "assistant" as const, content: event.content }
-        }
-      })
-
-      // Create the streaming response
-      const responseStream = model.streamText({ prompt: messages })
-
-      // Collect full response while emitting deltas
-      const fullResponseRef = yield* Ref.make("")
-
-      // Transform the stream to emit TextDelta events and collect full response
-      const deltaStream = responseStream.pipe(
-        Stream.mapEffect((part) => {
-          if (part.type === "text-delta") {
-            return Ref.update(fullResponseRef, (text) => text + part.delta).pipe(
-              Effect.map(() => TextDeltaEvent.make({ delta: part.delta }))
-            )
-          }
-          // Skip non-text-delta parts, return null to filter out
-          return Effect.succeed(null as ContextEvent | null)
-        }),
-        Stream.filter((event): event is ContextEvent => event !== null)
+export const appendEvents = (
+  contextName: string,
+  events: ReadonlyArray<ContextEvent>
+): Effect.Effect<PersistedEvent[], PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> =>
+  pipe(
+    loadContext(contextName, { createIfMissing: true }),
+    Effect.flatMap((existingEvents) => {
+      const newPersistedEvents = events.filter(isPersisted)
+      if (newPersistedEvents.length === 0) {
+        return Effect.succeed(existingEvents)
+      }
+      const allEvents = [...existingEvents, ...newPersistedEvents]
+      return pipe(
+        saveContext(contextName, allEvents),
+        Effect.as(allEvents)
       )
-
-      // After all deltas, emit the final AssistantMessage
-      const finalStream = Stream.fromEffect(
-        Ref.get(fullResponseRef).pipe(
-          Effect.map((content) => AssistantMessageEvent.make({ content }) as ContextEvent)
-        )
-      )
-
-      return Stream.concat(deltaStream, finalStream)
     })
   )
 
 // =============================================================================
-// Context-Aware LLM Request (Outer Effect)
+// Context-Aware LLM Request
 // =============================================================================
 
 /**
- * Runs an LLM request within a context.
- * Handles loading, creating, and persisting the context.
+ * Adds events to a context and runs an LLM request.
  * 
  * @param contextName - Name of the context (determines YAML file)
  * @param inputEvents - Events to add (typically UserMessageEvent)
  * @returns Stream of all events (ephemeral TextDelta + persisted AssistantMessage)
  */
-export const runWithContext = (
+export const addEvents = (
   contextName: string,
   inputEvents: ReadonlyArray<UserMessageEvent>
 ): Stream.Stream<ContextEvent, AiError.AiError | PlatformError.PlatformError, LanguageModel.LanguageModel | FileSystem.FileSystem | Path.Path> =>
-  Stream.unwrap(
-    Effect.gen(function* () {
-      // Load existing events or start with empty
-      let events = yield* loadContext(contextName)
-
-      // If context is empty, add the default system prompt
-      if (events.length === 0) {
-        events = [SystemPromptEvent.make({ content: DEFAULT_SYSTEM_PROMPT })]
-      }
-
-      // Add input events to the context
-      const allEvents = [...events, ...inputEvents] as PersistedEvent[]
-
-      // Persist the input events immediately
-      yield* saveContext(contextName, allEvents)
-
-      // Create a ref to track current events for appending
-      const eventsRef = yield* Ref.make(allEvents)
-
-      // Make the LLM request
-      const llmStream = makeLLMRequest(allEvents)
-
-      // Wrap the stream to persist non-ephemeral events as they're emitted
-      return llmStream.pipe(
-        Stream.mapEffect((event): Effect.Effect<ContextEvent, PlatformError.PlatformError, FileSystem.FileSystem | Path.Path> => {
-          if (isPersisted(event)) {
-            // Persist non-ephemeral events
-            return appendEvent(contextName, event, eventsRef).pipe(
-              Effect.map(() => event as ContextEvent)
-            )
-          }
-          return Effect.succeed(event as ContextEvent)
-        })
-      )
-    })
+  pipe(
+    appendEvents(contextName, inputEvents),
+    Effect.andThen(makeLLMRequest),
+    Stream.unwrap,
+    Stream.tap((event) => appendEvents(contextName, [event]))
   )
 
 // =============================================================================

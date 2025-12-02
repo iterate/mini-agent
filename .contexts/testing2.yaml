@@ -116,3 +116,15 @@ events:
 
 
       Would you like to hear another story or discuss something else?
+  - _tag: UserMessage
+    content: waddup
+  - _tag: AssistantMessage
+    content: Not much! Just here to help. What’s up with you?
+  - _tag: UserMessage
+    content: hu
+  - _tag: AssistantMessage
+    content: Just friendly old me! How can I assist you today?
+  - _tag: UserMessage
+    content: hi
+  - _tag: AssistantMessage
+    content: Hi again! How can I help you?

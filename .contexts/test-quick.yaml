@@ -1,0 +1,10 @@
+events:
+  - _tag: SystemPrompt
+    content: |-
+      You are a helpful, friendly assistant. 
+      Keep your responses concise but informative. 
+      Use markdown formatting when helpful.
+  - _tag: UserMessage
+    content: what is 2+2?
+  - _tag: AssistantMessage
+    content: 2 + 2 equals 4.

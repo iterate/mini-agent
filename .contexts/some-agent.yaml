@@ -1,0 +1,104 @@
+events:
+  - _tag: SystemPrompt
+    content: |-
+      You are a helpful, friendly assistant. 
+      Keep your responses concise but informative. 
+      Use markdown formatting when helpful.
+  - _tag: UserMessage
+    content: banana
+  - _tag: AssistantMessage
+    content: >-
+      Bananas are a popular tropical fruit known for their sweet flavor and soft
+      texture. They are rich in potassium, vitamin C, and dietary fiber. Here
+      are some key points:
+
+
+      ### Nutritional Benefits
+
+      - **Potassium:** Helps regulate blood pressure.
+
+      - **Vitamin C:** Supports immune function.
+
+      - **Dietary Fiber:** Aids digestion.
+
+
+      ### Culinary Uses
+
+      - Eaten raw, in smoothies, in baked goods (like banana bread), or even as
+      a natural sweetener.
+
+
+      ### Fun Facts
+
+      - Bananas are berries botanically.
+
+      - They ripen after being picked due to ethylene gas.
+
+
+      Would you like to know more about bananas?
+  - _tag: UserMessage
+    content: test
+  - _tag: AssistantMessage
+    content: It looks like you might be testing the system! How can I assist you
+      today? If you have any questions, feel free to ask.
+  - _tag: UserMessage
+    content: test
+  - _tag: AssistantMessage
+    content: It seems like you might be running some tests. If you need assistance
+      or have any questions, just let me know!
+  - _tag: UserMessage
+    content: huh
+  - _tag: AssistantMessage
+    content: It seems there may be some confusion! How can I help clarify or assist
+      you today? Feel free to ask anything!
+  - _tag: UserMessage
+    content: hi
+  - _tag: AssistantMessage
+    content: Hello! How can I assist you today? Whether you have questions or just
+      want to chat, I’m here to help!
+  - _tag: UserMessage
+    content: hi
+  - _tag: AssistantMessage
+    content: Hi again! How’s your day going? If you have anything on your mind, feel
+      free to share!
+  - _tag: AssistantMessage
+    content: Hi again! How’s your day going? If you have anything on your mind, feel
+      free to share!
+  - _tag: UserMessage
+    content: not much
+  - _tag: AssistantMessage
+    content: That’s okay! Sometimes a low-key day is nice. Is there anything
+      specific you’d like to talk about or know more about?
+  - _tag: AssistantMessage
+    content: That’s okay! Sometimes a low-key day is nice. Is there anything
+      specific you’d like to talk about or know more about?
+  - _tag: UserMessage
+    content: haha
+  - _tag: AssistantMessage
+    content: Glad to hear you’re amused! 😄 What’s got you laughing? If you want to
+      share or chat about something fun, I’m all ears!
+  - _tag: AssistantMessage
+    content: Glad to hear you’re amused! 😄 What’s got you laughing? If you want to
+      share or chat about something fun, I’m all ears!
+  - _tag: UserMessage
+    content: hi
+  - _tag: AssistantMessage
+    content: Hi again! What’s on your mind? Feel free to share!
+  - _tag: UserMessage
+    content: haha
+  - _tag: AssistantMessage
+    content: Sounds like you’re in a good mood! 😄 What’s making you laugh today?
+  - _tag: UserMessage
+    content: hi
+  - _tag: AssistantMessage
+    content: Hi there! How can I help you today? Feel free to share anything on your
+      mind!
+  - _tag: UserMessage
+    content: haha
+  - _tag: AssistantMessage
+    content: You’re in a cheerful mood! 😄 What’s bringing the laughter?
+  - _tag: UserMessage
+    content: haha
+  - _tag: AssistantMessage
+    content: I’m glad you’re enjoying yourself! If you have something funny to share
+      or just want to chat, I’m here for it! 😂
