@@ -21,15 +21,13 @@ const runCliWithEnv = (cwd: string, env: Record<string, string>, ...args: Array<
 }
 
 const providers = [
-  { provider: "openai", llm: "openai:gpt-4o-mini", envKey: "OPENAI_API_KEY" },
-  { provider: "anthropic", llm: "anthropic:claude-sonnet-4-20250514", envKey: "ANTHROPIC_API_KEY" },
-  { provider: "gemini", llm: "gemini:gemini-1.5-flash", envKey: "GEMINI_API_KEY" }
+  { llm: "openai:gpt-4o-mini", provider: "openai" },
+  { llm: "anthropic:claude-sonnet-4-20250514", provider: "anthropic" },
+  { llm: "gemini:gemini-1.5-flash", provider: "gemini" }
 ] as const
 
-describe.each(providers)("Provider: $provider", ({ envKey, llm }) => {
-  const hasKey = Boolean(process.env[envKey])
-
-  test.skipIf(!hasKey)(
+describe.each(providers)("Provider: $provider", ({ llm }) => {
+  test(
     "basic chat works",
     { timeout: 30000 },
     async ({ testDir }) => {
