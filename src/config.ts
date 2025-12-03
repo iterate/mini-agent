@@ -7,7 +7,7 @@
  * Uses Effect's ConfigProvider composition to merge multiple sources.
  */
 import { FileSystem } from "@effect/platform"
-import { Config, ConfigProvider, Context, Effect, Layer, LogLevel, Option, Redacted } from "effect"
+import { Config, ConfigProvider, Context, Effect, Layer, LogLevel, Option } from "effect"
 import * as yaml from "yaml"
 
 // =============================================================================
@@ -115,12 +115,15 @@ const logLevelConfig = (name: string) =>
 /**
  * Full application configuration schema.
  * All values are resolved at startup from the composed ConfigProvider.
+ *
+ * LLM configuration uses DEFAULT_LLM shorthand with optional overrides.
+ * See llm-config.ts for provider registry and resolution logic.
  */
 export const MiniAgentConfig = Config.all({
-  // OpenAI API configuration
-  openaiApiKey: Config.redacted("OPENAI_API_KEY"),
-  openaiModel: Config.string("OPENAI_MODEL").pipe(
-    Config.withDefault("gpt-4o-mini")
+  // LLM configuration (provider-agnostic)
+  // Format: "provider:model" e.g., "openai:gpt-4o-mini", "anthropic:claude-sonnet-4"
+  defaultLlm: Config.string("DEFAULT_LLM").pipe(
+    Config.withDefault("openai:gpt-4o-mini")
   ),
 
   // Data storage
@@ -211,9 +214,3 @@ export const resolveBaseDir = (config: MiniAgentConfig): string => {
   const cwd = Option.getOrElse(config.cwd, () => process.cwd())
   return `${cwd}/${config.dataStorageDir}`
 }
-
-/**
- * Get OpenAI API key as string for use with clients.
- * @throws if key is not configured
- */
-export const getOpenAiApiKeyString = (config: MiniAgentConfig): string => Redacted.value(config.openaiApiKey)

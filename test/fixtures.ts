@@ -4,7 +4,7 @@
  * Modern Vitest 3.x fixtures using test.extend() for isolated test environments.
  * Provides suite-level and per-test temp directories with failure-only logging.
  */
-import { Layer, LogLevel, Option, Redacted } from "effect"
+import { Layer, LogLevel, Option } from "effect"
 import { mkdtemp, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -19,8 +19,7 @@ import { AppConfig, type MiniAgentConfig } from "../src/config.ts"
 export const testAppConfigLayer = Layer.succeed(
   AppConfig,
   {
-    openaiApiKey: Redacted.make("test-api-key"),
-    openaiModel: "gpt-4o-mini",
+    defaultLlm: "openai:gpt-4o-mini",
     dataStorageDir: ".mini-agent-test",
     configFile: "mini-agent.config.yaml",
     cwd: Option.none(),

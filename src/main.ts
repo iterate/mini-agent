@@ -3,6 +3,9 @@
  *
  * Sets up configuration, logging, and service layers, then runs the CLI.
  */
+import { AmazonBedrockClient, AmazonBedrockLanguageModel } from "@effect/ai-amazon-bedrock"
+import { AnthropicClient, AnthropicLanguageModel } from "@effect/ai-anthropic"
+import { GoogleClient, GoogleLanguageModel } from "@effect/ai-google"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
@@ -18,6 +21,7 @@ import {
 } from "./config.ts"
 import { ContextRepository } from "./context.repository.ts"
 import { ContextService } from "./context.service.ts"
+import { type ResolvedLlmConfig, resolveLlmConfig } from "./llm-config.ts"
 import { createLoggingLayer } from "./logging.ts"
 import { createTracingLayer } from "./tracing/index.ts"
 
@@ -26,19 +30,58 @@ import { createTracingLayer } from "./tracing/index.ts"
 // =============================================================================
 
 /**
- * Create the OpenAI language model layer from configuration.
+ * Create the language model layer based on resolved LLM config.
+ * Supports: OpenAI, Anthropic, Google Gemini, AWS Bedrock, and OpenAI-compatible providers.
  */
-const makeLanguageModelLayer = (config: MiniAgentConfigType) =>
-  Layer.mergeAll(
-    OpenAiLanguageModel.layer({ model: config.openaiModel }),
-    GenAISpanTransformerLayer
-  ).pipe(
-    Layer.provide(
-      OpenAiClient.layer({ apiKey: config.openaiApiKey }).pipe(
-        Layer.provide(FetchHttpClient.layer)
-      )
-    )
-  )
+const makeLanguageModelLayer = (llmConfig: ResolvedLlmConfig) => {
+  const baseLayer = (() => {
+    switch (llmConfig.apiFormat) {
+      case "openai-responses":
+        return OpenAiLanguageModel.layer({ model: llmConfig.model }).pipe(
+          Layer.provide(
+            OpenAiClient.layer({
+              apiKey: llmConfig.apiKey,
+              apiUrl: llmConfig.baseUrl
+            }).pipe(Layer.provide(FetchHttpClient.layer))
+          )
+        )
+
+      case "anthropic":
+        return AnthropicLanguageModel.layer({ model: llmConfig.model }).pipe(
+          Layer.provide(
+            AnthropicClient.layer({
+              apiKey: llmConfig.apiKey,
+              apiUrl: llmConfig.baseUrl
+            }).pipe(Layer.provide(FetchHttpClient.layer))
+          )
+        )
+
+      case "gemini":
+        return GoogleLanguageModel.layer({ model: llmConfig.model }).pipe(
+          Layer.provide(
+            GoogleClient.layer({
+              apiKey: llmConfig.apiKey,
+              apiUrl: llmConfig.baseUrl
+            }).pipe(Layer.provide(FetchHttpClient.layer))
+          )
+        )
+
+      case "bedrock":
+        return AmazonBedrockLanguageModel.layer({ model: llmConfig.model }).pipe(
+          Layer.provide(
+            AmazonBedrockClient.layer({
+              accessKeyId: llmConfig.awsAccessKeyId!,
+              secretAccessKey: llmConfig.awsSecretAccessKey!,
+              sessionToken: llmConfig.awsSessionToken,
+              apiUrl: llmConfig.baseUrl
+            }).pipe(Layer.provide(FetchHttpClient.layer))
+          )
+        )
+    }
+  })()
+
+  return Layer.mergeAll(baseLayer, GenAISpanTransformerLayer)
+}
 
 /**
  * Create the logging layer from configuration.
@@ -73,10 +116,14 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
       const buildLayers = Effect.gen(function*() {
         yield* Effect.logDebug("Using config", config)
 
+        // Resolve LLM config (parses DEFAULT_LLM, loads API keys, applies overrides)
+        const llmConfig = yield* resolveLlmConfig.pipe(Effect.withConfigProvider(configProvider))
+        yield* Effect.logDebug("Using LLM config", { provider: llmConfig.apiFormat, model: llmConfig.model })
+
         // Store layer references for memoization (effect-solutions pattern)
         const configProviderLayer = Layer.setConfigProvider(configProvider)
         const appConfigLayer = AppConfig.fromConfig(config)
-        const languageModelLayer = makeLanguageModelLayer(config)
+        const languageModelLayer = makeLanguageModelLayer(llmConfig)
         const tracingLayer = createTracingLayer("mini-agent")
 
         // Compose using Layer.provideMerge chain (effect-solutions pattern)
