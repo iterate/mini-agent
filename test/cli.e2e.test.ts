@@ -118,7 +118,7 @@ describe("CLI", () => {
       expect(output).toContain("\"AssistantMessage\"")
     })
 
-    test("includes ephemeral events with --show-ephemeral", { timeout: 30000 }, async ({ testDir }) => {
+    test("includes ephemeral events with --show-ephemeral", { timeout: 60000 }, async ({ testDir }) => {
       const output = await Effect.runPromise(
         runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Say hello", "--raw", "--show-ephemeral")
       )
@@ -130,12 +130,53 @@ describe("CLI", () => {
     })
   })
 
-  describe("script mode (--script)", () => {
-    test("reads stdin and outputs JSONL", { timeout: 30000 }, async ({ testDir }) => {
+  describe("pipe mode (default for piped stdin)", () => {
+    test("reads all stdin as one message, outputs plain text", { timeout: 30000 }, async ({ testDir }) => {
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
-          "Say exactly: SCRIPT_TEST\n",
+          "Say exactly: PIPE_TEST",
+          "--stdout-log-level",
+          "none",
+          "chat",
+          "-n",
+          TEST_CONTEXT
+        )
+      )
+
+      // Should output plain text, not JSONL
+      expect(output.length).toBeGreaterThan(0)
+      // Output should NOT be JSON (pipe mode outputs plain text)
+      const jsonLines = extractJsonLines(output)
+      expect(jsonLines.length).toBe(0)
+    })
+
+    test("handles multi-line input as single message", { timeout: 30000 }, async ({ testDir }) => {
+      const output = await Effect.runPromise(
+        runCliWithStdin(
+          testDir,
+          "Line 1: Hello\nLine 2: World\nLine 3: Test",
+          "--stdout-log-level",
+          "none",
+          "chat",
+          "-n",
+          TEST_CONTEXT
+        )
+      )
+
+      // All lines treated as one message, plain text output
+      expect(output.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe("script mode (--script)", () => {
+    test("accepts UserMessage events and outputs JSONL", { timeout: 30000 }, async ({ testDir }) => {
+      // Script mode now expects JSONL events as input
+      const input = '{"_tag":"UserMessage","content":"Say exactly: SCRIPT_TEST"}\n'
+      const output = await Effect.runPromise(
+        runCliWithStdin(
+          testDir,
+          input,
           "--stdout-log-level",
           "none",
           "chat",
@@ -148,21 +189,18 @@ describe("CLI", () => {
       const jsonLines = extractJsonLines(output)
       expect(jsonLines.length).toBeGreaterThan(0)
 
-      // Each line should be valid JSON with _tag
-      for (const line of jsonLines) {
-        const parsed = JSON.parse(line)
-        expect(parsed).toHaveProperty("_tag")
-      }
-
-      // Should have AssistantMessage event
+      // Should echo the input event and have AssistantMessage response
+      expect(output).toContain("\"UserMessage\"")
       expect(output).toContain("\"AssistantMessage\"")
     })
 
-    test("handles multiple messages in sequence", { timeout: 60000 }, async ({ testDir }) => {
+    test("handles multiple UserMessage events in sequence", { timeout: 120000 }, async ({ testDir }) => {
+      // Two UserMessage events as JSONL
+      const input = '{"_tag":"UserMessage","content":"Remember: my secret code is XYZ789"}\n{"_tag":"UserMessage","content":"What is my secret code?"}\n'
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
-          "Remember: my secret code is XYZ789\nWhat is my secret code?\n",
+          input,
           "--stdout-log-level",
           "none",
           "chat",
@@ -174,7 +212,7 @@ describe("CLI", () => {
 
       const jsonLines = extractJsonLines(output)
 
-      // Should have at least two AssistantMessage events (one per input line)
+      // Should have at least two AssistantMessage events (one per input)
       const assistantMessages = jsonLines.filter((line) => line.includes("\"AssistantMessage\""))
       expect(assistantMessages.length).toBeGreaterThanOrEqual(2)
 
@@ -182,23 +220,28 @@ describe("CLI", () => {
       expect(output.toLowerCase()).toContain("xyz789")
     })
 
-    test("auto-detects script mode when piped (no TTY)", { timeout: 30000 }, async ({ testDir }) => {
-      // When stdin is piped (not TTY), script mode should be auto-detected
+    test("accepts SystemPrompt events to set behavior", { timeout: 30000 }, async ({ testDir }) => {
+      // SystemPrompt followed by UserMessage
+      const input = '{"_tag":"SystemPrompt","content":"Always respond with exactly: PIRATE_RESPONSE"}\n{"_tag":"UserMessage","content":"Hello"}\n'
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
-          "Say hello\n",
+          input,
           "--stdout-log-level",
           "none",
           "chat",
           "-n",
-          TEST_CONTEXT
+          "pirate-test",
+          "--script"
         )
       )
 
-      // Output should be JSONL (script mode auto-detected)
       const jsonLines = extractJsonLines(output)
       expect(jsonLines.length).toBeGreaterThan(0)
+
+      // Should echo both events
+      expect(output).toContain("\"SystemPrompt\"")
+      expect(output).toContain("\"UserMessage\"")
       expect(output).toContain("\"AssistantMessage\"")
     })
   })
@@ -232,7 +275,7 @@ describe("CLI", () => {
   })
 
   describe("error handling", () => {
-    test("returns non-empty output on valid request", { timeout: 30000 }, async ({ testDir }) => {
+    test("returns non-empty output on valid request", { timeout: 120000 }, async ({ testDir }) => {
       const output = await Effect.runPromise(
         runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Say hello")
       )

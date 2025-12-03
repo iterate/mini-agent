@@ -12,6 +12,7 @@ import {
   AssistantMessageEvent,
   type ContextEvent,
   type PersistedEvent,
+  SystemPromptEvent,
   TextDeltaEvent,
   UserMessageEvent
 } from "./context.model.ts"
@@ -75,7 +76,7 @@ const showEphemeralOption = Options.boolean("show-ephemeral").pipe(
 
 const scriptOption = Options.boolean("script").pipe(
   Options.withAlias("s"),
-  Options.withDescription("Force script mode (read stdin lines, output JSONL)"),
+  Options.withDescription("Script mode: read JSONL events from stdin, output JSONL events"),
   Options.withDefault(false)
 )
 
@@ -216,7 +217,7 @@ const conversationLoop = (contextName: string, options: OutputOptions) =>
 // Interaction Mode
 // =============================================================================
 
-type InteractionMode = "single-turn" | "tty-interactive" | "script"
+type InteractionMode = "single-turn" | "pipe" | "script" | "tty-interactive"
 
 const determineMode = (options: {
   message: Option.Option<string>
@@ -228,23 +229,55 @@ const determineMode = (options: {
   if (hasMessage) return "single-turn"
   if (options.script) return "script"
   if (process.stdin.isTTY) return "tty-interactive"
-  return "script"
+  return "pipe" // Default for piped stdin: read all as one message, output plain text
 }
 
-/** Read lines from stdin using Effect Stream primitives */
+/** Shared UTF-8 decoder for stdin processing */
 const utf8Decoder = new TextDecoder("utf-8")
-const stdinLines: Stream.Stream<string> = BunStream.stdin.pipe(
+
+/** Read all stdin as a single string (for pipe mode) */
+const readAllStdin: Effect.Effect<string> = BunStream.stdin.pipe(
   Stream.mapChunks(Chunk.map((bytes) => utf8Decoder.decode(bytes))),
-  Stream.splitLines,
-  Stream.filter((line) => line.trim() !== "")
+  Stream.runCollect,
+  Effect.map((chunks) => Chunk.join(chunks, "").trim())
 )
 
-/** Script interactive loop - read stdin lines, output JSONL */
-const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
-  stdinLines.pipe(
-    Stream.mapEffect((line) => runEventStream(contextName, line, options)),
-    Stream.runDrain
+/** Input events accepted in script mode */
+const InputEvent = Schema.Union(UserMessageEvent, SystemPromptEvent)
+type InputEvent = typeof InputEvent.Type
+
+/** Read JSONL events from stdin (for script mode) */
+const stdinEvents = BunStream.stdin.pipe(
+  Stream.mapChunks(Chunk.map((bytes) => utf8Decoder.decode(bytes))),
+  Stream.splitLines,
+  Stream.filter((line) => line.trim() !== ""),
+  Stream.mapEffect((line) =>
+    Effect.try(() => JSON.parse(line) as unknown).pipe(
+      Effect.flatMap((json) => Schema.decodeUnknown(InputEvent)(json))
+    )
   )
+)
+
+/** Script interactive loop - read JSONL events, process, output JSONL */
+const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
+  Effect.gen(function*() {
+    const contextService = yield* ContextService
+
+    yield* stdinEvents.pipe(
+      Stream.mapEffect((event) =>
+        Effect.gen(function*() {
+          // Echo input event
+          yield* Console.log(JSON.stringify(event))
+
+          // Process through context service
+          yield* contextService.addEvents(contextName, [event]).pipe(
+            Stream.runForEach((outputEvent) => handleEvent(outputEvent, options))
+          )
+        })
+      ),
+      Stream.runDrain
+    )
+  })
 
 // =============================================================================
 // Context Selection
@@ -320,6 +353,21 @@ const runChat = (options: {
         break
       }
 
+      case "pipe": {
+        // Read all stdin as one message, output plain text
+        const input = yield* readAllStdin
+        if (input !== "") {
+          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false })
+        }
+        break
+      }
+
+      case "script": {
+        // JSONL events in, JSONL events out
+        yield* scriptInteractiveLoop(contextName, outputOptions)
+        break
+      }
+
       case "tty-interactive": {
         const resolvedName = Option.isSome(options.name)
           ? contextName
@@ -350,11 +398,6 @@ const runChat = (options: {
               : printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!")))
           )
         )
-        break
-      }
-
-      case "script": {
-        yield* scriptInteractiveLoop(contextName, outputOptions)
         break
       }
     }

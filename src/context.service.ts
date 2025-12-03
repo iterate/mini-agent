@@ -19,7 +19,7 @@ import {
   type PersistedEvent as PersistedEventType,
   SystemPromptEvent,
   TextDeltaEvent,
-  type UserMessageEvent
+  UserMessageEvent
 } from "./context.model.ts"
 import { ContextRepository } from "./context.repository.ts"
 import type { ContextLoadError, ContextSaveError } from "./errors.ts"
@@ -33,18 +33,18 @@ export class ContextService extends Context.Tag("@app/ContextService")<
   ContextService,
   {
     /**
-     * Add events to a context, triggering LLM processing and returning the event stream.
+     * Add events to a context, optionally triggering LLM processing.
      *
-     * This is the core operation on a Context:
-     * 1. Loads existing events (or creates context with system prompt)
-     * 2. Appends the input events (typically UserMessage)
-     * 3. Runs LLM with full history
-     * 4. Streams back TextDelta (ephemeral) and AssistantMessage (persisted)
-     * 5. Persists new events as they complete
+     * Behavior depends on event types:
+     * - UserMessage: persist + trigger LLM, stream back response events
+     * - SystemPrompt: persist only (no LLM call), return empty stream
+     *
+     * Multiple events are processed in order. LLM is only triggered
+     * if at least one UserMessage is present.
      */
     readonly addEvents: (
       contextName: string,
-      inputEvents: ReadonlyArray<UserMessageEvent>
+      inputEvents: ReadonlyArray<UserMessageEvent | SystemPromptEvent>
     ) => Stream.Stream<
       ContextEvent,
       AiError.AiError | ContextLoadError | ContextSaveError,
@@ -71,13 +71,16 @@ export class ContextService extends Context.Tag("@app/ContextService")<
 
       const addEvents = (
         contextName: string,
-        inputEvents: ReadonlyArray<UserMessageEvent>
+        inputEvents: ReadonlyArray<UserMessageEvent | SystemPromptEvent>
       ): Stream.Stream<
         ContextEvent,
         AiError.AiError | ContextLoadError | ContextSaveError,
         LanguageModel.LanguageModel
-      > =>
-        pipe(
+      > => {
+        // Check if any UserMessage is present (triggers LLM)
+        const hasUserMessage = inputEvents.some(Schema.is(UserMessageEvent))
+
+        return pipe(
           // Load or create context, append input events
           Effect.fn("ContextService.addEvents.prepare")(function*() {
             const existingEvents = yield* repo.loadOrCreate(contextName)
@@ -90,8 +93,10 @@ export class ContextService extends Context.Tag("@app/ContextService")<
             }
             return existingEvents
           })(),
-          // Stream LLM response
-          Effect.andThen((events) => streamLLMResponse(events)),
+          // Only stream LLM response if there's a UserMessage
+          Effect.andThen((events) =>
+            hasUserMessage ? streamLLMResponse(events) : Stream.empty
+          ),
           Stream.unwrap,
           // Persist events as they complete (only persisted ones)
           Stream.tap((event) =>
@@ -103,6 +108,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
               : Effect.void
           )
         )
+      }
 
       const load = Effect.fn("ContextService.load")(
         function*(contextName: string) {
@@ -135,7 +141,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
     return ContextService.of({
       addEvents: (
         contextName: string,
-        inputEvents: ReadonlyArray<UserMessageEvent>
+        inputEvents: ReadonlyArray<UserMessageEvent | SystemPromptEvent>
       ): Stream.Stream<ContextEvent, never, never> => {
         // Load or create context
         let events = store.get(contextName)
@@ -149,6 +155,14 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         if (newPersistedInputs.length > 0) {
           events = [...events, ...newPersistedInputs]
           store.set(contextName, events)
+        }
+
+        // Check if any UserMessage is present
+        const hasUserMessage = inputEvents.some(Schema.is(UserMessageEvent))
+
+        // Only generate mock LLM response if there's a UserMessage
+        if (!hasUserMessage) {
+          return Stream.empty
         }
 
         // Mock LLM response stream
