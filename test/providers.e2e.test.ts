@@ -26,7 +26,7 @@ const providers = [
   { provider: "gemini", llm: "gemini:gemini-1.5-flash", envKey: "GEMINI_API_KEY" }
 ] as const
 
-describe.each(providers)("Provider: $provider", ({ llm, envKey }) => {
+describe.each(providers)("Provider: $provider", ({ envKey, llm }) => {
   const hasKey = Boolean(process.env[envKey])
 
   test.skipIf(!hasKey)(

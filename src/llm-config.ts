@@ -5,8 +5,7 @@
  * 1. Lookup: "openai:gpt-4o-mini" → looks up provider in registry, uses model
  * 2. JSON: Full config object for custom setups
  */
-import { Config, Effect, Redacted } from "effect"
-import { Schema } from "effect"
+import { Config, Effect, Redacted, Schema } from "effect"
 
 export type ApiFormat = "openai-responses" | "anthropic" | "gemini"
 
