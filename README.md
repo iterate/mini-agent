@@ -11,8 +11,38 @@ This is a CLI for chat agent that maintains persistent conversation contexts. Yo
 
 **Interactive mode** (runs an agent loop until you Ctrl+C):
 
+## LLM Configuration
 
+Set the `LLM` environment variable to choose your model:
 
+```bash
+# Provider:model format
+LLM=openai:gpt-4o-mini bun src/main.ts chat -n myconvo -m "Hello"
+LLM=anthropic:claude-sonnet-4-20250514 bun src/main.ts chat -n myconvo -m "Hello"
+LLM=gemini:gemini-1.5-flash bun src/main.ts chat -n myconvo -m "Hello"
+
+# OpenAI-compatible providers
+LLM=openrouter:openai/gpt-4o bun src/main.ts chat -n myconvo -m "Hello"
+LLM=groq:llama-3.1-70b-versatile bun src/main.ts chat -n myconvo -m "Hello"
+
+# Just model name (defaults to openai)
+LLM=gpt-4o bun src/main.ts chat -n myconvo -m "Hello"
+```
+
+**Required API keys:**
+
+| Provider | Env Var |
+|----------|---------|
+| openai | `OPENAI_API_KEY` |
+| anthropic | `ANTHROPIC_API_KEY` |
+| gemini | `GEMINI_API_KEY` |
+| openrouter | `OPENROUTER_API_KEY` |
+| groq | `GROQ_API_KEY` |
+
+For custom endpoints, pass a JSON config:
+```bash
+LLM='{"apiFormat":"openai-responses","model":"my-model","baseUrl":"https://my-api.com/v1","apiKeyEnvVar":"MY_KEY"}'
+```
 
 # Side quests (so far)
 
