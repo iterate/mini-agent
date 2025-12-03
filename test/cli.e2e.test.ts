@@ -93,12 +93,12 @@ describe("CLI", () => {
       expect(output.length).toBeGreaterThan(0)
     })
 
-    test("uses 'default' context when no name provided", { timeout: 30000 }, async ({ testDir }) => {
+    test("requires context name in non-interactive mode", { timeout: 30000 }, async ({ testDir }) => {
       const output = await Effect.runPromise(
         runCli(testDir, "chat", "-m", "Say exactly: HELLO")
       )
 
-      expect(output.length).toBeGreaterThan(0)
+      expect(output).toContain("Error: Context name required")
     })
   })
 
