@@ -1,15 +1,10 @@
 /**
  * LLM Configuration
- *
- * Supports two modes:
- * 1. Lookup: "openai:gpt-4o-mini" → looks up provider in registry, uses model
- * 2. JSON: Full config object for custom setups
  */
-import { Config, Effect, Redacted, Schema } from "effect"
+import { Config, Context, Effect, Layer, Redacted, Schema } from "effect"
 
 export type ApiFormat = "openai-responses" | "anthropic" | "gemini"
 
-/** LLM configuration. Future: may add temperature, headers, extra params */
 export class LlmConfig extends Schema.Class<LlmConfig>("LlmConfig")({
   apiFormat: Schema.Literal("openai-responses", "anthropic", "gemini"),
   model: Schema.String,
@@ -17,96 +12,60 @@ export class LlmConfig extends Schema.Class<LlmConfig>("LlmConfig")({
   apiKeyEnvVar: Schema.String
 }) {}
 
-export interface ResolvedLlmConfig {
-  readonly apiFormat: ApiFormat
-  readonly model: string
-  readonly baseUrl: string
-  readonly apiKeyEnvVar: string
-  readonly apiKey: Redacted.Redacted | undefined
+const openai = {
+  apiFormat: "openai-responses",
+  baseUrl: "https://api.openai.com/v1",
+  apiKeyEnvVar: "OPENAI_API_KEY"
+} as const
+
+const anthropic = {
+  apiFormat: "anthropic",
+  baseUrl: "https://api.anthropic.com",
+  apiKeyEnvVar: "ANTHROPIC_API_KEY"
+} as const
+
+const gemini = {
+  apiFormat: "gemini",
+  baseUrl: "https://generativelanguage.googleapis.com",
+  apiKeyEnvVar: "GEMINI_API_KEY"
+} as const
+
+const LLMS: Record<string, LlmConfig> = {
+  "gpt-4.1-mini": new LlmConfig({ ...openai, model: "gpt-4.1-mini" }),
+  "claude-haiku-4-5": new LlmConfig({ ...anthropic, model: "claude-3-5-haiku-20241022" }),
+  "gemini-2.5-flash": new LlmConfig({ ...gemini, model: "gemini-2.0-flash" })
 }
 
-interface ProviderEntry {
-  readonly apiFormat: ApiFormat
-  readonly baseUrl: string
-  readonly apiKeyEnvVar: string
-}
+export const DEFAULT_LLM = "gpt-4.1-mini"
 
-const PROVIDERS: Record<string, ProviderEntry> = {
-  openai: {
-    apiFormat: "openai-responses",
-    baseUrl: "https://api.openai.com/v1",
-    apiKeyEnvVar: "OPENAI_API_KEY"
-  },
-  anthropic: {
-    apiFormat: "anthropic",
-    baseUrl: "https://api.anthropic.com",
-    apiKeyEnvVar: "ANTHROPIC_API_KEY"
-  },
-  gemini: {
-    apiFormat: "gemini",
-    baseUrl: "https://generativelanguage.googleapis.com",
-    apiKeyEnvVar: "GEMINI_API_KEY"
-  },
-  openrouter: {
-    apiFormat: "openai-responses",
-    baseUrl: "https://openrouter.ai/api/v1",
-    apiKeyEnvVar: "OPENROUTER_API_KEY"
-  },
-  cerebras: {
-    apiFormat: "openai-responses",
-    baseUrl: "https://api.cerebras.ai/v1",
-    apiKeyEnvVar: "CEREBRAS_API_KEY"
-  },
-  groq: {
-    apiFormat: "openai-responses",
-    baseUrl: "https://api.groq.com/openai/v1",
-    apiKeyEnvVar: "GROQ_API_KEY"
+/** Get LlmConfig by name. Throws if not found. */
+export const getLlmConfig = (name: string): LlmConfig => {
+  const config = LLMS[name]
+  if (!config) {
+    const validLlms = Object.keys(LLMS).join(", ")
+    throw new Error(`Unknown LLM: ${name}. Valid: ${validLlms}`)
   }
+  return config
 }
 
-/** Parse "provider:model" into config, or parse JSON object directly */
-export const parseLlmString = (input: string): LlmConfig => {
-  // Try JSON parse first
-  try {
-    const parsed = JSON.parse(input) as unknown
-    if (typeof parsed === "object" && parsed !== null) {
-      return Schema.decodeUnknownSync(LlmConfig)(parsed)
-    }
-  } catch {
-    // Not JSON, continue to lookup
-  }
-
-  // Parse as "provider:model" or just "model" (defaults to openai)
-  const colonIdx = input.indexOf(":")
-  const provider = colonIdx === -1 ? "openai" : input.slice(0, colonIdx)
-  const model = colonIdx === -1 ? input : input.slice(colonIdx + 1)
-
-  const entry = PROVIDERS[provider]
-  if (!entry) {
-    const validProviders = Object.keys(PROVIDERS).join(", ")
-    throw new Error(`Unknown provider: ${provider}. Valid: ${validProviders}`)
-  }
-
-  return new LlmConfig({
-    apiFormat: entry.apiFormat,
-    model,
-    baseUrl: entry.baseUrl,
-    apiKeyEnvVar: entry.apiKeyEnvVar
-  })
-}
-
-/** Resolve LLM config from env. API key is loaded but not validated here. */
-export const resolveLlmConfig = Effect.gen(function*() {
-  const llmString = yield* Config.string("LLM").pipe(Config.withDefault("openai:gpt-4o-mini"))
-  const config = parseLlmString(llmString)
-
+/** Get API key for an LlmConfig from environment */
+export const getApiKey = (config: LlmConfig): Redacted.Redacted | undefined => {
   const apiKeyValue = process.env[config.apiKeyEnvVar]
+  return apiKeyValue ? Redacted.make(apiKeyValue) : undefined
+}
 
-  return {
-    apiFormat: config.apiFormat,
-    model: config.model,
-    baseUrl: config.baseUrl,
-    apiKeyEnvVar: config.apiKeyEnvVar,
-    apiKey: apiKeyValue ? Redacted.make(apiKeyValue) : undefined
-  } satisfies ResolvedLlmConfig
+/** Resolve LLM config from Config. */
+export const resolveLlmConfig = Effect.gen(function*() {
+  const llmName = yield* Config.string("LLM").pipe(Config.withDefault(DEFAULT_LLM))
+  return getLlmConfig(llmName)
 })
+
+/** Service to access the resolved LlmConfig */
+export class CurrentLlmConfig extends Context.Tag("@app/CurrentLlmConfig")<
+  CurrentLlmConfig,
+  LlmConfig
+>() {
+  static fromConfig(config: LlmConfig): Layer.Layer<CurrentLlmConfig> {
+    return Layer.succeed(CurrentLlmConfig, config)
+  }
+}

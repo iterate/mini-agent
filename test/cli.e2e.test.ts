@@ -6,33 +6,24 @@
  *
  * NOTE: This is actually an eval - the LLM is in the loop. Will get to proper evals later.
  */
-import { Command } from "@effect/platform"
-import { BunContext } from "@effect/platform-bun"
 import { Effect } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { describe } from "vitest"
-import { expect, test } from "./fixtures.js"
+import { expect, runCli as runCliBase, runCliWithEnv, test } from "./fixtures.js"
 
-// =============================================================================
-// Test Helpers
-// =============================================================================
-
-const TestLayer = BunContext.layer
-
-const CLI_PATH = path.resolve(__dirname, "../src/main.ts")
+const llms = [
+  { llm: "gpt-4.1-mini" },
+  { llm: "claude-haiku-4-5" },
+  { llm: "gemini-2.5-flash" }
+] as const
 
 /** Context name used in tests - safe to reuse since each test has isolated testDir */
 const TEST_CONTEXT = "test-context"
 
-/** Run the CLI with given args and return stdout. Pass cwd to isolate file output. */
-const runCli = (cwd: string | undefined, ...args: Array<string>) => {
-  const cwdArgs = cwd ? ["--cwd", cwd] : []
-  return Command.make("bun", CLI_PATH, ...cwdArgs, ...args).pipe(
-    Command.string,
-    Effect.provide(TestLayer)
-  )
-}
+/** Run CLI and return just the output string (for backward compat with existing tests) */
+const runCli = (cwd: string | undefined, ...args: Array<string>) =>
+  runCliBase(cwd, ...args).pipe(Effect.map(({ output }) => output))
 
 /** Extract JSON output from CLI response (strips tracing logs and other output) */
 const extractJsonOutput = (output: string): string => {
@@ -198,11 +189,19 @@ describe("CLI options", () => {
   })
 })
 
-// =============================================================================
-// Image Input Tests
-// =============================================================================
+describe.each(llms)("LLM: $llm", ({ llm }) => {
+  test(
+    "basic chat works",
+    { timeout: 30000 },
+    async ({ testDir }) => {
+      const { exitCode, output } = await Effect.runPromise(
+        runCliWithEnv(testDir, { LLM: llm }, "chat", "-n", "test", "-m", "Say exactly: TEST_SUCCESS")
+      )
+      expect(output.length).toBeGreaterThan(0)
+      expect(exitCode).toBe(0)
+    }
+  )
 
-describe("image input", () => {
   test(
     "recognizes letter in image",
     { timeout: 30000 },
@@ -210,9 +209,10 @@ describe("image input", () => {
       // Path to test image: white "i" on black background
       const imagePath = path.resolve(__dirname, "fixtures/letter-i.png")
 
-      const output = await Effect.runPromise(
-        runCli(
+      const { exitCode, output } = await Effect.runPromise(
+        runCliWithEnv(
           testDir,
+          { LLM: llm },
           "chat",
           "-n",
           "image-test",
@@ -223,11 +223,13 @@ describe("image input", () => {
         )
       )
 
-      // The LLM should respond with "i"
-      expect(output.trim().toLowerCase()).toContain("i")
+      expect(output.trim().toLowerCase()).toEqual("i")
+      expect(exitCode).toBe(0)
     }
   )
+})
 
+describe("CLI option aliases", () => {
   test("-i is alias for --image", async () => {
     const output = await Effect.runPromise(runCli(undefined, "chat", "--help"))
     expect(output).toContain("-i")

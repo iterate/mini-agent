@@ -18,13 +18,12 @@ import {
 } from "./config.ts"
 import { ContextRepository } from "./context.repository.ts"
 import { ContextService } from "./context.service.ts"
-import { type ResolvedLlmConfig, resolveLlmConfig } from "./llm-config.ts"
+import { CurrentLlmConfig, getApiKey, type LlmConfig, resolveLlmConfig } from "./llm-config.ts"
 import { createLoggingLayer } from "./logging.ts"
 import { createTracingLayer } from "./tracing/index.ts"
 
-const makeLanguageModelLayer = (llmConfig: ResolvedLlmConfig) => {
-  // If no API key, we still construct layers but they'll fail when used
-  const apiKey = llmConfig.apiKey
+const makeLanguageModelLayer = (llmConfig: LlmConfig) => {
+  const apiKey = getApiKey(llmConfig)
 
   const baseLayer = (() => {
     switch (llmConfig.apiFormat) {
@@ -84,12 +83,14 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
 
         const configProviderLayer = Layer.setConfigProvider(configProvider)
         const appConfigLayer = AppConfig.fromConfig(config)
+        const llmConfigLayer = CurrentLlmConfig.fromConfig(llmConfig)
         const languageModelLayer = makeLanguageModelLayer(llmConfig)
         const tracingLayer = createTracingLayer("mini-agent")
 
         return ContextService.layer.pipe(
           Layer.provideMerge(ContextRepository.layer),
           Layer.provideMerge(languageModelLayer),
+          Layer.provideMerge(llmConfigLayer),
           Layer.provideMerge(tracingLayer),
           Layer.provideMerge(appConfigLayer),
           Layer.provideMerge(configProviderLayer),
@@ -108,8 +109,6 @@ const args = process.argv.slice(2)
 
 cli(process.argv).pipe(
   Effect.provide(makeMainLayer(args)),
-  Effect.catchAllCause((cause) =>
-    Cause.isInterruptedOnly(cause) ? Effect.void : Effect.logError(`Fatal error: ${Cause.pretty(cause)}`)
-  ),
+  Effect.catchAllCause((cause) => Cause.isInterruptedOnly(cause) ? Effect.void : Effect.failCause(cause)),
   (effect) => BunRuntime.runMain(effect, { disablePrettyLogger: true })
 )
