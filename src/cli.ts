@@ -15,7 +15,7 @@ import {
   UserMessageEvent
 } from "./context.model.ts"
 import { ContextService } from "./context.service.ts"
-import { printTraceLinks } from "./tracing/index.ts"
+import { printTraceLinks } from "./tracing.ts"
 
 // =============================================================================
 // Global CLI Options
@@ -415,6 +415,18 @@ const logTestCommand = Command.make(
     })
 ).pipe(Command.withDescription("Emit test log messages at all levels (for testing logging config)"))
 
+/**
+ * Trace-test command for testing tracing. Produces a span and exits.
+ */
+const traceTestCommand = Command.make(
+  "trace-test",
+  {},
+  () =>
+    Effect.gen(function*() {
+      yield* Effect.log("Trace-test command executed")
+    }).pipe(Effect.withSpan("trace-test-command"))
+).pipe(Command.withDescription("Simple command for testing tracing"))
+
 // Root command with global options
 const rootCommand = Command.make(
   "mini-agent",
@@ -424,7 +436,7 @@ const rootCommand = Command.make(
     stdoutLogLevel: stdoutLogLevelOption
   }
 ).pipe(
-  Command.withSubcommands([chatCommand, logTestCommand]),
+  Command.withSubcommands([chatCommand, logTestCommand, traceTestCommand]),
   Command.withDescription("AI assistant with persistent context and comprehensive configuration")
 )
 

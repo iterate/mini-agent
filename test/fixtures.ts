@@ -4,10 +4,13 @@
  * Modern Vitest 3.x fixtures using test.extend() for isolated test environments.
  * Provides suite-level and per-test temp directories with failure-only logging.
  */
-import { Layer, LogLevel, Option, Redacted } from "effect"
+import { Command } from "@effect/platform"
+import { BunContext } from "@effect/platform-bun"
+import type { PlatformError } from "@effect/platform/Error"
+import { Effect, Layer, LogLevel, Option, Redacted, Stream } from "effect"
 import { mkdtemp, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
-import { join } from "node:path"
+import { join, resolve } from "node:path"
 import { expect, test as baseTest } from "vitest"
 import { AppConfig, type MiniAgentConfig } from "../src/config.ts"
 
@@ -28,6 +31,53 @@ export const testAppConfigLayer = Layer.succeed(
     fileLogLevel: LogLevel.None
   } satisfies MiniAgentConfig
 )
+
+// =============================================================================
+// CLI Test Helper
+// =============================================================================
+
+const CLI_PATH = resolve(__dirname, "../src/main.ts")
+
+export interface CliResult {
+  stdout: string
+  stderr: string
+  exitCode: number
+}
+
+export interface RunCliOptions {
+  cwd?: string
+  env?: Record<string, string>
+}
+
+/** Run CLI with full control over env and output capture using Effect Command */
+export const runCli = (
+  args: Array<string>,
+  options: RunCliOptions = {}
+): Effect.Effect<CliResult, PlatformError, never> => {
+  const cwdArgs = options.cwd ? ["--cwd", options.cwd] : []
+
+  // Always provide a mock OPENAI_API_KEY for tests (app requires it to start)
+  const defaultEnv = { OPENAI_API_KEY: "test-api-key" }
+  const env = { ...defaultEnv, ...options.env }
+
+  let cmd = Command.make("bun", CLI_PATH, ...cwdArgs, ...args)
+  if (options.cwd) cmd = Command.workingDirectory(cmd, options.cwd)
+  cmd = Command.env(cmd, env)
+
+  return Effect.scoped(
+    Effect.gen(function*() {
+      const process = yield* Command.start(cmd)
+
+      const [stdout, stderr, exitCode] = yield* Effect.all([
+        process.stdout.pipe(Stream.decodeText(), Stream.mkString),
+        process.stderr.pipe(Stream.decodeText(), Stream.mkString),
+        process.exitCode
+      ])
+
+      return { stdout, stderr, exitCode }
+    })
+  ).pipe(Effect.provide(BunContext.layer))
+}
 
 // =============================================================================
 // Vitest Fixtures

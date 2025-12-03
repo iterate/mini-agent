@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "prepare": "effect-language-service patch",
+    "mini-agent": "doppler run -- bun src/main.ts",
     "start": "bun src/main.ts",
     "dev": "bun --watch src/main.ts",
     "typecheck": "tsc --noEmit",
@@ -44,8 +45,6 @@
     "@effect/platform-bun": "^0.85.0",
     "@effect/rpc": "^0.72.2",
     "@effect/rpc-http": "^0.52.4",
-    "@opentelemetry/otlp-transformer": "^0.208.0",
-    "@opentelemetry/sdk-trace-base": "^2.2.0",
     "effect": "^3.19.8",
     "yaml": "^2.7.0"
   }

@@ -29,6 +29,8 @@ const TEST_CONTEXT = "test-context"
 const runCli = (cwd: string | undefined, ...args: Array<string>) => {
   const cwdArgs = cwd ? ["--cwd", cwd] : []
   return Command.make("bun", CLI_PATH, ...cwdArgs, ...args).pipe(
+    // Always provide mock OPENAI_API_KEY for tests
+    Command.env({ OPENAI_API_KEY: "test-api-key" }),
     Command.string,
     Effect.provide(TestLayer)
   )

@@ -46,3 +46,4 @@ So I'm incrementally building a chat agent. Initially just a CLI that runs an ag
 - tracing
 - codemode that produces workflow code (for async tool calls and human in the loop approval)
 - agents sending other agents messages
+- bricking / disposing of broken contents with broken events

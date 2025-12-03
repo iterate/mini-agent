@@ -19,7 +19,7 @@ import {
 import { ContextRepository } from "./context.repository.ts"
 import { ContextService } from "./context.service.ts"
 import { createLoggingLayer } from "./logging.ts"
-import { createTracingLayer } from "./tracing/index.ts"
+import { createTracingLayer } from "./tracing.ts"
 
 // =============================================================================
 // Layer Factories
