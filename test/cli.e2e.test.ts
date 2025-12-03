@@ -22,7 +22,7 @@ const TEST_CONTEXT = "test-context"
 /** Extract JSON objects from CLI response that contain _tag field (event objects) */
 const extractJsonOutput = (output: string): string => {
   // Find all complete JSON objects with balanced braces
-  const jsonObjects: string[] = []
+  const jsonObjects: Array<string> = []
   let depth = 0
   let start = -1
 
@@ -206,7 +206,15 @@ describe("image input", () => {
 
       const result = await Effect.runPromise(
         runCli(
-          ["chat", "-n", "image-test", "-i", imagePath, "-m", "What letter does this image show? Respond with just the lowercase letter."],
+          [
+            "chat",
+            "-n",
+            "image-test",
+            "-i",
+            imagePath,
+            "-m",
+            "What letter does this image show? Respond with just the lowercase letter."
+          ],
           { cwd: testDir }
         )
       )
