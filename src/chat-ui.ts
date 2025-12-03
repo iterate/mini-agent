@@ -63,8 +63,7 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
 
           // Mutable refs for callback communication
           const pendingInputRef = yield* Ref.make<string | null>(null)
-          const cancelRequestedRef = yield* Ref.make(false)
-          const exitRequestedRef = yield* Ref.make(false)
+          const escapeRequestedRef = yield* Ref.make(false)
           const isStreamingRef = yield* Ref.make(false)
 
           // Start the OpenTUI chat
@@ -74,15 +73,8 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
                 Effect.runSync(Ref.set(pendingInputRef, text))
               },
               onEscape: () => {
-                Effect.runSync(
-                  Ref.get(isStreamingRef).pipe(
-                    Effect.flatMap((isStreaming) =>
-                      isStreaming
-                        ? Ref.set(cancelRequestedRef, true)
-                        : Ref.set(exitRequestedRef, true)
-                    )
-                  )
-                )
+                // Just set the flag - logic handled in Effect-land
+                Effect.runSync(Ref.set(escapeRequestedRef, true))
               }
             })
           )
@@ -91,19 +83,13 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
           const chatLoop = Effect.gen(function*() {
             let shouldContinue = true
             while (shouldContinue) {
-              const exitRequested = yield* Ref.get(exitRequestedRef)
-              if (exitRequested) {
-                shouldContinue = false
-                break
-              }
               const result = yield* runChatTurn(
                 contextName,
                 contextService,
                 chat,
                 pendingInputRef,
-                cancelRequestedRef,
-                isStreamingRef,
-                exitRequestedRef
+                escapeRequestedRef,
+                isStreamingRef
               )
               if (result === EXIT_REQUESTED) {
                 shouldContinue = false
@@ -140,9 +126,8 @@ const runChatTurn = (
   contextService: Context.Tag.Service<typeof ContextService>,
   chat: ChatController,
   pendingInputRef: Ref.Ref<string | null>,
-  cancelRequestedRef: Ref.Ref<boolean>,
-  isStreamingRef: Ref.Ref<boolean>,
-  exitRequestedRef: Ref.Ref<boolean>
+  escapeRequestedRef: Ref.Ref<boolean>,
+  isStreamingRef: Ref.Ref<boolean>
 ): Effect.Effect<
   void | typeof EXIT_REQUESTED,
   AiError.AiError | ContextLoadError | ContextSaveError,
@@ -154,18 +139,19 @@ const runChatTurn = (
     while (userMessage === null) {
       yield* Effect.sleep(50)
 
-      // Check if exit was requested
-      const exitRequested = yield* Ref.get(exitRequestedRef)
-      if (exitRequested) {
+      // Check if escape was requested while not streaming (= exit)
+      const escapeRequested = yield* Ref.get(escapeRequestedRef)
+      if (escapeRequested) {
+        yield* Ref.set(escapeRequestedRef, false)
         return EXIT_REQUESTED
       }
 
       userMessage = yield* Ref.get(pendingInputRef)
     }
 
-    // Reset input ref and cancel flag
+    // Reset refs
     yield* Ref.set(pendingInputRef, null)
-    yield* Ref.set(cancelRequestedRef, false)
+    yield* Ref.set(escapeRequestedRef, false)
     yield* Ref.set(isStreamingRef, true)
 
     const requestId = crypto.randomUUID()
@@ -204,10 +190,10 @@ const runChatTurn = (
     let completed = false
     while (!completed) {
       yield* Effect.sleep(50)
-      const cancelled = yield* Ref.get(cancelRequestedRef)
+      const escapeRequested = yield* Ref.get(escapeRequestedRef)
       const fiberStatus = yield* Fiber.status(streamFiber)
 
-      if (cancelled) {
+      if (escapeRequested) {
         yield* Fiber.interrupt(streamFiber)
 
         // Persist interrupted event and show partial content
@@ -224,7 +210,7 @@ const runChatTurn = (
           chat.endStreaming()
         }
 
-        yield* Ref.set(cancelRequestedRef, false)
+        yield* Ref.set(escapeRequestedRef, false)
         completed = true
       } else if (fiberStatus._tag === "Done") {
         chat.endStreaming(accumulatedText)
