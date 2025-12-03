@@ -39,6 +39,8 @@ bun run check:fix
 
 This runs typecheck + linter with auto-fix. Commit any resulting changes before pushing.
 
+Also make sure to amend the pull request description using the `gh` utility each time you push.
+
 ## Use of effect
 
 <!-- effect-solutions:start -->
