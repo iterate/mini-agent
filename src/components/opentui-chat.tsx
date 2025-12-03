@@ -5,6 +5,7 @@
  * - Scrollable conversation history at top
  * - Input field at bottom
  * - Escape key to cancel streaming or exit
+ * - Enter during streaming interrupts and sends new message
  */
 import { createCliRenderer, type KeyEvent } from "@opentui/core"
 import { createRoot } from "@opentui/react/renderer"
@@ -18,7 +19,6 @@ import { useState } from "react"
 export interface Message {
   role: "user" | "assistant" | "system"
   content: string
-  /** True if this was an interrupted response */
   interrupted?: boolean
 }
 
@@ -41,24 +41,17 @@ const colors = {
   green: "#00FF00",
   dimCyan: "#5F8787",
   dimGreen: "#5F875F",
-  dim: "#666666",
+  dim: "#555555",
   red: "#FF6666",
   dimRed: "#8B4040",
-  separator: "#444444",
-  inputBorder: "#5F87AF"
+  separator: "#444444"
 }
 
 // =============================================================================
 // Message Renderer Component
 // =============================================================================
 
-function MessageView({
-  msg,
-  isDimmed
-}: {
-  msg: Message
-  isDimmed: boolean
-}) {
+function MessageView({ msg, isDimmed }: { msg: Message; isDimmed: boolean }) {
   const userColor = isDimmed ? colors.dimCyan : colors.cyan
   const assistantColor = isDimmed ? colors.dimGreen : colors.green
   const textColor = isDimmed ? colors.dim : undefined
@@ -66,15 +59,12 @@ function MessageView({
 
   return (
     <box flexDirection="column" marginBottom={1}>
-      <text
-        color={msg.role === "user" ? userColor : assistantColor}
-        bold={!isDimmed}
-      >
+      <text color={msg.role === "user" ? userColor : assistantColor} bold={!isDimmed}>
         {msg.role === "user" ? "You:" : "Assistant:"}
       </text>
       <text color={textColor}>{msg.content}</text>
       {msg.interrupted && (
-        <text color={interruptedColor} italic>— interrupted —</text>
+        <text color={interruptedColor}>— interrupted —</text>
       )}
     </box>
   )
@@ -106,11 +96,16 @@ function ChatApp({
   }
 
   const handleInputSubmit = (value: string) => {
-    if (isStreaming) {
-      onEscape()
-    } else if (value.trim()) {
+    if (value.trim()) {
+      if (isStreaming) {
+        // Interrupt current stream AND submit the new message
+        onEscape()
+      }
       onSubmit(value)
       setInputValue("")
+    } else if (isStreaming) {
+      // Empty submit during streaming = just interrupt
+      onEscape()
     }
   }
 
@@ -174,29 +169,13 @@ function ChatApp({
         </box>
       </scrollbox>
 
-      {/* Status bar when streaming */}
-      {isStreaming && (
-        <box height={1} width="100%">
-          <text color={colors.red}>↵ Enter or Esc to interrupt</text>
-        </box>
-      )}
-
-      {/* Input area with border */}
-      <box
-        height={3}
-        width="100%"
-        borderStyle="single"
-        borderColor={colors.inputBorder}
-        flexDirection="row"
-        alignItems="center"
-        paddingLeft={1}
-        paddingRight={1}
-      >
-        <text color={colors.cyan} bold>You: </text>
+      {/* Input area - simple single line with prompt */}
+      <box height={1} width="100%" flexDirection="row">
+        <text color={colors.cyan} bold>{">"} </text>
         <input
           flexGrow={1}
           value={inputValue}
-          placeholder="Type your message..."
+          placeholder={isStreaming ? "Type to interrupt and send..." : "Type your message..."}
           focused={true}
           onInput={handleInputChange}
           onSubmit={handleInputSubmit}
@@ -204,10 +183,11 @@ function ChatApp({
         />
       </box>
 
-      {/* Footer - right aligned */}
-      <box height={1} width="100%" justifyContent="flex-end">
+      {/* Footer - spacer pushes text to right */}
+      <box height={1} width="100%" flexDirection="row">
+        <box flexGrow={1} />
         <text color={colors.dim}>
-          {contextName} · Esc to exit
+          {contextName} · {isStreaming ? "Enter to interrupt" : "Esc to exit"}
         </text>
       </box>
     </box>
@@ -278,7 +258,6 @@ export async function runOpenTUIChat(
       render()
     },
 
-    /** End streaming. Pass content to add as message, interrupted flag for cancelled responses. */
     endStreaming(finalContent?: string, interrupted?: boolean) {
       const messages = finalContent
         ? [...state.messages, { role: "assistant" as const, content: finalContent, interrupted }]
