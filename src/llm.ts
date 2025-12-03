@@ -16,6 +16,7 @@ import {
   TextDeltaEvent,
   UserMessageEvent
 } from "./context.model.ts"
+import { CurrentLlmConfig } from "./llm-config.ts"
 
 // =============================================================================
 // Event to Prompt Conversion
@@ -115,13 +116,17 @@ export const streamLLMResponse = (
 ): Stream.Stream<
   ContextEvent,
   AiError.AiError | PlatformError.PlatformError,
-  LanguageModel.LanguageModel | FileSystem.FileSystem
+  LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
 > =>
   Stream.unwrap(
     Effect.fn("streamLLMResponse")(function*() {
       const model = yield* LanguageModel.LanguageModel
+      const llmConfig = yield* CurrentLlmConfig
       const fullResponseRef = yield* Ref.make("")
-      yield* Effect.logDebug("Streaming LLM response")
+      yield* Effect.logDebug(`Streaming LLM response`, {
+        model: llmConfig.model,
+        apiFormat: llmConfig.apiFormat
+      })
 
       // Convert events to @effect/ai Prompt format
       const prompt = yield* eventsToPrompt(events)
