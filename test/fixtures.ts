@@ -56,9 +56,13 @@ export const runCli = (
 ): Effect.Effect<CliResult, PlatformError, never> => {
   const cwdArgs = options.cwd ? ["--cwd", options.cwd] : []
 
-  // Always provide a mock OPENAI_API_KEY for tests (app requires it to start)
-  const defaultEnv = { OPENAI_API_KEY: "test-api-key" }
-  const env = { ...defaultEnv, ...options.env }
+  // Inherit parent env (for Doppler-injected secrets), then apply defaults and overrides
+  // Default OPENAI_API_KEY only used if not already in environment (e.g., local dev without Doppler)
+  const env = {
+    ...process.env,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "test-api-key",
+    ...options.env
+  }
 
   let cmd = Command.make("bun", CLI_PATH, ...cwdArgs, ...args)
   if (options.cwd) cmd = Command.workingDirectory(cmd, options.cwd)
@@ -66,12 +70,12 @@ export const runCli = (
 
   return Effect.scoped(
     Effect.gen(function*() {
-      const process = yield* Command.start(cmd)
+      const proc = yield* Command.start(cmd)
 
       const [stdout, stderr, exitCode] = yield* Effect.all([
-        process.stdout.pipe(Stream.decodeText(), Stream.mkString),
-        process.stderr.pipe(Stream.decodeText(), Stream.mkString),
-        process.exitCode
+        proc.stdout.pipe(Stream.decodeText(), Stream.mkString),
+        proc.stderr.pipe(Stream.decodeText(), Stream.mkString),
+        proc.exitCode
       ])
 
       return { stdout, stderr, exitCode }
