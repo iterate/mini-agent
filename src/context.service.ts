@@ -126,6 +126,16 @@ export class ContextService extends Context.Tag("@app/ContextService")<
   )
 
   /**
+   * Stub layer for CLI commands that don't need the service (help, version, log-test).
+   * Throws if any method is actually called.
+   */
+  static readonly stubLayer = Layer.succeed(ContextService, {
+    addEvents: () => Stream.empty,
+    load: () => Effect.succeed([]),
+    list: () => Effect.succeed([])
+  })
+
+  /**
    * Test layer with mock LLM responses for unit tests.
    * See: https://www.effect.solutions/testing
    */

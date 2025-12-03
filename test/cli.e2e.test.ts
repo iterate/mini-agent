@@ -18,6 +18,7 @@ import { expect, test } from "./fixtures.js"
 // Test Helpers
 // =============================================================================
 
+const hasApiKey = !!process.env.OPENAI_API_KEY
 const TestLayer = BunContext.layer
 
 const CLI_PATH = path.resolve(__dirname, "../src/main.ts")
@@ -84,7 +85,7 @@ describe("CLI", () => {
   })
 
   describe("non-interactive mode (-m)", () => {
-    test("sends a message and gets a response", { timeout: 30000 }, async ({ testDir }) => {
+    test.skipIf(!hasApiKey)("sends a message and gets a response", { timeout: 30000 }, async ({ testDir }) => {
       const output = await Effect.runPromise(
         runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Say exactly: TEST_RESPONSE_123")
       )
@@ -103,7 +104,7 @@ describe("CLI", () => {
   })
 
   describe("--raw mode", () => {
-    test("outputs JSON events", { timeout: 30000 }, async ({ testDir }) => {
+    test.skipIf(!hasApiKey)("outputs JSON events", { timeout: 30000 }, async ({ testDir }) => {
       const output = await Effect.runPromise(
         runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Say exactly: RAW_TEST", "--raw")
       )
@@ -114,19 +115,23 @@ describe("CLI", () => {
       expect(jsonOutput).toContain("\"AssistantMessage\"")
     })
 
-    test("includes ephemeral events with --show-ephemeral", { timeout: 30000 }, async ({ testDir }) => {
-      const output = await Effect.runPromise(
-        runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Say hello", "--raw", "--show-ephemeral")
-      )
+    test.skipIf(!hasApiKey)(
+      "includes ephemeral events with --show-ephemeral",
+      { timeout: 30000 },
+      async ({ testDir }) => {
+        const output = await Effect.runPromise(
+          runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Say hello", "--raw", "--show-ephemeral")
+        )
 
-      const jsonOutput = extractJsonOutput(output)
-      // Should contain TextDelta events when showing ephemeral
-      expect(jsonOutput).toContain("\"TextDelta\"")
-    })
+        const jsonOutput = extractJsonOutput(output)
+        // Should contain TextDelta events when showing ephemeral
+        expect(jsonOutput).toContain("\"TextDelta\"")
+      }
+    )
   })
 
   describe("context persistence", () => {
-    test("creates context file on first message", { timeout: 30000 }, async ({ testDir }) => {
+    test.skipIf(!hasApiKey)("creates context file on first message", { timeout: 30000 }, async ({ testDir }) => {
       await Effect.runPromise(
         runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Hello")
       )
@@ -136,7 +141,7 @@ describe("CLI", () => {
       expect(fs.existsSync(contextPath)).toBe(true)
     })
 
-    test("maintains conversation history across calls", { timeout: 60000 }, async ({ testDir }) => {
+    test.skipIf(!hasApiKey)("maintains conversation history across calls", { timeout: 60000 }, async ({ testDir }) => {
       // First message
       await Effect.runPromise(
         runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "My favorite color is blue")
@@ -155,7 +160,7 @@ describe("CLI", () => {
   })
 
   describe("error handling", () => {
-    test("returns non-empty output on valid request", { timeout: 30000 }, async ({ testDir }) => {
+    test.skipIf(!hasApiKey)("returns non-empty output on valid request", { timeout: 30000 }, async ({ testDir }) => {
       const output = await Effect.runPromise(
         runCli(testDir, "chat", "-n", TEST_CONTEXT, "-m", "Say hello")
       )
@@ -203,7 +208,7 @@ describe("CLI options", () => {
 // =============================================================================
 
 describe("image input", () => {
-  test(
+  test.skipIf(!hasApiKey)(
     "recognizes letter in image",
     { timeout: 30000 },
     async ({ testDir }) => {

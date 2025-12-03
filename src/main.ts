@@ -3,10 +3,11 @@
  *
  * Sets up configuration, logging, and service layers, then runs the CLI.
  */
+import { LanguageModel } from "@effect/ai"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { Cause, Effect, Layer } from "effect"
+import { Cause, ConfigProvider, Effect, Layer } from "effect"
 import { cli, GenAISpanTransformerLayer } from "./cli.ts"
 import {
   AppConfig,
@@ -20,6 +21,22 @@ import { ContextRepository } from "./context.repository.ts"
 import { ContextService } from "./context.service.ts"
 import { createLoggingLayer } from "./logging.ts"
 import { createTracingLayer } from "./tracing/index.ts"
+
+/**
+ * Check if CLI args indicate help/version or commands that don't need API.
+ */
+const needsApiKey = (args: ReadonlyArray<string>): boolean => {
+  // Help and version flags
+  if (args.includes("--help") || args.includes("-h")) return false
+  if (args.includes("--version") || args.includes("-V")) return false
+  // log-test command doesn't need API
+  if (args.includes("log-test")) return false
+  // Chat with -m but without -n/-name should fail fast without needing API
+  const hasMessage = args.includes("-m") || args.includes("--message")
+  const hasName = args.includes("-n") || args.includes("--name")
+  if (hasMessage && !hasName) return false
+  return true
+}
 
 // =============================================================================
 // Layer Factories
@@ -99,6 +116,54 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
     )
   )
 
+/**
+ * Build a minimal layer for commands that don't need API (help, version, log-test).
+ * Provides logging, config, and stub services.
+ */
+const makeMinimalLayer = (args: ReadonlyArray<string>) =>
+  Layer.unwrapEffect(
+    Effect.gen(function*() {
+      const configPath = extractConfigPath(args)
+      const configProvider = yield* makeConfigProvider(configPath, args)
+
+      // Create minimal config with dummy API key (won't be used)
+      const partialConfig = yield* MiniAgentConfig.pipe(
+        Effect.withConfigProvider(
+          configProvider.pipe(
+            ConfigProvider.orElse(() => ConfigProvider.fromMap(new Map([["OPENAI_API_KEY", "not-needed"]])))
+          )
+        )
+      )
+
+      const loggingLayer = makeLoggingLayer(partialConfig)
+      const configProviderLayer = Layer.setConfigProvider(configProvider)
+      const appConfigLayer = AppConfig.fromConfig(partialConfig)
+      const tracingLayer = createTracingLayer("mini-agent")
+
+      // Stub services that won't be used for help/version/log-test
+      const stubContextServiceLayer = ContextService.stubLayer
+      const stubLanguageModelLayer = Layer.succeed(
+        LanguageModel.LanguageModel,
+        LanguageModel.LanguageModel.of({
+          generateText: () => Effect.die("LanguageModel not available in minimal layer"),
+          streamText: () => Effect.die("LanguageModel not available in minimal layer"),
+          generateObject: () => Effect.die("LanguageModel not available in minimal layer")
+        })
+      )
+
+      return stubLanguageModelLayer.pipe(
+        Layer.provideMerge(stubContextServiceLayer),
+        Layer.provideMerge(tracingLayer),
+        Layer.provideMerge(appConfigLayer),
+        Layer.provideMerge(configProviderLayer),
+        Layer.provideMerge(loggingLayer),
+        Layer.provideMerge(BunContext.layer)
+      )
+    }).pipe(
+      Effect.provide(BunContext.layer)
+    )
+  )
+
 // =============================================================================
 // Run
 // =============================================================================
@@ -106,7 +171,7 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
 const args = process.argv.slice(2)
 
 cli(process.argv).pipe(
-  Effect.provide(makeMainLayer(args)),
+  Effect.provide(needsApiKey(args) ? makeMainLayer(args) : makeMinimalLayer(args)),
   Effect.catchAllCause((cause) =>
     Cause.isInterruptedOnly(cause) ? Effect.void : Effect.logError(`Fatal error: ${Cause.pretty(cause)}`)
   ),
