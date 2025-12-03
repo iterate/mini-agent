@@ -188,7 +188,7 @@ const runChatTurn = (
       if (cancelled) {
         yield* Fiber.interrupt(streamFiber)
 
-        // Persist interrupted event if we have partial content
+        // Persist interrupted event and show partial content
         if (accumulatedText.length > 0) {
           const interruptEvent = new LLMRequestInterruptedEvent({
             requestId,
@@ -196,9 +196,12 @@ const runChatTurn = (
             partialResponse: accumulatedText
           })
           yield* contextService.persistEvent(contextName, interruptEvent)
+          // Show partial response with interrupted marker
+          chat.endStreaming(accumulatedText, true)
+        } else {
+          chat.endStreaming()
         }
 
-        chat.endStreaming()
         yield* Ref.set(cancelRequestedRef, false)
         completed = true
       } else if (fiberStatus._tag === "Done") {
@@ -217,8 +220,18 @@ const runChatTurn = (
 /** Convert persisted events to Message format for display */
 const eventsToMessages = (events: ReadonlyArray<PersistedEvent>): Message[] =>
   events
-    .filter((e) => e._tag === "UserMessage" || e._tag === "AssistantMessage")
-    .map((e) => ({
-      role: e._tag === "UserMessage" ? "user" as const : "assistant" as const,
-      content: e.content
-    }))
+    .filter((e) =>
+      e._tag === "UserMessage" ||
+      e._tag === "AssistantMessage" ||
+      e._tag === "LLMRequestInterrupted"
+    )
+    .map((e) => {
+      if (e._tag === "UserMessage") {
+        return { role: "user" as const, content: e.content }
+      } else if (e._tag === "AssistantMessage") {
+        return { role: "assistant" as const, content: e.content }
+      } else {
+        // LLMRequestInterrupted
+        return { role: "assistant" as const, content: e.partialResponse, interrupted: true }
+      }
+    })

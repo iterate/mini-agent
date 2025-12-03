@@ -18,37 +18,66 @@ import { useState } from "react"
 export interface Message {
   role: "user" | "assistant" | "system"
   content: string
+  /** True if this was an interrupted response */
+  interrupted?: boolean
 }
 
 export interface ChatAppProps {
-  /** Initial messages to display */
   messages: Message[]
-  /** How many messages were loaded from history (shown dimmed) */
   initialMessageCount: number
-  /** Current streaming text (shown with cursor) */
   streamingText: string
-  /** Whether LLM is currently streaming */
   isStreaming: boolean
-  /** Called when user submits input */
   onSubmit: (text: string) => void
-  /** Called when user presses Escape */
   onEscape: () => void
-  /** Context name to display */
   contextName: string
 }
 
 // =============================================================================
-// Colors (matching cli.ts non-interactive mode)
+// Colors
 // =============================================================================
 
 const colors = {
   cyan: "#00FFFF",
   green: "#00FF00",
-  dimCyan: "#5F8787",    // dimmed cyan for history
-  dimGreen: "#5F875F",   // dimmed green for history
-  dim: "#666666",        // dimmed text
-  red: "#FF6666",        // streaming indicator
-  separator: "#444444"
+  dimCyan: "#5F8787",
+  dimGreen: "#5F875F",
+  dim: "#666666",
+  red: "#FF6666",
+  dimRed: "#8B4040",
+  separator: "#444444",
+  inputBorder: "#5F87AF"
+}
+
+// =============================================================================
+// Message Renderer Component
+// =============================================================================
+
+function MessageView({
+  msg,
+  isDimmed
+}: {
+  msg: Message
+  isDimmed: boolean
+}) {
+  const userColor = isDimmed ? colors.dimCyan : colors.cyan
+  const assistantColor = isDimmed ? colors.dimGreen : colors.green
+  const textColor = isDimmed ? colors.dim : undefined
+  const interruptedColor = isDimmed ? colors.dimRed : colors.red
+
+  return (
+    <box flexDirection="column" marginBottom={1}>
+      <text
+        color={msg.role === "user" ? userColor : assistantColor}
+        bold={!isDimmed}
+      >
+        {msg.role === "user" ? "You:" : "Assistant:"}
+      </text>
+      <text color={textColor}>{msg.content}</text>
+      {msg.interrupted && (
+        <text color={interruptedColor} italic>— interrupted —</text>
+      )}
+    </box>
+  )
 }
 
 // =============================================================================
@@ -66,7 +95,6 @@ function ChatApp({
 }: ChatAppProps) {
   const [inputValue, setInputValue] = useState("")
 
-  // Handle keyboard input
   useKeyboard((key: KeyEvent) => {
     if (key.name === "escape") {
       onEscape()
@@ -79,7 +107,6 @@ function ChatApp({
 
   const handleInputSubmit = (value: string) => {
     if (isStreaming) {
-      // During streaming, Enter interrupts
       onEscape()
     } else if (value.trim()) {
       onSubmit(value)
@@ -87,9 +114,7 @@ function ChatApp({
     }
   }
 
-  // Messages loaded from history (shown dimmed)
   const historyMessages = messages.slice(0, initialMessageCount)
-  // Messages added this session (shown bright)
   const newMessages = messages.slice(initialMessageCount)
 
   return (
@@ -102,7 +127,7 @@ function ChatApp({
         borderColor={colors.separator}
       >
         <box flexDirection="column" width="100%" padding={1}>
-          {/* History separator if there's history */}
+          {/* History header */}
           {historyMessages.length > 0 && (
             <box flexDirection="column" marginBottom={1}>
               <text color={colors.dim}>{"─".repeat(50)}</text>
@@ -113,14 +138,7 @@ function ChatApp({
 
           {/* Historical messages (dimmed) */}
           {historyMessages.map((msg, idx) => (
-            <box key={idx} flexDirection="column" marginBottom={1}>
-              <text
-                color={msg.role === "user" ? colors.dimCyan : colors.dimGreen}
-              >
-                {msg.role === "user" ? "You:" : "Assistant:"}
-              </text>
-              <text color={colors.dim}>{msg.content}</text>
-            </box>
+            <MessageView key={`hist-${idx}`} msg={msg} isDimmed={true} />
           ))}
 
           {/* End of history separator */}
@@ -130,17 +148,9 @@ function ChatApp({
             </box>
           )}
 
-          {/* New messages from this session (bright colors) */}
+          {/* New messages from this session (bright) */}
           {newMessages.map((msg, idx) => (
-            <box key={`new-${idx}`} flexDirection="column" marginBottom={1}>
-              <text
-                color={msg.role === "user" ? colors.cyan : colors.green}
-                bold
-              >
-                {msg.role === "user" ? "You:" : "Assistant:"}
-              </text>
-              <text>{msg.content}</text>
-            </box>
+            <MessageView key={`new-${idx}`} msg={msg} isDimmed={false} />
           ))}
 
           {/* Streaming indicator when no text yet */}
@@ -171,8 +181,17 @@ function ChatApp({
         </box>
       )}
 
-      {/* Input area - single line */}
-      <box height={1} width="100%" flexDirection="row">
+      {/* Input area with border */}
+      <box
+        height={3}
+        width="100%"
+        borderStyle="single"
+        borderColor={colors.inputBorder}
+        flexDirection="row"
+        alignItems="center"
+        paddingLeft={1}
+        paddingRight={1}
+      >
         <text color={colors.cyan} bold>You: </text>
         <input
           flexGrow={1}
@@ -185,10 +204,10 @@ function ChatApp({
         />
       </box>
 
-      {/* Footer */}
-      <box height={1} width="100%">
+      {/* Footer - right aligned */}
+      <box height={1} width="100%" justifyContent="flex-end">
         <text color={colors.dim}>
-          Context: {contextName} | Esc to exit
+          {contextName} · Esc to exit
         </text>
       </box>
     </box>
@@ -206,15 +225,11 @@ export interface ChatCallbacks {
 
 export interface ChatState {
   messages: Message[]
-  initialMessageCount: number  // How many messages were loaded from history
+  initialMessageCount: number
   streamingText: string
   isStreaming: boolean
 }
 
-/**
- * Run the OpenTUI chat interface.
- * Returns controls to update state and cleanup.
- */
 export async function runOpenTUIChat(
   contextName: string,
   initialMessages: Message[],
@@ -223,7 +238,6 @@ export async function runOpenTUIChat(
   const renderer = await createCliRenderer()
   const root = createRoot(renderer)
 
-  // State management
   let state: ChatState = {
     messages: initialMessages,
     initialMessageCount: initialMessages.length,
@@ -245,45 +259,39 @@ export async function runOpenTUIChat(
     )
   }
 
-  // Initial render
   render()
   renderer.start()
 
   return {
-    /** Add a message to the conversation */
     addMessage(msg: Message) {
       state = { ...state, messages: [...state.messages, msg] }
       render()
     },
 
-    /** Start streaming mode */
     startStreaming() {
       state = { ...state, isStreaming: true, streamingText: "" }
       render()
     },
 
-    /** Append text to the streaming buffer */
     appendStreamingText(delta: string) {
       state = { ...state, streamingText: state.streamingText + delta }
       render()
     },
 
-    /** End streaming and optionally add the final message */
-    endStreaming(finalContent?: string) {
+    /** End streaming. Pass content to add as message, interrupted flag for cancelled responses. */
+    endStreaming(finalContent?: string, interrupted?: boolean) {
       const messages = finalContent
-        ? [...state.messages, { role: "assistant" as const, content: finalContent }]
+        ? [...state.messages, { role: "assistant" as const, content: finalContent, interrupted }]
         : state.messages
       state = { ...state, isStreaming: false, streamingText: "", messages }
       render()
     },
 
-    /** Cleanup and exit */
     cleanup() {
       root.unmount()
       renderer.stop()
     },
 
-    /** Get current state */
     getState() {
       return state
     }
