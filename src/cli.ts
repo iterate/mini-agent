@@ -10,16 +10,14 @@ import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
 import {
   AssistantMessageEvent,
   type ContextEvent,
+  FileAttachmentEvent,
+  type InputEvent,
   type PersistedEvent,
   TextDeltaEvent,
   UserMessageEvent
 } from "./context.model.ts"
 import { ContextService } from "./context.service.ts"
 import { printTraceLinks } from "./tracing.ts"
-
-// =============================================================================
-// Global CLI Options
-// =============================================================================
 
 export const configFileOption = Options.file("config").pipe(
   Options.withAlias("c"),
@@ -43,10 +41,6 @@ export const stdoutLogLevelOption = Options.choice("stdout-log-level", [
   Options.withDescription("Stdout log level (overrides config)"),
   Options.optional
 )
-
-// =============================================================================
-// Chat Command Options
-// =============================================================================
 
 const nameOption = Options.text("name").pipe(
   Options.withAlias("n"),
@@ -72,18 +66,36 @@ const showEphemeralOption = Options.boolean("show-ephemeral").pipe(
   Options.withDefault(false)
 )
 
-// =============================================================================
-// Output Options
-// =============================================================================
+const imageOption = Options.text("image").pipe(
+  Options.withAlias("i"),
+  Options.withDescription("Path to local image file or URL to share with the AI"),
+  Options.optional
+)
+
+const MIME_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp"
+}
+
+const getMediaType = (filePath: string): string => {
+  const ext = filePath.toLowerCase().slice(filePath.lastIndexOf("."))
+  return MIME_TYPES[ext] ?? "application/octet-stream"
+}
+
+const getFileName = (filePath: string): string => {
+  const lastSlash = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"))
+  return lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath
+}
+
+const isUrl = (input: string): boolean => input.startsWith("http://") || input.startsWith("https://")
 
 interface OutputOptions {
   raw: boolean
   showEphemeral: boolean
 }
-
-// =============================================================================
-// ANSI Styling
-// =============================================================================
 
 const bold = (s: string) => `\x1b[1m${s}\x1b[0m`
 const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`
@@ -94,10 +106,6 @@ const dimGreen = (s: string) => `\x1b[38;5;65m${s}\x1b[0m`
 const assistantLabel = bold(green("Assistant:"))
 const dimUserLabel = dimCyan("You:")
 const dimAssistantLabel = dimGreen("Assistant:")
-
-// =============================================================================
-// Event Handling
-// =============================================================================
 
 /**
  * Handle a single context event based on output options.
@@ -130,18 +138,45 @@ const handleEvent = (
   })
 
 /** Run the event stream, handling each event */
-const runEventStream = (contextName: string, userMessage: string, options: OutputOptions) =>
+const runEventStream = (
+  contextName: string,
+  userMessage: string,
+  options: OutputOptions,
+  imageInput?: string
+) =>
   Effect.gen(function*() {
     const contextService = yield* ContextService
-    const userEvent = new UserMessageEvent({ content: userMessage })
-    yield* contextService.addEvents(contextName, [userEvent]).pipe(
+    const inputEvents: Array<InputEvent> = []
+
+    if (imageInput) {
+      const mediaType = getMediaType(imageInput)
+      const fileName = getFileName(imageInput)
+
+      if (isUrl(imageInput)) {
+        inputEvents.push(
+          new FileAttachmentEvent({
+            source: { type: "url", url: imageInput },
+            mediaType,
+            fileName
+          })
+        )
+      } else {
+        inputEvents.push(
+          new FileAttachmentEvent({
+            source: { type: "file", path: imageInput },
+            mediaType,
+            fileName
+          })
+        )
+      }
+    }
+
+    inputEvents.push(new UserMessageEvent({ content: userMessage }))
+
+    yield* contextService.addEvents(contextName, inputEvents).pipe(
       Stream.runForEach((event) => handleEvent(event, options))
     )
   })
-
-// =============================================================================
-// History Display
-// =============================================================================
 
 /** Display previous conversation history */
 const displayHistory = (events: ReadonlyArray<PersistedEvent>) =>
@@ -172,10 +207,6 @@ const displayRawHistory = (events: ReadonlyArray<PersistedEvent>) =>
     }
   })
 
-// =============================================================================
-// Conversation Loop
-// =============================================================================
-
 /** Single conversation turn */
 const conversationTurn = (contextName: string, options: OutputOptions) =>
   Effect.gen(function*() {
@@ -204,10 +235,6 @@ const conversationLoop = (contextName: string, options: OutputOptions) =>
     ),
     Effect.forever
   )
-
-// =============================================================================
-// Context Selection
-// =============================================================================
 
 const NEW_CONTEXT_VALUE = "__new__"
 
@@ -246,13 +273,10 @@ const selectOrCreateContext = Effect.gen(function*() {
   return selected
 })
 
-// =============================================================================
-// Main Command Handler
-// =============================================================================
-
 const runChat = (options: {
   name: Option.Option<string>
   message: Option.Option<string>
+  image: Option.Option<string>
   raw: boolean
   showEphemeral: boolean
 }) =>
@@ -261,16 +285,18 @@ const runChat = (options: {
     const contextService = yield* ContextService
     const outputOptions: OutputOptions = { raw: options.raw, showEphemeral: options.showEphemeral }
     const hasMessage = Option.isSome(options.message) && Option.getOrElse(options.message, () => "").trim() !== ""
+    const imagePath = Option.getOrNull(options.image) ?? undefined
     const isTTY = process.stdin.isTTY === true
 
     if (hasMessage) {
-      // Non-interactive: single message mode
-      const contextName = Option.isSome(options.name)
-        ? Option.getOrElse(options.name, () => "")
-        : "default"
-
+      // Non-interactive: single message mode requires explicit context name
+      if (Option.isNone(options.name)) {
+        yield* Console.log("Error: Context name required. Use -n <name> to specify a context.")
+        return
+      }
+      const contextName = Option.getOrElse(options.name, () => "")
       const message = Option.getOrElse(options.message, () => "")
-      yield* runEventStream(contextName, message, outputOptions)
+      yield* runEventStream(contextName, message, outputOptions, imagePath)
 
       if (!options.raw) {
         yield* printTraceLinks
@@ -310,10 +336,6 @@ const runChat = (options: {
       yield* Console.error("Error: No TTY detected. Use -m <message> for non-interactive mode.")
     }
   }).pipe(Effect.withSpan("chat-session"))
-
-// =============================================================================
-// GenAI Span Transformer (for Langfuse/OTEL)
-// =============================================================================
 
 /** Extract text from Prompt content parts */
 const collectText = (parts: ReadonlyArray<{ type: string; text?: string }>) =>
@@ -378,24 +400,17 @@ export const GenAISpanTransformerLayer = Layer.succeed(
   }
 )
 
-// =============================================================================
-// CLI Definition
-// =============================================================================
-
 const chatCommand = Command.make(
   "chat",
   {
     name: nameOption,
     message: messageOption,
+    image: imageOption,
     raw: rawOption,
     showEphemeral: showEphemeralOption
   },
-  ({ message, name, raw, showEphemeral }) => runChat({ message, name, raw, showEphemeral })
+  ({ image, message, name, raw, showEphemeral }) => runChat({ image, message, name, raw, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
-
-// =============================================================================
-// Log-Test Command (for testing logging/tracing)
-// =============================================================================
 
 /**
  * Log-test command that emits log messages at all levels.
