@@ -551,7 +551,7 @@ const traceTestCommand = Command.make(
   {},
   () =>
     Effect.gen(function*() {
-      yield* Effect.log("Trace-test command executed")
+      yield* Console.log("Trace-test command executed")
     }).pipe(Effect.withSpan("trace-test-command"))
 ).pipe(Command.withDescription("Simple command for testing tracing"))
 
