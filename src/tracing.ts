@@ -100,7 +100,19 @@ const FanOutHttpClient = (destinations: ReadonlyArray<Destination>): Layer.Layer
       })
 
       return Effect.all(effects, { concurrency: "unbounded" }).pipe(
-        Effect.map((responses) => responses.find((r) => r !== undefined)!),
+        Effect.flatMap((responses) => {
+          const successResponse = responses.find((r) => r !== undefined)
+          if (successResponse) {
+            return Effect.succeed(successResponse)
+          }
+          return Effect.fail(
+            new HttpClientError.RequestError({
+              request,
+              reason: "Transport",
+              cause: new Error("All OTLP export destinations failed")
+            })
+          )
+        }),
         Effect.withTracerEnabled(false)
       )
     })
