@@ -110,12 +110,18 @@ describe("CLI", () => {
       expect(result.stdout.length).toBeGreaterThan(0)
     })
 
-    test("uses 'default' context when no name provided", { timeout: 30000 }, async ({ testDir }) => {
+    test("generates random context when no name provided", { timeout: 30000 }, async ({ testDir }) => {
       const result = await Effect.runPromise(
         runCli(["chat", "-m", "Say exactly: HELLO"], { cwd: testDir })
       )
 
       expect(result.stdout.length).toBeGreaterThan(0)
+
+      // Context file should exist with random name (chat-xxxxx pattern)
+      const contextsDir = path.join(testDir, ".mini-agent", "contexts")
+      const files = fs.readdirSync(contextsDir)
+      expect(files.length).toBe(1)
+      expect(files[0]).toMatch(/^chat-[a-z0-9]{5}\.yaml$/)
     })
   })
 

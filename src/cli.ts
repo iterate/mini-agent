@@ -360,6 +360,13 @@ const selectOrCreateContext = Effect.gen(function*() {
   return selected
 })
 
+/** Generate a random context name like "chat-a7b3c" */
+const generateRandomContextName = (): string => {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+  const suffix = Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join("")
+  return `chat-${suffix}`
+}
+
 const runChat = (options: {
   name: Option.Option<string>
   message: Option.Option<string>
@@ -372,7 +379,7 @@ const runChat = (options: {
     yield* Effect.logDebug("Starting chat session")
     const contextService = yield* ContextService
     const mode = determineMode(options)
-    const contextName = Option.getOrElse(options.name, () => "default")
+    const contextName = Option.getOrElse(options.name, generateRandomContextName)
     const imagePath = Option.getOrNull(options.image) ?? undefined
 
     // Script mode always uses raw output

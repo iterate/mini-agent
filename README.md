@@ -60,6 +60,23 @@ Output events:
 - `TextDelta` (streaming, with `--show-ephemeral`)
 - `AssistantMessage` (final response)
 
+### Raw mode (`--raw`)
+Output JSONL events instead of plain text. Works with any mode:
+```bash
+# Single-turn with raw output
+doppler run -- bun src/main.ts chat -m "Hello" --raw
+# {"_tag":"AssistantMessage","content":"Hello! How can I help you today?"}
+
+# With streaming deltas
+doppler run -- bun src/main.ts chat -m "Hello" --raw --show-ephemeral
+# {"_tag":"TextDelta","delta":"Hello"}
+# {"_tag":"TextDelta","delta":"!"}
+# {"_tag":"AssistantMessage","content":"Hello!..."}
+
+# Parse with jq
+doppler run -- bun src/main.ts chat -m "Hello" --raw | jq -r 'select(._tag == "AssistantMessage") | .content'
+```
+
 ### TTY interactive mode (default when stdin is a terminal)
 Prompts for input, shows conversation history:
 ```bash
@@ -71,9 +88,9 @@ doppler run -- bun src/main.ts chat
 
 | Option | Alias | Description |
 |--------|-------|-------------|
-| `--name <context>` | `-n` | Context name (persists conversation) |
+| `--name <context>` | `-n` | Context name (persists conversation). If omitted, generates random name like `chat-a7b3c` |
 | `--message <msg>` | `-m` | Single message (non-interactive) |
-| `--raw` | `-r` | Output as JSONL events |
+| `--raw` | `-r` | Output as JSONL events (for parsing/scripting) |
 | `--show-ephemeral` | `-e` | Include TextDelta events in output |
 | `--script` | `-s` | Script mode: JSONL in, JSONL out |
 | `--config <file>` | `-c` | Path to YAML config file |
