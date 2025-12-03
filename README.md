@@ -13,36 +13,20 @@ This is a CLI for chat agent that maintains persistent conversation contexts. Yo
 
 ## LLM Configuration
 
-Set the `LLM` environment variable to choose your model:
+Set `LLM` env var to one of the named presets:
 
 ```bash
-# Provider:model format
-LLM=openai:gpt-4o-mini bun src/main.ts chat -n myconvo -m "Hello"
-LLM=anthropic:claude-sonnet-4-20250514 bun src/main.ts chat -n myconvo -m "Hello"
-LLM=gemini:gemini-1.5-flash bun src/main.ts chat -n myconvo -m "Hello"
-
-# OpenAI-compatible providers
-LLM=openrouter:openai/gpt-4o bun src/main.ts chat -n myconvo -m "Hello"
-LLM=groq:llama-3.1-70b-versatile bun src/main.ts chat -n myconvo -m "Hello"
-
-# Just model name (defaults to openai)
-LLM=gpt-4o bun src/main.ts chat -n myconvo -m "Hello"
+LLM=gpt-4.1-mini        # OpenAI (default)
+LLM=claude-haiku-4-5    # Anthropic
+LLM=gemini-2.5-flash    # Google
 ```
 
-**Required API keys:**
-
-| Provider | Env Var |
-|----------|---------|
-| openai | `OPENAI_API_KEY` |
-| anthropic | `ANTHROPIC_API_KEY` |
-| gemini | `GEMINI_API_KEY` |
-| openrouter | `OPENROUTER_API_KEY` |
-| groq | `GROQ_API_KEY` |
-
-For custom endpoints, pass a JSON config:
+Or pass JSON for custom config:
 ```bash
 LLM='{"apiFormat":"openai-responses","model":"my-model","baseUrl":"https://my-api.com/v1","apiKeyEnvVar":"MY_KEY"}'
 ```
+
+Requires `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY` depending on provider.
 
 # Side quests (so far)
 
