@@ -24,6 +24,7 @@ import {
 } from "./context.model.ts"
 import { ContextRepository } from "./context.repository.ts"
 import type { ContextLoadError, ContextSaveError } from "./errors.ts"
+import type { CurrentLlmConfig } from "./llm-config.ts"
 import { streamLLMResponse } from "./llm.ts"
 
 // =============================================================================
@@ -49,7 +50,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
     ) => Stream.Stream<
       ContextEvent,
       AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
-      LanguageModel.LanguageModel | FileSystem.FileSystem
+      LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
     >
 
     /** Load all events from a context. */
@@ -76,7 +77,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
       ): Stream.Stream<
         ContextEvent,
         AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
-        LanguageModel.LanguageModel | FileSystem.FileSystem
+        LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
       > =>
         pipe(
           // Load or create context, append input events

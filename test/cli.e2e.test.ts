@@ -10,11 +10,13 @@ import { Effect } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { describe } from "vitest"
-import { expect, runCli, test } from "./fixtures.js"
+import { expect, runCli, runCliWithEnv, test } from "./fixtures.js"
 
-// =============================================================================
-// Test Helpers
-// =============================================================================
+const llms = [
+  { llm: "gpt-4.1-mini" },
+  { llm: "claude-haiku-4-5" },
+  { llm: "gemini-2.5-flash" }
+] as const
 
 /** Context name used in tests - safe to reuse since each test has isolated testDir */
 const TEST_CONTEXT = "test-context"
@@ -45,10 +47,6 @@ const extractJsonOutput = (output: string): string => {
 
   return jsonObjects.join("\n")
 }
-
-// =============================================================================
-// Tests
-// =============================================================================
 
 describe("CLI", () => {
   describe("--help", () => {
@@ -192,11 +190,19 @@ describe("CLI options", () => {
   })
 })
 
-// =============================================================================
-// Image Input Tests
-// =============================================================================
+describe.each(llms)("LLM: $llm", ({ llm }) => {
+  test(
+    "basic chat works",
+    { timeout: 30000 },
+    async ({ testDir }) => {
+      const result = await Effect.runPromise(
+        runCliWithEnv(testDir, { LLM: llm }, "chat", "-n", "test", "-m", "Say exactly: TEST_SUCCESS")
+      )
+      expect(result.stdout.length).toBeGreaterThan(0)
+      expect(result.exitCode).toBe(0)
+    }
+  )
 
-describe("image input", () => {
   test(
     "recognizes letter in image",
     { timeout: 30000 },
@@ -205,35 +211,32 @@ describe("image input", () => {
       const imagePath = path.resolve(__dirname, "fixtures/letter-i.png")
 
       const result = await Effect.runPromise(
-        runCli(
-          [
-            "chat",
-            "-n",
-            "image-test",
-            "-i",
-            imagePath,
-            "-m",
-            "What letter does this image show? Respond with just the lowercase letter."
-          ],
-          { cwd: testDir }
+        runCliWithEnv(
+          testDir,
+          { LLM: llm },
+          "chat",
+          "-n",
+          "image-test",
+          "-i",
+          imagePath,
+          "-m",
+          "What letter does this image show? Respond with just the lowercase letter."
         )
       )
 
-      // The LLM should respond with "i"
-      expect(result.stdout.trim().toLowerCase()).toContain("i")
+      expect(result.stdout.trim().toLowerCase()).toEqual("i")
+      expect(result.exitCode).toBe(0)
     }
   )
+})
 
+describe("CLI option aliases", () => {
   test("-i is alias for --image", async () => {
     const result = await Effect.runPromise(runCli(["chat", "--help"]))
     expect(result.stdout).toContain("-i")
     expect(result.stdout).toContain("--image")
   })
 })
-
-// =============================================================================
-// Logging Tests
-// =============================================================================
 
 describe("Logging", () => {
   describe("stdout log level filtering", () => {

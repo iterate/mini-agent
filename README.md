@@ -11,8 +11,22 @@ This is a CLI for chat agent that maintains persistent conversation contexts. Yo
 
 **Interactive mode** (runs an agent loop until you Ctrl+C):
 
+## LLM Configuration
 
+Set `LLM` env var to one of the named presets:
 
+```bash
+LLM=gpt-4.1-mini        # OpenAI (default)
+LLM=claude-haiku-4-5    # Anthropic
+LLM=gemini-2.5-flash    # Google
+```
+
+Or pass JSON for custom config:
+```bash
+LLM='{"apiFormat":"openai-responses","model":"my-model","baseUrl":"https://my-api.com/v1","apiKeyEnvVar":"MY_KEY"}'
+```
+
+Requires `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY` depending on provider.
 
 # Side quests (so far)
 
