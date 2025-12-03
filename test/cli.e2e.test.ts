@@ -186,7 +186,7 @@ describe("CLI", () => {
   describe("script mode (--script)", () => {
     test("accepts UserMessage events and outputs JSONL", { timeout: 30000 }, async ({ testDir }) => {
       // Script mode now expects JSONL events as input
-      const input = '{"_tag":"UserMessage","content":"Say exactly: SCRIPT_TEST"}\n'
+      const input = "{\"_tag\":\"UserMessage\",\"content\":\"Say exactly: SCRIPT_TEST\"}\n"
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
@@ -210,7 +210,8 @@ describe("CLI", () => {
 
     test("handles multiple UserMessage events in sequence", { timeout: 120000 }, async ({ testDir }) => {
       // Two UserMessage events as JSONL
-      const input = '{"_tag":"UserMessage","content":"Remember: my secret code is XYZ789"}\n{"_tag":"UserMessage","content":"What is my secret code?"}\n'
+      const input =
+        "{\"_tag\":\"UserMessage\",\"content\":\"Remember: my secret code is XYZ789\"}\n{\"_tag\":\"UserMessage\",\"content\":\"What is my secret code?\"}\n"
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
@@ -236,7 +237,8 @@ describe("CLI", () => {
 
     test("accepts SystemPrompt events to set behavior", { timeout: 30000 }, async ({ testDir }) => {
       // SystemPrompt followed by UserMessage
-      const input = '{"_tag":"SystemPrompt","content":"Always respond with exactly: PIRATE_RESPONSE"}\n{"_tag":"UserMessage","content":"Hello"}\n'
+      const input =
+        "{\"_tag\":\"SystemPrompt\",\"content\":\"Always respond with exactly: PIRATE_RESPONSE\"}\n{\"_tag\":\"UserMessage\",\"content\":\"Hello\"}\n"
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,

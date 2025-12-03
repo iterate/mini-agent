@@ -97,9 +97,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
             return existingEvents
           })(),
           // Only stream LLM response if there's a UserMessage
-          Effect.andThen((events) =>
-            hasUserMessage ? streamLLMResponse(events) : Stream.empty
-          ),
+          Effect.andThen((events) => hasUserMessage ? streamLLMResponse(events) : Stream.empty),
           Stream.unwrap,
           // Persist events as they complete (only persisted ones)
           Stream.tap((event) =>
