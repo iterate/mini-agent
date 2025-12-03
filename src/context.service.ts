@@ -11,10 +11,12 @@
  * 4. Persists the new events to the context file
  */
 import type { AiError, LanguageModel } from "@effect/ai"
+import type { Error as PlatformError, FileSystem } from "@effect/platform"
 import { Context, Effect, Layer, pipe, Schema, Stream } from "effect"
 import {
   AssistantMessageEvent,
   type ContextEvent,
+  type InputEvent,
   PersistedEvent,
   type PersistedEvent as PersistedEventType,
   SystemPromptEvent,
@@ -23,6 +25,7 @@ import {
 } from "./context.model.ts"
 import { ContextRepository } from "./context.repository.ts"
 import type { ContextLoadError, ContextSaveError } from "./errors.ts"
+import type { CurrentLlmConfig } from "./llm-config.ts"
 import { streamLLMResponse } from "./llm.ts"
 
 // =============================================================================
@@ -33,22 +36,22 @@ export class ContextService extends Context.Tag("@app/ContextService")<
   ContextService,
   {
     /**
-     * Add events to a context, optionally triggering LLM processing.
+     * Add events to a context, triggering LLM processing if UserMessage present.
      *
-     * Behavior depends on event types:
-     * - UserMessage: persist + trigger LLM, stream back response events
-     * - SystemPrompt: persist only (no LLM call), return empty stream
-     *
-     * Multiple events are processed in order. LLM is only triggered
-     * if at least one UserMessage is present.
+     * This is the core operation on a Context:
+     * 1. Loads existing events (or creates context with system prompt)
+     * 2. Appends the input events (UserMessage and/or FileAttachment)
+     * 3. Runs LLM with full history (only if UserMessage present)
+     * 4. Streams back TextDelta (ephemeral) and AssistantMessage (persisted)
+     * 5. Persists new events as they complete
      */
     readonly addEvents: (
       contextName: string,
-      inputEvents: ReadonlyArray<UserMessageEvent | SystemPromptEvent>
+      inputEvents: ReadonlyArray<InputEvent>
     ) => Stream.Stream<
       ContextEvent,
-      AiError.AiError | ContextLoadError | ContextSaveError,
-      LanguageModel.LanguageModel
+      AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
+      LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
     >
 
     /** Load all events from a context. */
@@ -71,11 +74,11 @@ export class ContextService extends Context.Tag("@app/ContextService")<
 
       const addEvents = (
         contextName: string,
-        inputEvents: ReadonlyArray<UserMessageEvent | SystemPromptEvent>
+        inputEvents: ReadonlyArray<InputEvent>
       ): Stream.Stream<
         ContextEvent,
-        AiError.AiError | ContextLoadError | ContextSaveError,
-        LanguageModel.LanguageModel
+        AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
+        LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
       > => {
         // Check if any UserMessage is present (triggers LLM)
         const hasUserMessage = inputEvents.some(Schema.is(UserMessageEvent))
@@ -141,7 +144,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
     return ContextService.of({
       addEvents: (
         contextName: string,
-        inputEvents: ReadonlyArray<UserMessageEvent | SystemPromptEvent>
+        inputEvents: ReadonlyArray<InputEvent>
       ): Stream.Stream<ContextEvent, never, never> => {
         // Load or create context
         let events = store.get(contextName)

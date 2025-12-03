@@ -11,17 +11,15 @@ import { Chunk, Console, Effect, Layer, Option, Schema, Stream } from "effect"
 import {
   AssistantMessageEvent,
   type ContextEvent,
+  FileAttachmentEvent,
+  type InputEvent,
   type PersistedEvent,
   SystemPromptEvent,
   TextDeltaEvent,
   UserMessageEvent
 } from "./context.model.ts"
 import { ContextService } from "./context.service.ts"
-import { printTraceLinks } from "./tracing/index.ts"
-
-// =============================================================================
-// Global CLI Options
-// =============================================================================
+import { printTraceLinks } from "./tracing.ts"
 
 export const configFileOption = Options.file("config").pipe(
   Options.withAlias("c"),
@@ -45,10 +43,6 @@ export const stdoutLogLevelOption = Options.choice("stdout-log-level", [
   Options.withDescription("Stdout log level (overrides config)"),
   Options.optional
 )
-
-// =============================================================================
-// Chat Command Options
-// =============================================================================
 
 const nameOption = Options.text("name").pipe(
   Options.withAlias("n"),
@@ -80,18 +74,36 @@ const scriptOption = Options.boolean("script").pipe(
   Options.withDefault(false)
 )
 
-// =============================================================================
-// Output Options
-// =============================================================================
+const imageOption = Options.text("image").pipe(
+  Options.withAlias("i"),
+  Options.withDescription("Path to local image file or URL to share with the AI"),
+  Options.optional
+)
+
+const MIME_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp"
+}
+
+const getMediaType = (filePath: string): string => {
+  const ext = filePath.toLowerCase().slice(filePath.lastIndexOf("."))
+  return MIME_TYPES[ext] ?? "application/octet-stream"
+}
+
+const getFileName = (filePath: string): string => {
+  const lastSlash = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"))
+  return lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath
+}
+
+const isUrl = (input: string): boolean => input.startsWith("http://") || input.startsWith("https://")
 
 interface OutputOptions {
   raw: boolean
   showEphemeral: boolean
 }
-
-// =============================================================================
-// ANSI Styling
-// =============================================================================
 
 const bold = (s: string) => `\x1b[1m${s}\x1b[0m`
 const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`
@@ -102,10 +114,6 @@ const dimGreen = (s: string) => `\x1b[38;5;65m${s}\x1b[0m`
 const assistantLabel = bold(green("Assistant:"))
 const dimUserLabel = dimCyan("You:")
 const dimAssistantLabel = dimGreen("Assistant:")
-
-// =============================================================================
-// Event Handling
-// =============================================================================
 
 /**
  * Handle a single context event based on output options.
@@ -138,18 +146,45 @@ const handleEvent = (
   })
 
 /** Run the event stream, handling each event */
-const runEventStream = (contextName: string, userMessage: string, options: OutputOptions) =>
+const runEventStream = (
+  contextName: string,
+  userMessage: string,
+  options: OutputOptions,
+  imageInput?: string
+) =>
   Effect.gen(function*() {
     const contextService = yield* ContextService
-    const userEvent = new UserMessageEvent({ content: userMessage })
-    yield* contextService.addEvents(contextName, [userEvent]).pipe(
+    const inputEvents: Array<InputEvent> = []
+
+    if (imageInput) {
+      const mediaType = getMediaType(imageInput)
+      const fileName = getFileName(imageInput)
+
+      if (isUrl(imageInput)) {
+        inputEvents.push(
+          new FileAttachmentEvent({
+            source: { type: "url", url: imageInput },
+            mediaType,
+            fileName
+          })
+        )
+      } else {
+        inputEvents.push(
+          new FileAttachmentEvent({
+            source: { type: "file", path: imageInput },
+            mediaType,
+            fileName
+          })
+        )
+      }
+    }
+
+    inputEvents.push(new UserMessageEvent({ content: userMessage }))
+
+    yield* contextService.addEvents(contextName, inputEvents).pipe(
       Stream.runForEach((event) => handleEvent(event, options))
     )
   })
-
-// =============================================================================
-// History Display
-// =============================================================================
 
 /** Display previous conversation history */
 const displayHistory = (events: ReadonlyArray<PersistedEvent>) =>
@@ -179,10 +214,6 @@ const displayRawHistory = (events: ReadonlyArray<PersistedEvent>) =>
       yield* Console.log(JSON.stringify(event))
     }
   })
-
-// =============================================================================
-// Conversation Loop
-// =============================================================================
 
 /** Single conversation turn */
 const conversationTurn = (contextName: string, options: OutputOptions) =>
@@ -244,9 +275,9 @@ const readAllStdin: Effect.Effect<string> = BunStream.stdin.pipe(
   Effect.map((chunks) => Chunk.join(chunks, "").trim())
 )
 
-/** Input events accepted in script mode */
-const InputEvent = Schema.Union(UserMessageEvent, SystemPromptEvent)
-type InputEvent = typeof InputEvent.Type
+/** Script mode input events - UserMessage or SystemPrompt for dynamic injection */
+const ScriptInputEvent = Schema.Union(UserMessageEvent, SystemPromptEvent)
+type ScriptInputEvent = typeof ScriptInputEvent.Type
 
 /** Read JSONL events from stdin (for script mode) */
 const stdinEvents = BunStream.stdin.pipe(
@@ -255,7 +286,7 @@ const stdinEvents = BunStream.stdin.pipe(
   Stream.filter((line) => line.trim() !== ""),
   Stream.mapEffect((line) =>
     Effect.try(() => JSON.parse(line) as unknown).pipe(
-      Effect.flatMap((json) => Schema.decodeUnknown(InputEvent)(json))
+      Effect.flatMap((json) => Schema.decodeUnknown(ScriptInputEvent)(json))
     )
   )
 )
@@ -271,10 +302,17 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
           // Echo input event
           yield* Console.log(JSON.stringify(event))
 
-          // Process through context service
-          yield* contextService.addEvents(contextName, [event]).pipe(
-            Stream.runForEach((outputEvent) => handleEvent(outputEvent, options))
-          )
+          // Process through context service - convert to InputEvent for addEvents
+          // SystemPrompt needs special handling since addEvents expects InputEvent
+          if (Schema.is(UserMessageEvent)(event)) {
+            yield* contextService.addEvents(contextName, [event]).pipe(
+              Stream.runForEach((outputEvent) => handleEvent(outputEvent, options))
+            )
+          } else if (Schema.is(SystemPromptEvent)(event)) {
+            // For SystemPrompt, we need to create a new context with this prompt
+            // This is a limitation - script mode can only set system prompt at context creation
+            yield* Effect.logDebug("SystemPrompt events in script mode are echoed but not persisted")
+          }
         })
       ),
       Stream.runDrain
@@ -322,13 +360,10 @@ const selectOrCreateContext = Effect.gen(function*() {
   return selected
 })
 
-// =============================================================================
-// Main Command Handler
-// =============================================================================
-
 const runChat = (options: {
   name: Option.Option<string>
   message: Option.Option<string>
+  image: Option.Option<string>
   raw: boolean
   script: boolean
   showEphemeral: boolean
@@ -338,6 +373,7 @@ const runChat = (options: {
     const contextService = yield* ContextService
     const mode = determineMode(options)
     const contextName = Option.getOrElse(options.name, () => "default")
+    const imagePath = Option.getOrNull(options.image) ?? undefined
 
     // Script mode always uses raw output
     const outputOptions: OutputOptions = {
@@ -348,7 +384,7 @@ const runChat = (options: {
     switch (mode) {
       case "single-turn": {
         const message = Option.getOrElse(options.message, () => "")
-        yield* runEventStream(contextName, message, outputOptions)
+        yield* runEventStream(contextName, message, outputOptions, imagePath)
         if (!outputOptions.raw) {
           yield* printTraceLinks
         }
@@ -359,7 +395,7 @@ const runChat = (options: {
         // Read all stdin as one message, output plain text
         const input = yield* readAllStdin
         if (input !== "") {
-          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false })
+          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false }, imagePath)
         }
         break
       }
@@ -404,10 +440,6 @@ const runChat = (options: {
       }
     }
   }).pipe(Effect.withSpan("chat-session"))
-
-// =============================================================================
-// GenAI Span Transformer (for Langfuse/OTEL)
-// =============================================================================
 
 /** Extract text from Prompt content parts */
 const collectText = (parts: ReadonlyArray<{ type: string; text?: string }>) =>
@@ -472,25 +504,19 @@ export const GenAISpanTransformerLayer = Layer.succeed(
   }
 )
 
-// =============================================================================
-// CLI Definition
-// =============================================================================
-
 const chatCommand = Command.make(
   "chat",
   {
     name: nameOption,
     message: messageOption,
+    image: imageOption,
     raw: rawOption,
     script: scriptOption,
     showEphemeral: showEphemeralOption
   },
-  ({ message, name, raw, script, showEphemeral }) => runChat({ message, name, raw, script, showEphemeral })
+  ({ image, message, name, raw, script, showEphemeral }) =>
+    runChat({ image, message, name, raw, script, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
-
-// =============================================================================
-// Log-Test Command (for testing logging/tracing)
-// =============================================================================
 
 /**
  * Log-test command that emits log messages at all levels.
@@ -510,6 +536,18 @@ const logTestCommand = Command.make(
     })
 ).pipe(Command.withDescription("Emit test log messages at all levels (for testing logging config)"))
 
+/**
+ * Trace-test command for testing tracing. Produces a span and exits.
+ */
+const traceTestCommand = Command.make(
+  "trace-test",
+  {},
+  () =>
+    Effect.gen(function*() {
+      yield* Effect.log("Trace-test command executed")
+    }).pipe(Effect.withSpan("trace-test-command"))
+).pipe(Command.withDescription("Simple command for testing tracing"))
+
 // Root command with global options
 const rootCommand = Command.make(
   "mini-agent",
@@ -519,7 +557,7 @@ const rootCommand = Command.make(
     stdoutLogLevel: stdoutLogLevelOption
   }
 ).pipe(
-  Command.withSubcommands([chatCommand, logTestCommand]),
+  Command.withSubcommands([chatCommand, logTestCommand, traceTestCommand]),
   Command.withDescription("AI assistant with persistent context and comprehensive configuration")
 )
 

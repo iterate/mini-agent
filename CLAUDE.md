@@ -19,6 +19,7 @@ See README.md for context
 - tests using vitest; colocate test files with .test.ts
 - import using .ts extension; no .js
 - Use comments sparingly to explain any additional context and "why" that isn't evident from the code. Don't redundantly describe the code below.
+- No banner comments (e.g. `// ===== Section Name =====`). Use whitespace and JSDoc to organize code.
 - DO NOT use nodejs imports like node:fs etc - you must use @effect/platform/FileSystem and @effect/platform/Path instead (read source if you need to grok it)
 
 ## Scripts
@@ -28,6 +29,17 @@ See README.md for context
 - `bun run check` — typecheck + lint
 - `bun run check:fix` — typecheck + lint:fix
 - `bun run test` / `bun run test:watch` — vitest
+
+## Pull Requests
+
+Before committing and pushing code, you must run:
+```bash
+bun run check:fix
+```
+
+This runs typecheck + linter with auto-fix. Commit any resulting changes before pushing.
+
+Also make sure to amend the pull request description using the `gh` utility each time you push.
 
 ## Use of effect
 

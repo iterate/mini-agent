@@ -32,6 +32,11 @@ const decodeEvent = Schema.decodeUnknownSync(PersistedEvent)
  */
 const decodeEvents = (rawEvents: Array<unknown>): Array<PersistedEventType> => rawEvents.map((raw) => decodeEvent(raw))
 
+/**
+ * Encode an event to a plain object for YAML serialization.
+ */
+const encodeEvent = Schema.encodeSync(PersistedEvent)
+
 // =============================================================================
 // Context Repository Service
 // =============================================================================
@@ -82,11 +87,8 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
             Effect.catchAll(() => Effect.void)
           )
 
-          // Convert to plain objects for YAML serialization
-          const plainEvents = events.map((e) => ({
-            _tag: e._tag,
-            content: e.content
-          }))
+          // Convert to plain objects for YAML serialization using Schema encoding
+          const plainEvents = events.map((e) => encodeEvent(e))
 
           const yaml = YAML.stringify({ events: plainEvents })
           yield* fs.writeFileString(filePath, yaml).pipe(
