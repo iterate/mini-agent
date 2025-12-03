@@ -106,7 +106,10 @@ function ChatApp({
           {isStreaming && streamingText && (
             <box flexDirection="column" marginBottom={1}>
               <text color="#00FF00" bold>Assistant:</text>
-              <text>{streamingText}<text color="#00FFFF">▌</text></text>
+              <box flexDirection="row">
+                <text>{streamingText}</text>
+                <text color="#00FFFF">▌</text>
+              </box>
             </box>
           )}
 
