@@ -93,12 +93,12 @@ describe("CLI", () => {
       expect(output.length).toBeGreaterThan(0)
     })
 
-    test("uses 'default' context when no name provided", { timeout: 30000 }, async ({ testDir }) => {
+    test("requires context name in non-interactive mode", { timeout: 30000 }, async ({ testDir }) => {
       const output = await Effect.runPromise(
         runCli(testDir, "chat", "-m", "Say exactly: HELLO")
       )
 
-      expect(output.length).toBeGreaterThan(0)
+      expect(output).toContain("Error: Context name required")
     })
   })
 
@@ -195,6 +195,43 @@ describe("CLI options", () => {
     const output = await Effect.runPromise(runCli(undefined, "--help"))
     expect(output).toContain("-c")
     expect(output).toContain("--config")
+  })
+})
+
+// =============================================================================
+// Image Input Tests
+// =============================================================================
+
+describe("image input", () => {
+  test(
+    "recognizes letter in image",
+    { timeout: 30000 },
+    async ({ testDir }) => {
+      // Path to test image: white "i" on black background
+      const imagePath = path.resolve(__dirname, "fixtures/letter-i.png")
+
+      const output = await Effect.runPromise(
+        runCli(
+          testDir,
+          "chat",
+          "-n",
+          "image-test",
+          "-i",
+          imagePath,
+          "-m",
+          "What letter does this image show? Respond with just the lowercase letter."
+        )
+      )
+
+      // The LLM should respond with "i"
+      expect(output.trim().toLowerCase()).toContain("i")
+    }
+  )
+
+  test("-i is alias for --image", async () => {
+    const output = await Effect.runPromise(runCli(undefined, "chat", "--help"))
+    expect(output).toContain("-i")
+    expect(output).toContain("--image")
   })
 })
 

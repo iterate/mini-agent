@@ -11,15 +11,16 @@
  * 4. Persists the new events to the context file
  */
 import type { AiError, LanguageModel } from "@effect/ai"
+import type { Error as PlatformError, FileSystem } from "@effect/platform"
 import { Context, Effect, Layer, pipe, Schema, Stream } from "effect"
 import {
   AssistantMessageEvent,
   type ContextEvent,
+  type InputEvent,
   PersistedEvent,
   type PersistedEvent as PersistedEventType,
   SystemPromptEvent,
-  TextDeltaEvent,
-  type UserMessageEvent
+  TextDeltaEvent
 } from "./context.model.ts"
 import { ContextRepository } from "./context.repository.ts"
 import type { ContextLoadError, ContextSaveError } from "./errors.ts"
@@ -37,18 +38,18 @@ export class ContextService extends Context.Tag("@app/ContextService")<
      *
      * This is the core operation on a Context:
      * 1. Loads existing events (or creates context with system prompt)
-     * 2. Appends the input events (typically UserMessage)
+     * 2. Appends the input events (UserMessage and/or FileAttachment)
      * 3. Runs LLM with full history
      * 4. Streams back TextDelta (ephemeral) and AssistantMessage (persisted)
      * 5. Persists new events as they complete
      */
     readonly addEvents: (
       contextName: string,
-      inputEvents: ReadonlyArray<UserMessageEvent>
+      inputEvents: ReadonlyArray<InputEvent>
     ) => Stream.Stream<
       ContextEvent,
-      AiError.AiError | ContextLoadError | ContextSaveError,
-      LanguageModel.LanguageModel
+      AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
+      LanguageModel.LanguageModel | FileSystem.FileSystem
     >
 
     /** Load all events from a context. */
@@ -71,11 +72,11 @@ export class ContextService extends Context.Tag("@app/ContextService")<
 
       const addEvents = (
         contextName: string,
-        inputEvents: ReadonlyArray<UserMessageEvent>
+        inputEvents: ReadonlyArray<InputEvent>
       ): Stream.Stream<
         ContextEvent,
-        AiError.AiError | ContextLoadError | ContextSaveError,
-        LanguageModel.LanguageModel
+        AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
+        LanguageModel.LanguageModel | FileSystem.FileSystem
       > =>
         pipe(
           // Load or create context, append input events
@@ -135,7 +136,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
     return ContextService.of({
       addEvents: (
         contextName: string,
-        inputEvents: ReadonlyArray<UserMessageEvent>
+        inputEvents: ReadonlyArray<InputEvent>
       ): Stream.Stream<ContextEvent, never, never> => {
         // Load or create context
         let events = store.get(contextName)
