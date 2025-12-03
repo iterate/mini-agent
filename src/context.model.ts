@@ -1,20 +1,30 @@
 /**
  * Context Event Schemas
  *
- * A Context is a named, ordered list of events representing conversation turns
- * plus system configuration like LLM selection.
+ * A Context is the central concept in this codebase: a named, ordered list of events.
+ * Events represent conversation turns between user and assistant, plus system configuration.
+ *
+ * Event Types:
+ * - SystemPrompt: Initial AI behavior configuration (persisted)
+ * - UserMessage: Input from the user (persisted)
+ * - AssistantMessage: Complete response from the AI (persisted)
+ * - TextDelta: Streaming chunk (ephemeral, never persisted)
+ * - SetLlmConfig: LLM configuration for this context (persisted)
  */
 import { Schema } from "effect"
 import { LlmConfig } from "./llm-config.ts"
 
+/** Branded type for context names - prevents mixing with other strings */
 export const ContextName = Schema.String.pipe(Schema.brand("ContextName"))
 export type ContextName = typeof ContextName.Type
 
+/** Message format for LLM APIs and tracing */
 export interface LLMMessage {
   readonly role: "system" | "user" | "assistant"
   readonly content: string
 }
 
+/** System prompt event - sets the AI's behavior */
 export class SystemPromptEvent extends Schema.TaggedClass<SystemPromptEvent>()("SystemPrompt", {
   content: Schema.String
 }) {
@@ -23,6 +33,7 @@ export class SystemPromptEvent extends Schema.TaggedClass<SystemPromptEvent>()("
   }
 }
 
+/** User message event - input from the user */
 export class UserMessageEvent extends Schema.TaggedClass<UserMessageEvent>()("UserMessage", {
   content: Schema.String
 }) {
@@ -31,6 +42,7 @@ export class UserMessageEvent extends Schema.TaggedClass<UserMessageEvent>()("Us
   }
 }
 
+/** Assistant message event - complete response from the AI */
 export class AssistantMessageEvent extends Schema.TaggedClass<AssistantMessageEvent>()("AssistantMessage", {
   content: Schema.String
 }) {
@@ -39,16 +51,19 @@ export class AssistantMessageEvent extends Schema.TaggedClass<AssistantMessageEv
   }
 }
 
+/** Text delta event - streaming chunk (ephemeral, never persisted) */
 export class TextDeltaEvent extends Schema.TaggedClass<TextDeltaEvent>()("TextDelta", {
   delta: Schema.String
 }) {}
 
+/** Attachment source - local file path or remote URL */
 export const AttachmentSource = Schema.Union(
   Schema.Struct({ type: Schema.Literal("file"), path: Schema.String }),
   Schema.Struct({ type: Schema.Literal("url"), url: Schema.String })
 )
 export type AttachmentSource = typeof AttachmentSource.Type
 
+/** File attachment event - image or other file shared with AI */
 export class FileAttachmentEvent extends Schema.TaggedClass<FileAttachmentEvent>()(
   "FileAttachment",
   {
@@ -64,6 +79,7 @@ export class SetLlmConfigEvent extends Schema.TaggedClass<SetLlmConfigEvent>()(
   { config: LlmConfig }
 ) {}
 
+/** Events that get persisted to the context file */
 export const PersistedEvent = Schema.Union(
   SystemPromptEvent,
   UserMessageEvent,
@@ -73,6 +89,7 @@ export const PersistedEvent = Schema.Union(
 )
 export type PersistedEvent = typeof PersistedEvent.Type
 
+/** All possible context events (persisted + ephemeral) */
 export const ContextEvent = Schema.Union(
   SystemPromptEvent,
   UserMessageEvent,
@@ -83,6 +100,7 @@ export const ContextEvent = Schema.Union(
 )
 export type ContextEvent = typeof ContextEvent.Type
 
+/** Input events that can be added via addEvents */
 export const InputEvent = Schema.Union(UserMessageEvent, FileAttachmentEvent)
 export type InputEvent = typeof InputEvent.Type
 
