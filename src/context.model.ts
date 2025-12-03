@@ -66,6 +66,34 @@ export class TextDeltaEvent extends Schema.TaggedClass<TextDeltaEvent>()("TextDe
   delta: Schema.String
 }) {}
 
+/** LLM message schema for LLMRequestStartEvent */
+export const LLMMessageSchema = Schema.Struct({
+  role: Schema.Literal("system", "user", "assistant"),
+  content: Schema.String
+})
+
+/** Emitted when LLM request starts - contains full message array for tracing */
+export class LLMRequestStartEvent extends Schema.TaggedClass<LLMRequestStartEvent>()("LLMRequestStart", {
+  requestId: Schema.String,
+  timestamp: Schema.DateFromSelf,
+  messages: Schema.Array(LLMMessageSchema)
+}) {}
+
+/** Reason for LLM request interruption */
+export const InterruptReason = Schema.Literal("user_cancel", "user_new_message", "timeout")
+export type InterruptReason = typeof InterruptReason.Type
+
+/** Emitted when LLM request is interrupted - persisted because it contains partial response */
+export class LLMRequestInterruptedEvent extends Schema.TaggedClass<LLMRequestInterruptedEvent>()("LLMRequestInterrupted", {
+  requestId: Schema.String,
+  reason: InterruptReason,
+  partialResponse: Schema.String
+}) {
+  toLLMMessage(): LLMMessage {
+    return { role: "assistant", content: this.partialResponse }
+  }
+}
+
 // =============================================================================
 // Union Types
 // =============================================================================
@@ -74,7 +102,8 @@ export class TextDeltaEvent extends Schema.TaggedClass<TextDeltaEvent>()("TextDe
 export const PersistedEvent = Schema.Union(
   SystemPromptEvent,
   UserMessageEvent,
-  AssistantMessageEvent
+  AssistantMessageEvent,
+  LLMRequestInterruptedEvent
 )
 export type PersistedEvent = typeof PersistedEvent.Type
 
@@ -83,7 +112,9 @@ export const ContextEvent = Schema.Union(
   SystemPromptEvent,
   UserMessageEvent,
   AssistantMessageEvent,
-  TextDeltaEvent
+  TextDeltaEvent,
+  LLMRequestStartEvent,
+  LLMRequestInterruptedEvent
 )
 export type ContextEvent = typeof ContextEvent.Type
 

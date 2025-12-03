@@ -379,6 +379,42 @@ export const GenAISpanTransformerLayer = Layer.succeed(
 )
 
 // =============================================================================
+// Interactive Chat Command (with interruption support)
+// =============================================================================
+
+// Lazy layer construction for ichat command
+const makeChatUILayer = () =>
+  Layer.unwrapEffect(
+    Effect.gen(function*() {
+      const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))
+      return ChatUI.layer
+    })
+  )
+
+const ichatCommand = Command.make(
+  "ichat",
+  { name: nameOption },
+  ({ name }) =>
+    Effect.gen(function*() {
+      const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))
+      const chatUI = yield* ChatUI
+
+      // Determine context name
+      const contextName = Option.isSome(name)
+        ? Option.getOrElse(name, () => "")
+        : yield* selectOrCreateContext
+
+      yield* chatUI.runChat(contextName).pipe(
+        Effect.catchAllCause(() => Effect.void),
+        Effect.ensuring(printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!"))))
+      )
+    }).pipe(
+      Effect.provide(makeChatUILayer()),
+      Effect.withSpan("ichat-session")
+    )
+).pipe(Command.withDescription("Interactive chat with interruption support (Ctrl+C to cancel streaming)"))
+
+// =============================================================================
 // CLI Definition
 // =============================================================================
 
@@ -424,7 +460,7 @@ const rootCommand = Command.make(
     stdoutLogLevel: stdoutLogLevelOption
   }
 ).pipe(
-  Command.withSubcommands([chatCommand, logTestCommand]),
+  Command.withSubcommands([chatCommand, ichatCommand, logTestCommand]),
   Command.withDescription("AI assistant with persistent context and comprehensive configuration")
 )
 

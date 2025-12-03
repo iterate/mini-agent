@@ -83,10 +83,22 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
           )
 
           // Convert to plain objects for YAML serialization
-          const plainEvents = events.map((e) => ({
-            _tag: e._tag,
-            content: e.content
-          }))
+          // Each event type serializes its own properties
+          const plainEvents = events.map((e) => {
+            switch (e._tag) {
+              case "SystemPrompt":
+              case "UserMessage":
+              case "AssistantMessage":
+                return { _tag: e._tag, content: e.content }
+              case "LLMRequestInterrupted":
+                return {
+                  _tag: e._tag,
+                  requestId: e.requestId,
+                  reason: e.reason,
+                  partialResponse: e.partialResponse
+                }
+            }
+          })
 
           const yaml = YAML.stringify({ events: plainEvents })
           yield* fs.writeFileString(filePath, yaml).pipe(
