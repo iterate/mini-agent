@@ -28,7 +28,8 @@ See README.md for context
 - `bun run lint` / `bun run lint:fix` — eslint only
 - `bun run check` — typecheck + lint
 - `bun run check:fix` — typecheck + lint:fix
-- `bun run test` / `bun run test:watch` — vitest
+- `doppler run -- bun run test` — vitest (requires Doppler for API keys)
+- `doppler run -- bun run test:watch` — vitest watch mode
 
 ## Pull Requests
 
