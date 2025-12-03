@@ -6,7 +6,8 @@
 import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
 import { type Error as PlatformError, Terminal } from "@effect/platform"
-import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
+import { BunStream } from "@effect/platform-bun"
+import { Chunk, Console, Effect, Layer, Option, Schema, Stream } from "effect"
 import {
   AssistantMessageEvent,
   type ContextEvent,
@@ -72,6 +73,12 @@ const showEphemeralOption = Options.boolean("show-ephemeral").pipe(
   Options.withDefault(false)
 )
 
+const scriptOption = Options.boolean("script").pipe(
+  Options.withAlias("s"),
+  Options.withDescription("Force script mode (read stdin lines, output JSONL)"),
+  Options.withDefault(false)
+)
+
 // =============================================================================
 // Output Options
 // =============================================================================
@@ -115,7 +122,7 @@ const handleEvent = (
       if (Schema.is(TextDeltaEvent)(event) && !options.showEphemeral) {
         return
       }
-      yield* Console.log(JSON.stringify(event, null, 2))
+      yield* Console.log(JSON.stringify(event))
       return
     }
 
@@ -164,11 +171,11 @@ const displayHistory = (events: ReadonlyArray<PersistedEvent>) =>
     yield* Console.log("")
   })
 
-/** Display raw event history as JSON */
+/** Display raw event history as JSONL */
 const displayRawHistory = (events: ReadonlyArray<PersistedEvent>) =>
   Effect.gen(function*() {
     for (const event of events) {
-      yield* Console.log(dim(JSON.stringify(event, null, 2)))
+      yield* Console.log(JSON.stringify(event))
     }
   })
 
@@ -203,6 +210,40 @@ const conversationLoop = (contextName: string, options: OutputOptions) =>
         )
     ),
     Effect.forever
+  )
+
+// =============================================================================
+// Interaction Mode
+// =============================================================================
+
+type InteractionMode = "single-turn" | "tty-interactive" | "script"
+
+const determineMode = (options: {
+  message: Option.Option<string>
+  script: boolean
+}): InteractionMode => {
+  const hasMessage = Option.isSome(options.message) &&
+    Option.getOrElse(options.message, () => "").trim() !== ""
+
+  if (hasMessage) return "single-turn"
+  if (options.script) return "script"
+  if (process.stdin.isTTY) return "tty-interactive"
+  return "script"
+}
+
+/** Read lines from stdin using Effect Stream primitives */
+const utf8Decoder = new TextDecoder("utf-8")
+const stdinLines: Stream.Stream<string> = BunStream.stdin.pipe(
+  Stream.mapChunks(Chunk.map((bytes) => utf8Decoder.decode(bytes))),
+  Stream.splitLines,
+  Stream.filter((line) => line.trim() !== "")
+)
+
+/** Script interactive loop - read stdin lines, output JSONL */
+const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
+  stdinLines.pipe(
+    Stream.mapEffect((line) => runEventStream(contextName, line, options)),
+    Stream.runDrain
   )
 
 // =============================================================================
@@ -254,60 +295,68 @@ const runChat = (options: {
   name: Option.Option<string>
   message: Option.Option<string>
   raw: boolean
+  script: boolean
   showEphemeral: boolean
 }) =>
   Effect.gen(function*() {
     yield* Effect.logDebug("Starting chat session")
     const contextService = yield* ContextService
-    const outputOptions: OutputOptions = { raw: options.raw, showEphemeral: options.showEphemeral }
-    const hasMessage = Option.isSome(options.message) && Option.getOrElse(options.message, () => "").trim() !== ""
-    const isTTY = process.stdin.isTTY === true
+    const mode = determineMode(options)
+    const contextName = Option.getOrElse(options.name, () => "default")
 
-    if (hasMessage) {
-      // Non-interactive: single message mode
-      const contextName = Option.isSome(options.name)
-        ? Option.getOrElse(options.name, () => "")
-        : "default"
+    // Script mode always uses raw output
+    const outputOptions: OutputOptions = {
+      raw: mode === "script" || options.raw,
+      showEphemeral: options.showEphemeral
+    }
 
-      const message = Option.getOrElse(options.message, () => "")
-      yield* runEventStream(contextName, message, outputOptions)
-
-      if (!options.raw) {
-        yield* printTraceLinks
-      }
-    } else if (isTTY) {
-      // Interactive mode
-      const contextName = Option.isSome(options.name)
-        ? Option.getOrElse(options.name, () => "")
-        : yield* selectOrCreateContext
-
-      const existingEvents = yield* contextService.load(contextName)
-      const hasHistory = existingEvents.length > 1
-
-      if (options.raw) {
-        if (hasHistory) {
-          yield* displayRawHistory(existingEvents)
+    switch (mode) {
+      case "single-turn": {
+        const message = Option.getOrElse(options.message, () => "")
+        yield* runEventStream(contextName, message, outputOptions)
+        if (!outputOptions.raw) {
+          yield* printTraceLinks
         }
-      } else {
-        yield* Console.log(`\nContext name: ${contextName}`)
+        break
+      }
 
-        if (hasHistory) {
-          yield* displayHistory(existingEvents)
+      case "tty-interactive": {
+        const resolvedName = Option.isSome(options.name)
+          ? contextName
+          : yield* selectOrCreateContext
+
+        const existingEvents = yield* contextService.load(resolvedName)
+        const hasHistory = existingEvents.length > 1
+
+        if (outputOptions.raw) {
+          if (hasHistory) {
+            yield* displayRawHistory(existingEvents)
+          }
         } else {
-          yield* Console.log("Starting new conversation. Press Ctrl+C to exit.\n")
+          yield* Console.log(`\nContext name: ${resolvedName}`)
+
+          if (hasHistory) {
+            yield* displayHistory(existingEvents)
+          } else {
+            yield* Console.log("Starting new conversation. Press Ctrl+C to exit.\n")
+          }
         }
+
+        yield* conversationLoop(resolvedName, outputOptions).pipe(
+          Effect.catchIf(Terminal.isQuitException, () => Effect.void),
+          Effect.ensuring(
+            outputOptions.raw
+              ? Effect.void
+              : printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!")))
+          )
+        )
+        break
       }
 
-      yield* conversationLoop(contextName, outputOptions).pipe(
-        Effect.catchIf(Terminal.isQuitException, () => Effect.void),
-        Effect.ensuring(
-          options.raw
-            ? Effect.void
-            : printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!")))
-        )
-      )
-    } else {
-      yield* Console.error("Error: No TTY detected. Use -m <message> for non-interactive mode.")
+      case "script": {
+        yield* scriptInteractiveLoop(contextName, outputOptions)
+        break
+      }
     }
   }).pipe(Effect.withSpan("chat-session"))
 
@@ -388,9 +437,10 @@ const chatCommand = Command.make(
     name: nameOption,
     message: messageOption,
     raw: rawOption,
+    script: scriptOption,
     showEphemeral: showEphemeralOption
   },
-  ({ message, name, raw, showEphemeral }) => runChat({ message, name, raw, showEphemeral })
+  ({ message, name, raw, script, showEphemeral }) => runChat({ message, name, raw, script, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
 // =============================================================================

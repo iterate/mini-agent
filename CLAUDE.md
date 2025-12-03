@@ -190,6 +190,24 @@ Effect.gen(function*() {
 })
 ```
 
+## Launching Commands
+
+Use `@effect/platform` Command for subprocess execution. Pipe stdin with `Command.stdin(Stream)`, capture output with `Command.string` / `Command.lines` / `Command.stream`:
+
+```typescript
+import { Command } from "@effect/platform"
+import { Stream } from "effect"
+
+// Run command with stdin input
+const output = yield* Command.make("cat").pipe(
+  Command.stdin(Stream.make(Buffer.from("hello\n", "utf-8"))),
+  Command.string
+)
+
+// Stream output line by line
+const lines = Command.streamLines(Command.make("ls", "-la"))
+```
+
 ## Logging vs User Output
 
 Two different output mechanisms:
@@ -208,7 +226,7 @@ yield* Console.log(assistantMessage)  // User-facing output
 yield* Console.error("Error: ...")    // User-visible error
 ```
 
-Config defaults: stdout=info, file=debug (in `.mini-agent/logs/mini-agent.log`).
+Config defaults: stdout=warn, file=debug (in `.mini-agent/logs/`).
 
 For errors, do BOTH - log for observability AND show user:
 ```typescript
