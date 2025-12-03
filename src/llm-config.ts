@@ -32,8 +32,8 @@ const gemini = {
 
 const LLMS: Record<string, LlmConfig> = {
   "gpt-4.1-mini": new LlmConfig({ ...openai, model: "gpt-4.1-mini" }),
-  "claude-haiku-4-5": new LlmConfig({ ...anthropic, model: "claude-3-5-haiku-20241022" }),
-  "gemini-2.5-flash": new LlmConfig({ ...gemini, model: "gemini-2.0-flash" })
+  "claude-haiku-4-5": new LlmConfig({ ...anthropic, model: "claude-haiku-4-5" }),
+  "gemini-2.5-flash": new LlmConfig({ ...gemini, model: "gemini-2.5-flash" })
 }
 
 export const DEFAULT_LLM = "gpt-4.1-mini"
