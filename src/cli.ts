@@ -217,7 +217,9 @@ const conversationLoop = (contextName: string, options: OutputOptions) =>
 // Interaction Mode
 // =============================================================================
 
-type InteractionMode = "single-turn" | "pipe" | "script" | "tty-interactive"
+/** CLI interaction mode - determines how input/output is handled */
+const InteractionMode = Schema.Literal("single-turn", "pipe", "script", "tty-interactive")
+type InteractionMode = typeof InteractionMode.Type
 
 const determineMode = (options: {
   message: Option.Option<string>

@@ -87,6 +87,31 @@ class MyService extends Context.Tag("@app/MyService")<
 - Explicit separation of contract and implementation
 - Clearer dependency graph
 
+## Prefer Schema Over Plain Types
+
+Use `Schema` instead of plain TypeScript types for domain values. Schemas provide runtime validation, encoding/decoding, and type guards - plain types only exist at compile time.
+
+```typescript
+// ❌ Plain type - no runtime validation
+type Status = "pending" | "active" | "done"
+
+// ✅ Schema - runtime validation + type derivation
+const Status = Schema.Literal("pending", "active", "done")
+type Status = typeof Status.Type
+
+// Use the schema for validation
+const validateStatus = Schema.decodeUnknown(Status)
+const isStatus = Schema.is(Status)
+```
+
+This applies to:
+- **Enums/Literals**: `Schema.Literal("a", "b", "c")` over `type T = "a" | "b" | "c"`
+- **Domain objects**: `Schema.Struct({...})` or `Schema.TaggedClass` over `interface`
+- **Unions**: `Schema.Union(A, B, C)` over `type T = A | B | C`
+- **Branded types**: `Schema.String.pipe(Schema.brand("UserId"))` over `string & { _brand: "UserId" }`
+
+The pattern: define Schema first, derive type with `typeof Schema.Type`.
+
 ## Branded Types
 
 Use branded types for domain identifiers to prevent mixing strings:
