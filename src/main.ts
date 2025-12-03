@@ -20,7 +20,7 @@ import { ContextRepository } from "./context.repository.ts"
 import { ContextService } from "./context.service.ts"
 import { CurrentLlmConfig, getApiKey, type LlmConfig, resolveLlmConfig } from "./llm-config.ts"
 import { createLoggingLayer } from "./logging.ts"
-import { createTracingLayer } from "./tracing/index.ts"
+import { createTracingLayer } from "./tracing.ts"
 
 const makeLanguageModelLayer = (llmConfig: LlmConfig) => {
   const apiKey = getApiKey(llmConfig)

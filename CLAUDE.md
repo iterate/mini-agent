@@ -30,6 +30,17 @@ See README.md for context
 - `bun run check:fix` — typecheck + lint:fix
 - `bun run test` / `bun run test:watch` — vitest
 
+## Pull Requests
+
+Before committing and pushing code, you must run:
+```bash
+bun run check:fix
+```
+
+This runs typecheck + linter with auto-fix. Commit any resulting changes before pushing.
+
+Also make sure to amend the pull request description using the `gh` utility each time you push.
+
 ## Use of effect
 
 <!-- effect-solutions:start -->

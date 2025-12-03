@@ -3,10 +3,10 @@
  *
  * Vitest 3.x fixtures for isolated test environments with temp directories.
  */
-import { Command, type Error as PlatformErr } from "@effect/platform"
+import { Command } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
-import type { CommandExecutor } from "@effect/platform/CommandExecutor"
-import { Chunk, Effect, Layer, LogLevel, Option, Stream } from "effect"
+import type { PlatformError } from "@effect/platform/Error"
+import { Effect, Layer, LogLevel, Option, Stream } from "effect"
 import { mkdir, mkdtemp, realpath } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -14,50 +14,58 @@ import { expect, test as baseTest } from "vitest"
 import { AppConfig, type MiniAgentConfig } from "../src/config.ts"
 
 const CLI_PATH = resolve(__dirname, "../src/main.ts")
-const TestLayer = BunContext.layer
 
 export interface CliResult {
-  readonly output: string
-  readonly exitCode: number
+  stdout: string
+  stderr: string
+  exitCode: number
 }
 
-/** Run CLI command and return both output and exit code */
-const runCliCommand = (
-  cmd: Command.Command
-): Effect.Effect<CliResult, PlatformErr.PlatformError, CommandExecutor> =>
-  Effect.scoped(
+export interface RunCliOptions {
+  cwd?: string
+  env?: Record<string, string>
+}
+
+/** Run CLI with full control over env and output capture using Effect Command */
+export const runCli = (
+  args: Array<string>,
+  options: RunCliOptions = {}
+): Effect.Effect<CliResult, PlatformError, never> => {
+  const cwdArgs = options.cwd ? ["--cwd", options.cwd] : []
+
+  // Inherit parent env (for Doppler-injected secrets), then apply defaults and overrides
+  // Default OPENAI_API_KEY only used if not already in environment (e.g., local dev without Doppler)
+  const env = {
+    ...process.env,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "test-api-key",
+    ...options.env
+  }
+
+  let cmd = Command.make("bun", CLI_PATH, ...cwdArgs, ...args)
+  if (options.cwd) cmd = Command.workingDirectory(cmd, options.cwd)
+  cmd = Command.env(cmd, env)
+
+  return Effect.scoped(
     Effect.gen(function*() {
-      const process = yield* Command.start(cmd)
+      const proc = yield* Command.start(cmd)
 
-      // Collect stdout into string
-      const chunks = yield* Stream.runCollect(process.stdout)
-      const decoder = new TextDecoder()
-      const output = Chunk.toReadonlyArray(chunks)
-        .map((chunk) => decoder.decode(chunk))
-        .join("")
+      const [stdout, stderr, exitCode] = yield* Effect.all([
+        proc.stdout.pipe(Stream.decodeText(), Stream.mkString),
+        proc.stderr.pipe(Stream.decodeText(), Stream.mkString),
+        proc.exitCode
+      ])
 
-      const exitCode = yield* process.exitCode
-      return { output, exitCode }
+      return { stdout, stderr, exitCode }
     })
-  )
-
-/** Run the CLI with given args and return { output, exitCode } */
-export const runCli = (cwd: string | undefined, ...args: Array<string>) => {
-  const cwdArgs = cwd ? ["--cwd", cwd] : []
-  const cmd = Command.make("bun", CLI_PATH, ...cwdArgs, ...args)
-  return runCliCommand(cmd).pipe(Effect.provide(TestLayer))
+  ).pipe(Effect.provide(BunContext.layer))
 }
 
-/** Run the CLI with custom environment variables */
+/** Run CLI with custom environment variables (for multi-LLM testing) */
 export const runCliWithEnv = (
   cwd: string,
   env: Record<string, string>,
   ...args: Array<string>
-) => {
-  const cwdArgs = cwd ? ["--cwd", cwd] : []
-  const cmd = Command.make("bun", CLI_PATH, ...cwdArgs, ...args).pipe(Command.env(env))
-  return runCliCommand(cmd).pipe(Effect.provide(TestLayer))
-}
+): Effect.Effect<CliResult, PlatformError, never> => runCli(args, { cwd, env })
 
 export const testAppConfigLayer = Layer.succeed(
   AppConfig,
