@@ -10,6 +10,8 @@ import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
 import {
   AssistantMessageEvent,
   type ContextEvent,
+  FileAttachmentEvent,
+  type InputEvent,
   type PersistedEvent,
   TextDeltaEvent,
   UserMessageEvent
@@ -72,6 +74,34 @@ const showEphemeralOption = Options.boolean("show-ephemeral").pipe(
   Options.withDefault(false)
 )
 
+const imageOption = Options.file("image").pipe(
+  Options.withAlias("i"),
+  Options.withDescription("Path to image file to share with the AI"),
+  Options.optional
+)
+
+// =============================================================================
+// MIME Type Detection
+// =============================================================================
+
+const MIME_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp"
+}
+
+const getMediaType = (filePath: string): string => {
+  const ext = filePath.toLowerCase().slice(filePath.lastIndexOf("."))
+  return MIME_TYPES[ext] ?? "application/octet-stream"
+}
+
+const getFileName = (filePath: string): string => {
+  const lastSlash = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"))
+  return lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath
+}
+
 // =============================================================================
 // Output Options
 // =============================================================================
@@ -130,11 +160,31 @@ const handleEvent = (
   })
 
 /** Run the event stream, handling each event */
-const runEventStream = (contextName: string, userMessage: string, options: OutputOptions) =>
+const runEventStream = (
+  contextName: string,
+  userMessage: string,
+  options: OutputOptions,
+  imagePath?: string
+) =>
   Effect.gen(function*() {
     const contextService = yield* ContextService
-    const userEvent = new UserMessageEvent({ content: userMessage })
-    yield* contextService.addEvents(contextName, [userEvent]).pipe(
+    const inputEvents: Array<InputEvent> = []
+
+    if (imagePath) {
+      const mediaType = getMediaType(imagePath)
+      const fileName = getFileName(imagePath)
+      inputEvents.push(
+        new FileAttachmentEvent({
+          source: { type: "file", path: imagePath },
+          mediaType,
+          fileName
+        })
+      )
+    }
+
+    inputEvents.push(new UserMessageEvent({ content: userMessage }))
+
+    yield* contextService.addEvents(contextName, inputEvents).pipe(
       Stream.runForEach((event) => handleEvent(event, options))
     )
   })
@@ -253,6 +303,7 @@ const selectOrCreateContext = Effect.gen(function*() {
 const runChat = (options: {
   name: Option.Option<string>
   message: Option.Option<string>
+  image: Option.Option<string>
   raw: boolean
   showEphemeral: boolean
 }) =>
@@ -261,6 +312,7 @@ const runChat = (options: {
     const contextService = yield* ContextService
     const outputOptions: OutputOptions = { raw: options.raw, showEphemeral: options.showEphemeral }
     const hasMessage = Option.isSome(options.message) && Option.getOrElse(options.message, () => "").trim() !== ""
+    const imagePath = Option.getOrNull(options.image) ?? undefined
     const isTTY = process.stdin.isTTY === true
 
     if (hasMessage) {
@@ -270,7 +322,7 @@ const runChat = (options: {
         : "default"
 
       const message = Option.getOrElse(options.message, () => "")
-      yield* runEventStream(contextName, message, outputOptions)
+      yield* runEventStream(contextName, message, outputOptions, imagePath)
 
       if (!options.raw) {
         yield* printTraceLinks
@@ -387,10 +439,11 @@ const chatCommand = Command.make(
   {
     name: nameOption,
     message: messageOption,
+    image: imageOption,
     raw: rawOption,
     showEphemeral: showEphemeralOption
   },
-  ({ message, name, raw, showEphemeral }) => runChat({ message, name, raw, showEphemeral })
+  ({ image, message, name, raw, showEphemeral }) => runChat({ image, message, name, raw, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
 // =============================================================================

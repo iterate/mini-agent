@@ -199,6 +199,43 @@ describe("CLI options", () => {
 })
 
 // =============================================================================
+// Image Input Tests
+// =============================================================================
+
+describe("image input", () => {
+  test(
+    "recognizes letter in image",
+    { timeout: 30000 },
+    async ({ testDir }) => {
+      // Path to test image: white "i" on black background
+      const imagePath = path.resolve(__dirname, "fixtures/letter-i.png")
+
+      const output = await Effect.runPromise(
+        runCli(
+          testDir,
+          "chat",
+          "-n",
+          "image-test",
+          "-i",
+          imagePath,
+          "-m",
+          "What letter does this image show? Respond with just the lowercase letter."
+        )
+      )
+
+      // The LLM should respond with "i"
+      expect(output.trim().toLowerCase()).toContain("i")
+    }
+  )
+
+  test("-i is alias for --image", async () => {
+    const output = await Effect.runPromise(runCli(undefined, "chat", "--help"))
+    expect(output).toContain("-i")
+    expect(output).toContain("--image")
+  })
+})
+
+// =============================================================================
 // Logging Tests
 // =============================================================================
 
