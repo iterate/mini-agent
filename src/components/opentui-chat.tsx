@@ -6,11 +6,13 @@
  * - Input field at bottom
  * - Escape key to cancel streaming or exit
  * - Enter during streaming interrupts and sends new message
+ *
+ * NOTE: Input state is managed externally because OpenTUI doesn't preserve
+ * React state across root.render() calls.
  */
 import { createCliRenderer, type KeyEvent } from "@opentui/core"
 import { createRoot } from "@opentui/react/renderer"
 import { useKeyboard } from "@opentui/react"
-import { useState } from "react"
 
 // =============================================================================
 // Types
@@ -27,6 +29,8 @@ export interface ChatAppProps {
   initialMessageCount: number
   streamingText: string
   isStreaming: boolean
+  inputValue: string
+  onInputChange: (value: string) => void
   onSubmit: (text: string) => void
   onEscape: () => void
   contextName: string
@@ -79,32 +83,25 @@ function ChatApp({
   initialMessageCount,
   streamingText,
   isStreaming,
+  inputValue,
+  onInputChange,
   onSubmit,
   onEscape,
   contextName
 }: ChatAppProps) {
-  const [inputValue, setInputValue] = useState("")
-
   useKeyboard((key: KeyEvent) => {
     if (key.name === "escape") {
       onEscape()
     }
   })
 
-  const handleInputChange = (value: string) => {
-    setInputValue(value)
-  }
-
   const handleInputSubmit = (value: string) => {
     if (value.trim()) {
       if (isStreaming) {
-        // Interrupt current stream AND submit the new message
         onEscape()
       }
       onSubmit(value)
-      setInputValue("")
     } else if (isStreaming) {
-      // Empty submit during streaming = just interrupt
       onEscape()
     }
   }
@@ -169,7 +166,7 @@ function ChatApp({
         </box>
       </scrollbox>
 
-      {/* Input area - simple single line with prompt */}
+      {/* Input area */}
       <box height={1} width="100%" flexDirection="row">
         <text color={colors.cyan} bold>{">"} </text>
         <input
@@ -177,13 +174,13 @@ function ChatApp({
           value={inputValue}
           placeholder={isStreaming ? "Type to interrupt and send..." : "Type your message..."}
           focused={true}
-          onInput={handleInputChange}
+          onInput={onInputChange}
           onSubmit={handleInputSubmit}
           backgroundColor="transparent"
         />
       </box>
 
-      {/* Footer - spacer pushes text to right */}
+      {/* Footer */}
       <box height={1} width="100%" flexDirection="row">
         <box flexGrow={1} />
         <text color={colors.dim}>
@@ -208,6 +205,7 @@ export interface ChatState {
   initialMessageCount: number
   streamingText: string
   isStreaming: boolean
+  inputValue: string
 }
 
 export async function runOpenTUIChat(
@@ -222,7 +220,8 @@ export async function runOpenTUIChat(
     messages: initialMessages,
     initialMessageCount: initialMessages.length,
     streamingText: "",
-    isStreaming: false
+    isStreaming: false,
+    inputValue: ""
   }
 
   const render = () => {
@@ -232,7 +231,16 @@ export async function runOpenTUIChat(
         initialMessageCount={state.initialMessageCount}
         streamingText={state.streamingText}
         isStreaming={state.isStreaming}
-        onSubmit={callbacks.onSubmit}
+        inputValue={state.inputValue}
+        onInputChange={(value) => {
+          state = { ...state, inputValue: value }
+          render()
+        }}
+        onSubmit={(text) => {
+          state = { ...state, inputValue: "" }
+          render()
+          callbacks.onSubmit(text)
+        }}
         onEscape={callbacks.onEscape}
         contextName={contextName}
       />

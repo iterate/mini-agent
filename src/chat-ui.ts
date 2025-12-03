@@ -96,7 +96,18 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
                 shouldContinue = false
                 break
               }
-              yield* runChatTurn(contextName, contextService, chat, pendingInputRef, cancelRequestedRef, isStreamingRef)
+              const result = yield* runChatTurn(
+                contextName,
+                contextService,
+                chat,
+                pendingInputRef,
+                cancelRequestedRef,
+                isStreamingRef,
+                exitRequestedRef
+              )
+              if (result === EXIT_REQUESTED) {
+                shouldContinue = false
+              }
             }
           })
 
@@ -121,23 +132,34 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
 // Chat Turn Logic
 // =============================================================================
 
+/** Sentinel value to signal exit was requested during input wait */
+const EXIT_REQUESTED = Symbol("EXIT_REQUESTED")
+
 const runChatTurn = (
   contextName: string,
   contextService: Context.Tag.Service<typeof ContextService>,
   chat: ChatController,
   pendingInputRef: Ref.Ref<string | null>,
   cancelRequestedRef: Ref.Ref<boolean>,
-  isStreamingRef: Ref.Ref<boolean>
+  isStreamingRef: Ref.Ref<boolean>,
+  exitRequestedRef: Ref.Ref<boolean>
 ): Effect.Effect<
-  void,
+  void | typeof EXIT_REQUESTED,
   AiError.AiError | ContextLoadError | ContextSaveError,
   LanguageModel.LanguageModel
 > =>
   Effect.gen(function*() {
-    // Wait for user input (poll-based for simplicity)
+    // Wait for user input (poll-based), also checking for exit
     let userMessage: string | null = null
     while (userMessage === null) {
       yield* Effect.sleep(50)
+
+      // Check if exit was requested
+      const exitRequested = yield* Ref.get(exitRequestedRef)
+      if (exitRequested) {
+        return EXIT_REQUESTED
+      }
+
       userMessage = yield* Ref.get(pendingInputRef)
     }
 
