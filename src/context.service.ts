@@ -174,6 +174,8 @@ export class ContextService extends Context.Tag("@app/ContextService")<
               let stdout = ""
               let stderr = ""
               let exitCode = 0
+              let typecheckFailed = false
+              let typecheckErrors = ""
 
               // Process codemode events and collect output
               return pipe(
@@ -189,6 +191,9 @@ export class ContextService extends Context.Tag("@app/ContextService")<
                       }
                     } else if (event._tag === "ExecutionComplete") {
                       exitCode = (event as { exitCode: number }).exitCode
+                    } else if (event._tag === "TypecheckFail") {
+                      typecheckFailed = true
+                      typecheckErrors = (event as { errors: string }).errors
                     }
                   })
                 ),
@@ -196,6 +201,19 @@ export class ContextService extends Context.Tag("@app/ContextService")<
                 Stream.concat(
                   Stream.fromEffect(
                     Effect.gen(function*() {
+                      if (typecheckFailed) {
+                        // Typecheck failed - create result with errors so LLM can retry
+                        const result = new CodemodeResultEvent({
+                          stdout: "",
+                          stderr: `TypeScript errors:\n${typecheckErrors}`,
+                          exitCode: 1,
+                          endTurn: false, // Continue loop so LLM can fix
+                          data: { typecheckFailed: true }
+                        })
+                        yield* persistEvent(result)
+                        return result as ContextOrCodemodeEvent
+                      }
+
                       // Parse the result from stdout
                       const parsed = parseCodemodeResult(stdout)
                       const displayStdout = stripResultMarker(stdout)
