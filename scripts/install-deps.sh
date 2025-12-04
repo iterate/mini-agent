@@ -13,6 +13,27 @@ if [ -n "$CLAUDE_CLOUD" ]; then
   else
     echo "Doppler already installed"
   fi
+
+  # Clone Effect reference repositories for CLAUDE.md tooling
+  EFFECT_DIR="$HOME/src/github.com/Effect-TS/effect"
+  if [ ! -d "$EFFECT_DIR" ]; then
+    echo "Cloning Effect-TS/effect..."
+    mkdir -p "$(dirname "$EFFECT_DIR")"
+    git clone --depth 1 https://github.com/Effect-TS/effect.git "$EFFECT_DIR"
+    echo "Effect-TS/effect cloned successfully"
+  else
+    echo "Effect-TS/effect already present"
+  fi
+
+  PATTERNS_DIR="$HOME/src/github.com/PaulJPhilp/EffectPatterns"
+  if [ ! -d "$PATTERNS_DIR" ]; then
+    echo "Cloning PaulJPhilp/EffectPatterns..."
+    mkdir -p "$(dirname "$PATTERNS_DIR")"
+    git clone --depth 1 https://github.com/PaulJPhilp/EffectPatterns.git "$PATTERNS_DIR"
+    echo "EffectPatterns cloned successfully"
+  else
+    echo "EffectPatterns already present"
+  fi
 fi
 
 # Install project dependencies
