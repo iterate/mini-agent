@@ -11,7 +11,7 @@
  */
 
 import type { Prompt } from "@effect/ai"
-import { Context, Duration, Effect, Fiber, Layer, Schedule, Schema, Stream } from "effect"
+import { Context, Duration, Effect, Fiber, Layer, Option, Schedule, Schema, Stream } from "effect"
 
 // =============================================================================
 // Branded Types
@@ -485,6 +485,7 @@ export const sampleProgram = Effect.gen(function*() {
       id: EventId.make(crypto.randomUUID()),
       timestamp: new Date() as never, // DateTime.unsafeNow() in real code
       contextName,
+      parentEventId: Option.none(),
       content: "Hello, how are you?"
     })
   )
