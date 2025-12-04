@@ -142,9 +142,54 @@ class ContextSession extends Context.Tag("@app/ContextSession")<
 }
 ```
 
-## Hook Composition
+## Event Expansion (1 → N)
 
-Multiple hooks can be composed:
+The basic `afterResponse` signature is 1:1. To expand one event into multiple:
+
+### Option A: Return Array
+
+```typescript
+type AfterResponseHook = (event: ContextEvent) => Effect.Effect<readonly ContextEvent[], HookError>
+
+// Usage in stream
+llmRequest.stream(ctx).pipe(
+  Stream.mapEffect(hooks.afterResponse),
+  Stream.flatMap(Stream.fromIterable),  // Flatten arrays
+)
+```
+
+### Option B: Return Stream
+
+```typescript
+type AfterResponseHook = (event: ContextEvent) => Stream.Stream<ContextEvent, HookError>
+
+// Usage
+llmRequest.stream(ctx).pipe(
+  Stream.flatMap(hooks.afterResponse),
+)
+```
+
+### Option C: Filtering (return empty to drop)
+
+```typescript
+type AfterResponseHook = (event: ContextEvent) => Effect.Effect<Option.Option<ContextEvent>, HookError>
+
+// Filter hook that drops TextDelta events
+const filterHook: AfterResponseHook = (event) =>
+  Effect.succeed(
+    event._tag === "TextDeltaEvent" ? Option.none() : Option.some(event)
+  )
+```
+
+**Recommendation**: Option A (return array) is simplest. Most hooks return `[event]` unchanged; expansion hooks return `[event, additionalEvent]`.
+
+---
+
+## Hook Ordering and Composition
+
+Multiple hooks run in defined order via composition:
+
+### Sequential Composition (flatMap chain)
 
 ```typescript
 const composeBeforeHooks = (
@@ -156,13 +201,61 @@ const composeBeforeHooks = (
       Effect.succeed(input) as Effect.Effect<ReducedContext, HookError>
     )
 
-// Usage
+// Hooks run in array order: logging → validation → transformation
 const composedHook = composeBeforeHooks([
-  loggingHook,
-  validationHook,
-  transformationHook,
+  loggingHook,       // runs first
+  validationHook,    // runs second (receives output of first)
+  transformationHook, // runs third (receives output of second)
 ])
 ```
+
+### Priority-Based Ordering
+
+If hooks need explicit priority:
+
+```typescript
+interface PrioritizedHook<T> {
+  priority: number  // Lower = runs first
+  hook: T
+}
+
+const composeWithPriority = <T extends (...args: any[]) => Effect.Effect<any, any>>(
+  hooks: readonly PrioritizedHook<T>[]
+): T => {
+  const sorted = [...hooks].sort((a, b) => a.priority - b.priority)
+  return composeHooks(sorted.map(h => h.hook))
+}
+
+// Usage
+const hooks: PrioritizedHook<BeforeRequestHook>[] = [
+  { priority: 100, hook: transformationHook },  // runs last
+  { priority: 1, hook: loggingHook },           // runs first
+  { priority: 50, hook: validationHook },       // runs middle
+]
+```
+
+### Effect Pattern: FiberRef for Dynamic Hook Registration
+
+For runtime hook registration (like @effect/platform's preResponseHandlers):
+
+```typescript
+const HookRegistry = FiberRef.unsafeMake<readonly BeforeRequestHook[]>([])
+
+// Register a hook for this fiber tree
+const withHook = <A, E, R>(hook: BeforeRequestHook) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    Effect.locallyWith(HookRegistry, (hooks) => [...hooks, hook])(effect)
+
+// In HooksService implementation
+const beforeRequest = (input: ReducedContext) =>
+  Effect.gen(function*() {
+    const registeredHooks = yield* FiberRef.get(HookRegistry)
+    const composed = composeBeforeHooks(registeredHooks)
+    return yield* composed(input)
+  })
+```
+
+This allows scoped hook registration without global mutation.
 
 ## Hook Error Handling
 
