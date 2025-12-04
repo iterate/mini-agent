@@ -1,126 +1,95 @@
-This project serves three goals:
+CLI chat agent with persistent conversation contexts. Multiple named conversations, each keeping full history.
 
-1. I want to learn effect and evaluate it for use in [iterate](https://iterate.com)
-2. I want to experiment with some ideas I've had about building agents
-3. I am on parental leave, want to code but don't have enough time to do real work, so I do this
-
-# What is this?
-
-
-This is a CLI for chat agent that maintains persistent conversation contexts. You can have multiple named conversations, and each one keeps its full history.
-
-# CLI Usage
+# Quick Start
 
 ```bash
-# Run with doppler for env vars
-doppler run -- bun src/main.ts chat [options]
-```
-
-## Interaction Modes
-
-The CLI supports four interaction modes:
-
-### Single-turn mode (`-m "message"`)
-Send one message, get response, exit:
-```bash
+# 1. Simple question
 doppler run -- bun src/main.ts chat -m "What is 2+2?"
-# Output: 4
 
-# With named context (persists history)
-doppler run -- bun src/main.ts chat -n math -m "What is 2+2?"
-```
+# 2. Pipe content
+echo "Explain this" | doppler run -- bun src/main.ts chat
 
-### Pipe mode (default for piped stdin)
-Read all stdin as one message, output plain text:
-```bash
-echo "Summarize this" | doppler run -- bun src/main.ts chat
-cat document.txt | doppler run -- bun src/main.ts chat -n doc-summary
-```
-
-### Script mode (`--script`)
-For programmatic use. Accepts JSONL events on stdin, outputs JSONL events:
-```bash
-# Send UserMessage event
-echo '{"_tag":"UserMessage","content":"Hello"}' | doppler run -- bun src/main.ts chat --script
-
-# Inject system prompt then send message
-cat <<EOF | doppler run -- bun src/main.ts chat --script -n my-agent
-{"_tag":"SystemPrompt","content":"You are a pirate. Respond in pirate speak."}
-{"_tag":"UserMessage","content":"Hello"}
-EOF
-```
-
-Event types:
-- `UserMessage`: `{"_tag":"UserMessage","content":"..."}`
-- `SystemPrompt`: `{"_tag":"SystemPrompt","content":"..."}`
-
-Output events:
-- `UserMessage` (echoed input)
-- `SystemPrompt` (echoed input)
-- `TextDelta` (streaming, with `--show-ephemeral`)
-- `AssistantMessage` (final response)
-
-### Raw mode (`--raw`)
-Output JSONL events instead of plain text. Works with any mode:
-```bash
-# Single-turn with raw output
-doppler run -- bun src/main.ts chat -m "Hello" --raw
-# {"_tag":"AssistantMessage","content":"Hello! How can I help you today?"}
-
-# With streaming deltas
-doppler run -- bun src/main.ts chat -m "Hello" --raw --show-ephemeral
-# {"_tag":"TextDelta","delta":"Hello"}
-# {"_tag":"TextDelta","delta":"!"}
-# {"_tag":"AssistantMessage","content":"Hello!..."}
-
-# Parse with jq
-doppler run -- bun src/main.ts chat -m "Hello" --raw | jq -r 'select(._tag == "AssistantMessage") | .content'
-```
-
-### TTY interactive mode (default when stdin is a terminal)
-Prompts for input, shows conversation history:
-```bash
+# 3. Interactive mode
 doppler run -- bun src/main.ts chat
-# Select or create context, then chat interactively
+
+# 4. Script mode (JSONL events)
+cat examples/pirate.jsonl | doppler run -- bun src/main.ts chat --script
 ```
 
-## Options
+# Script Mode Demo
+
+Script mode accepts JSONL events on stdin. Example files in `examples/`:
+
+```bash
+# examples/pirate.jsonl
+{"_tag":"SystemPrompt","content":"You are a pirate. Always respond in pirate speak."}
+{"_tag":"UserMessage","content":"Hello, how are you?"}
+```
+
+Run it:
+```bash
+cat examples/pirate.jsonl | doppler run -- bun src/main.ts chat --script -n pirate-demo
+```
+
+Output (JSONL):
+```json
+{"_tag":"SystemPrompt","content":"You are a pirate..."}
+{"_tag":"UserMessage","content":"Hello, how are you?"}
+{"_tag":"AssistantMessage","content":"Ahoy there, matey! I be doin' just fine..."}
+```
+
+### Live demo with named pipe
+
+Send events to a running process:
+
+```bash
+# Terminal 1: create pipe and start agent
+mkfifo /tmp/agent-input
+cat /tmp/agent-input | doppler run -- bun src/main.ts chat --script -n live-demo
+
+# Terminal 2: send events
+echo '{"_tag":"UserMessage","content":"Hello!"}' > /tmp/agent-input
+echo '{"_tag":"UserMessage","content":"What did I just say?"}' > /tmp/agent-input
+
+# Cleanup
+rm /tmp/agent-input
+```
+
+# Modes Overview
+
+| Mode | Trigger | Input | Output |
+|------|---------|-------|--------|
+| Single-turn | `-m "msg"` | CLI arg | Plain text |
+| Pipe | piped stdin | Plain text | Plain text |
+| Script | `--script` | JSONL events | JSONL events |
+| Interactive | TTY stdin | Prompts | Plain text |
+
+Add `--raw` to any mode for JSONL output. Add `-n name` to persist context.
+
+# Options
 
 | Option | Alias | Description |
 |--------|-------|-------------|
-| `--name <context>` | `-n` | Context name (persists conversation). If omitted, generates random name like `chat-a7b3c` |
-| `--message <msg>` | `-m` | Single message (non-interactive) |
-| `--raw` | `-r` | Output as JSONL events (for parsing/scripting) |
-| `--show-ephemeral` | `-e` | Include TextDelta events in output |
-| `--script` | `-s` | Script mode: JSONL in, JSONL out |
-| `--config <file>` | `-c` | Path to YAML config file |
-| `--cwd <dir>` | | Working directory override |
-| `--stdout-log-level` | | Log level: trace/debug/info/warn/error/none |
+| `--name` | `-n` | Context name (persists conversation) |
+| `--message` | `-m` | Single message (non-interactive) |
+| `--raw` | `-r` | Output as JSONL |
+| `--script` | `-s` | JSONL in/out |
+| `--show-ephemeral` | `-e` | Include streaming deltas |
+| `--image` | `-i` | Attach image file or URL |
+| `--config` | `-c` | YAML config file |
+| `--cwd` | | Working directory |
+| `--stdout-log-level` | | trace/debug/info/warn/error/none |
 
-## Examples
+# Event Types
 
-```bash
-# Quick question
-doppler run -- bun src/main.ts chat -m "Explain monads in one sentence"
+Input:
+- `{"_tag":"UserMessage","content":"..."}` - user says something
+- `{"_tag":"SystemPrompt","content":"..."}` - set system behavior
 
-# Persistent context
-doppler run -- bun src/main.ts chat -n project-x -m "We're building a CLI tool"
-doppler run -- bun src/main.ts chat -n project-x -m "What are we building?"
-
-# Pipe file content
-cat error.log | doppler run -- bun src/main.ts chat -n debug -m "Explain this error"
-
-# Raw JSONL output for parsing
-doppler run -- bun src/main.ts chat -m "Hello" --raw | jq '.content'
-
-# Script mode for integration
-echo '{"_tag":"UserMessage","content":"ping"}' | \
-  doppler run -- bun src/main.ts chat --script -n bot
-```
-
----
-
-**Interactive mode** (runs an agent loop until you Ctrl+C):
+Output:
+- `UserMessage`, `SystemPrompt` - echoed input
+- `AssistantMessage` - final response
+- `TextDelta` - streaming chunks (with `-e`)
 
 ## LLM Configuration
 
