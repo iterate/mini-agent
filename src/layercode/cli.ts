@@ -70,15 +70,17 @@ export const serveCommand = Command.make(
       // Create server layer with configured port/host
       const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost })
 
-      // Merge layers: AgentServer needs ContextService which is provided by main.ts
-      const layers = Layer.merge(
+      // Create layers for the server
+      const layers = Layer.mergeAll(
         serverLayer,
         AgentServer.layer
       )
 
-      return yield* HttpServer.serveEffect()(makeRouter).pipe(
-        Effect.provide(layers),
-        Effect.scoped
+      // Use Layer.launch to keep the server running
+      return yield* Layer.launch(
+        HttpServer.serve(makeRouter).pipe(
+          Layer.provide(layers)
+        )
       )
     })
 ).pipe(
@@ -133,14 +135,16 @@ const layercodeServeCommand = Command.make(
       // Create server layer with configured port/host
       const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost })
 
-      const layers = Layer.merge(
+      const layers = Layer.mergeAll(
         serverLayer,
         AgentServer.layer
       )
 
-      return yield* HttpServer.serveEffect()(combinedRouter).pipe(
-        Effect.provide(layers),
-        Effect.scoped
+      // Use Layer.launch to keep the server running
+      return yield* Layer.launch(
+        HttpServer.serve(combinedRouter).pipe(
+          Layer.provide(layers)
+        )
       )
     })
 ).pipe(
