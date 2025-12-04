@@ -53,7 +53,9 @@ export const makeConfigProvider = (configPath: string, args: ReadonlyArray<strin
       new Map([
         ["DATA_STORAGE_DIR", ".mini-agent"],
         ["STDOUT_LOG_LEVEL", "warning"],
-        ["FILE_LOG_LEVEL", "debug"]
+        ["FILE_LOG_LEVEL", "debug"],
+        ["PORT", "3000"],
+        ["HOST", "localhost"]
       ])
     )
 
@@ -104,7 +106,14 @@ export const MiniAgentConfig = Config.all({
   ),
   fileLogLevel: logLevelConfig("FILE_LOG_LEVEL").pipe(
     Config.withDefault(LogLevel.Debug)
-  )
+  ),
+
+  // HTTP server config
+  port: Config.number("PORT").pipe(Config.withDefault(3000)),
+  host: Config.string("HOST").pipe(Config.withDefault("localhost")),
+
+  // LayerCode webhook secret for signature verification
+  layercodeWebhookSecret: Config.redacted("LAYERCODE_WEBHOOK_SECRET").pipe(Config.option)
 })
 
 export type MiniAgentConfig = Config.Config.Success<typeof MiniAgentConfig>

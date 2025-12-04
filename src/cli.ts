@@ -19,6 +19,7 @@ import {
   UserMessageEvent
 } from "./context.model.ts"
 import { ContextService } from "./context.service.ts"
+import { layercodeCommand, serveCommand } from "./layercode/cli.ts"
 import { printTraceLinks } from "./tracing.ts"
 
 export const configFileOption = Options.file("config").pipe(
@@ -564,7 +565,7 @@ const rootCommand = Command.make(
     stdoutLogLevel: stdoutLogLevelOption
   }
 ).pipe(
-  Command.withSubcommands([chatCommand, logTestCommand, traceTestCommand]),
+  Command.withSubcommands([chatCommand, serveCommand, layercodeCommand, logTestCommand, traceTestCommand]),
   Command.withDescription("AI assistant with persistent context and comprehensive configuration")
 )
 
