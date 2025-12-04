@@ -68,3 +68,42 @@ export class LLMError extends Schema.TaggedError<LLMError>()(
     cause: Schema.optional(Schema.Defect)
   }
 ) {}
+
+// =============================================================================
+// Codemode Errors
+// =============================================================================
+
+/** Error when TypeScript typechecking fails */
+export class TypecheckError extends Schema.TaggedError<TypecheckError>()(
+  "TypecheckError",
+  {
+    diagnostics: Schema.String,
+    filePath: Schema.String
+  }
+) {}
+
+/** Error when code execution fails */
+export class CodeExecutionError extends Schema.TaggedError<CodeExecutionError>()(
+  "CodeExecutionError",
+  {
+    exitCode: Schema.Number,
+    stderr: Schema.String
+  }
+) {}
+
+/** Error when code storage fails */
+export class CodeStorageError extends Schema.TaggedError<CodeStorageError>()(
+  "CodeStorageError",
+  {
+    message: Schema.String,
+    cause: Schema.optional(Schema.Defect)
+  }
+) {}
+
+/** Union of codemode errors */
+export const CodemodeError = Schema.Union(
+  TypecheckError,
+  CodeExecutionError,
+  CodeStorageError
+)
+export type CodemodeError = typeof CodemodeError.Type
