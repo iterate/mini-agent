@@ -20,7 +20,7 @@ import { Effect, Option, Schema, Stream } from "effect"
 import { AppConfig } from "../config.ts"
 import { AssistantMessageEvent, type ContextEvent, TextDeltaEvent, UserMessageEvent } from "../context.model.ts"
 import { CurrentLlmConfig } from "../llm-config.ts"
-import { AgentServer } from "./server.service.ts"
+import { AgentServer } from "../server.service.ts"
 import { maybeVerifySignature } from "./signature.ts"
 
 /** LayerCode incoming webhook event types */

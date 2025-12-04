@@ -7,8 +7,8 @@
 import { LanguageModel } from "@effect/ai"
 import { FileSystem, HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Effect, Schema, Stream } from "effect"
-import type { ContextEvent } from "../context.model.ts"
-import { CurrentLlmConfig } from "../llm-config.ts"
+import type { ContextEvent } from "./context.model.ts"
+import { CurrentLlmConfig } from "./llm-config.ts"
 import { AgentServer, ScriptInputEvent } from "./server.service.ts"
 
 /** Encode a ContextEvent as an SSE data line */

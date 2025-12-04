@@ -7,11 +7,11 @@
 import type { AiError, LanguageModel } from "@effect/ai"
 import type { Error as PlatformError, FileSystem } from "@effect/platform"
 import { Context, Effect, Layer, Schema, Stream } from "effect"
-import type { ContextEvent, InputEvent } from "../context.model.ts"
-import { SystemPromptEvent, UserMessageEvent } from "../context.model.ts"
-import { ContextService } from "../context.service.ts"
-import type { ContextLoadError, ContextSaveError } from "../errors.ts"
-import type { CurrentLlmConfig } from "../llm-config.ts"
+import type { ContextEvent, InputEvent } from "./context.model.ts"
+import { SystemPromptEvent, UserMessageEvent } from "./context.model.ts"
+import { ContextService } from "./context.service.ts"
+import type { ContextLoadError, ContextSaveError } from "./errors.ts"
+import type { CurrentLlmConfig } from "./llm-config.ts"
 
 /** Script mode input events - same as CLI script mode */
 export const ScriptInputEvent = Schema.Union(UserMessageEvent, SystemPromptEvent)

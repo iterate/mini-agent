@@ -1,19 +1,16 @@
 /**
  * LayerCode CLI Commands
  *
- * Provides CLI commands for running the agent as an HTTP server,
- * both as a generic server and with LayerCode integration.
- *
- * These commands rely on layers being provided by main.ts (LanguageModel, FileSystem, etc.)
+ * Provides CLI commands for LayerCode voice integration.
  */
 import { Command, Options } from "@effect/cli"
 import { HttpRouter, HttpServer } from "@effect/platform"
 import { BunHttpServer } from "@effect/platform-bun"
 import { Console, Effect, Layer, Option } from "effect"
 import { AppConfig } from "../config.ts"
-import { makeRouter } from "./http.ts"
+import { makeRouter } from "../http.ts"
+import { AgentServer } from "../server.service.ts"
 import { makeLayerCodeRouter } from "./layercode.adapter.ts"
-import { AgentServer } from "./server.service.ts"
 
 const portOption = Options.integer("port").pipe(
   Options.withAlias("p"),
@@ -36,55 +33,6 @@ const welcomeMessageOption = Options.text("welcome-message").pipe(
 const skipSignatureOption = Options.boolean("skip-signature").pipe(
   Options.withDescription("Skip webhook signature verification (for local dev)"),
   Options.withDefault(false)
-)
-
-/** Generic serve command - starts HTTP server with /context/:name endpoint */
-export const serveCommand = Command.make(
-  "serve",
-  {
-    port: portOption,
-    host: hostOption
-  },
-  ({ host, port }) =>
-    Effect.gen(function*() {
-      const config = yield* AppConfig
-      const actualPort = Option.getOrElse(port, () => config.port)
-      const actualHost = Option.getOrElse(host, () => config.host)
-
-      yield* Console.log(`Starting HTTP server on http://${actualHost}:${actualPort}`)
-      yield* Console.log("")
-      yield* Console.log("Endpoints:")
-      yield* Console.log("  POST /context/:contextName")
-      yield* Console.log("       Send JSONL events, receive SSE stream")
-      yield* Console.log("       Content-Type: application/x-ndjson")
-      yield* Console.log("")
-      yield* Console.log("  GET  /health")
-      yield* Console.log("       Health check endpoint")
-      yield* Console.log("")
-      yield* Console.log("Example:")
-      yield* Console.log(`  curl -X POST http://${actualHost}:${actualPort}/context/test \\`)
-      yield* Console.log(`    -H "Content-Type: application/x-ndjson" \\`)
-      yield* Console.log(`    -d '{"_tag":"UserMessage","content":"hello"}'`)
-      yield* Console.log("")
-
-      // Create server layer with configured port/host
-      const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost })
-
-      // Create layers for the server
-      const layers = Layer.mergeAll(
-        serverLayer,
-        AgentServer.layer
-      )
-
-      // Use Layer.launch to keep the server running
-      return yield* Layer.launch(
-        HttpServer.serve(makeRouter).pipe(
-          Layer.provide(layers)
-        )
-      )
-    })
-).pipe(
-  Command.withDescription("Start generic HTTP server for agent requests")
 )
 
 /** LayerCode serve command - starts HTTP server with LayerCode webhook endpoint */
