@@ -5,7 +5,7 @@
   "private": true,
   "scripts": {
     "prepare": "effect-language-service patch",
-    "mini-agent": "doppler run -- bun src/main.ts",
+    "mini-agent": "./scripts/doppler-run.sh run -- bun src/main.ts",
     "start": "bun src/main.ts",
     "dev": "bun --watch src/main.ts",
     "typecheck": "tsc --noEmit",
@@ -13,8 +13,8 @@
     "lint:fix": "eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix",
     "check": "bun run typecheck && bun run lint",
     "check:fix": "bun run typecheck && bun run lint:fix",
-    "test": "doppler run -- vitest run",
-    "test:watch": "doppler run -- vitest"
+    "test": "./scripts/doppler-run.sh run -- vitest run",
+    "test:watch": "./scripts/doppler-run.sh run -- vitest"
   },
   "devDependencies": {
     "@effect/eslint-plugin": "^0.3.2",

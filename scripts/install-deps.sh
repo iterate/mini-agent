@@ -8,6 +8,10 @@ if [ -n "$CLAUDE_CLOUD" ]; then
     echo "Installing Doppler..."
     mkdir -p ~/bin
     curl -Ls --tlsv1.2 --proto "=https" --retry 3 https://cli.doppler.com/install.sh | sh -s -- --install-path ~/bin
+    # Add ~/bin to PATH persistently for this session
+    if ! grep -q 'export PATH="$HOME/bin:$PATH"' ~/.bashrc 2>/dev/null; then
+      echo 'export PATH="$HOME/bin:$PATH"' >> ~/.bashrc
+    fi
     export PATH="$HOME/bin:$PATH"
     echo "Doppler installed successfully"
   else
