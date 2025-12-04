@@ -443,25 +443,23 @@ export class AppConfig extends Context.Tag("@app/AppConfig")<
 // Sample Layer Composition
 // =============================================================================
 
-export const makeAppLayer = () =>
-  ApplicationService.layer.pipe(
-    Layer.provide(ContextSession.layer),
-    Layer.provide(EventReducer.layer),
-    Layer.provide(Agent.layer),
-    Layer.provide(ContextRepository.layer),
-    Layer.provide(HooksService.layer),
-    Layer.provide(AppConfig.layer)
-  )
+export const AppLayer = ApplicationService.layer.pipe(
+  Layer.provide(ContextSession.layer),
+  Layer.provide(EventReducer.layer),
+  Layer.provide(Agent.layer),
+  Layer.provide(ContextRepository.layer),
+  Layer.provide(HooksService.layer),
+  Layer.provide(AppConfig.layer)
+)
 
-export const makeTestLayer = () =>
-  ApplicationService.testLayer.pipe(
-    Layer.provide(ContextSession.testLayer),
-    Layer.provide(EventReducer.testLayer),
-    Layer.provide(Agent.testLayer),
-    Layer.provide(ContextRepository.testLayer),
-    Layer.provide(HooksService.testLayer),
-    Layer.provide(AppConfig.testLayer)
-  )
+export const TestLayer = ApplicationService.testLayer.pipe(
+  Layer.provide(ContextSession.testLayer),
+  Layer.provide(EventReducer.testLayer),
+  Layer.provide(Agent.testLayer),
+  Layer.provide(ContextRepository.testLayer),
+  Layer.provide(HooksService.testLayer),
+  Layer.provide(AppConfig.testLayer)
+)
 
 // =============================================================================
 // Sample Usage
@@ -534,26 +532,25 @@ export const composeOnEventHooks = (
 // Custom Hooks Example
 // =============================================================================
 
-export const makeLoggingHooksLayer = () =>
-  Layer.sync(HooksService, () =>
-    HooksService.of({
-      beforeTurn: Effect.fn("HooksService.beforeTurn")(
-        function*(input: ReducedContext) {
-          yield* Effect.log(`Turn with ${input.messages.length} messages`)
-          return input
+export const LoggingHooksLayer = Layer.sync(HooksService, () =>
+  HooksService.of({
+    beforeTurn: Effect.fn("HooksService.beforeTurn")(
+      function*(input: ReducedContext) {
+        yield* Effect.log(`Turn with ${input.messages.length} messages`)
+        return input
+      }
+    ),
+    afterTurn: Effect.fn("HooksService.afterTurn")(
+      function*(event: ContextEvent) {
+        if (event._tag === "AssistantMessageEvent") {
+          yield* Effect.log(`Response: ${event.content.slice(0, 50)}...`)
         }
-      ),
-      afterTurn: Effect.fn("HooksService.afterTurn")(
-        function*(event: ContextEvent) {
-          if (event._tag === "AssistantMessageEvent") {
-            yield* Effect.log(`Response: ${event.content.slice(0, 50)}...`)
-          }
-          return [event]
-        }
-      ),
-      onEvent: Effect.fn("HooksService.onEvent")(
-        function*(event: ContextEvent) {
-          yield* Effect.log(`Event: ${event._tag}`)
-        }
-      )
-    }))
+        return [event]
+      }
+    ),
+    onEvent: Effect.fn("HooksService.onEvent")(
+      function*(event: ContextEvent) {
+        yield* Effect.log(`Event: ${event._tag}`)
+      }
+    )
+  }))
