@@ -5,19 +5,26 @@
  * Escape during streaming cancels; Escape at prompt exits.
  */
 import type { AiError, LanguageModel } from "@effect/ai"
-import { Context, Effect, Fiber, Layer, Queue, Stream } from "effect"
+import { Cause, Context, Effect, Exit, Fiber, Layer, Mailbox, Stream } from "effect"
+import * as fs from "node:fs"
+
+// Debug logging to file (bypasses OpenTUI's terminal management)
+const DEBUG_LOG = "/tmp/chat-ui-debug.log"
+const debug = (msg: string) => {
+  fs.appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`)
+}
 import { is } from "effect/Schema"
-import { type ChatController, type Message, runOpenTUIChat } from "./components/opentui-chat.tsx"
 import {
   AssistantMessageEvent,
   LLMRequestInterruptedEvent,
   type PersistedEvent,
   TextDeltaEvent,
   UserMessageEvent
-} from "./context.model.ts"
-import { ContextService } from "./context.service.ts"
-import type { ContextLoadError, ContextSaveError } from "./errors.ts"
-import { streamLLMResponse } from "./llm.ts"
+} from "../context.model.ts"
+import { ContextService } from "../context.service.ts"
+import type { ContextLoadError, ContextSaveError } from "../errors.ts"
+import { streamLLMResponse } from "../llm.ts"
+import { type ChatController, type Message, runOpenTUIChat } from "./components/opentui-chat.tsx"
 
 // =============================================================================
 // Types
@@ -27,6 +34,7 @@ import { streamLLMResponse } from "./llm.ts"
 type ChatSignal =
   | { readonly _tag: "Input"; readonly text: string }
   | { readonly _tag: "Escape" }
+  | { readonly _tag: "Exit" }
 
 /** Sentinel value to signal exit */
 const EXIT_REQUESTED = Symbol("EXIT_REQUESTED")
@@ -56,24 +64,48 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
         const existingEvents = yield* contextService.load(contextName)
         const initialMessages = eventsToMessages(existingEvents)
 
-        // Queue for callback-to-Effect communication (no polling needed)
-        const signalQueue = yield* Queue.unbounded<ChatSignal>()
+        // Mailbox for callback-to-Effect communication
+        // unsafeOffer is designed for JS callbacks - properly wakes waiting fibers
+        const mailbox = yield* Mailbox.make<ChatSignal>()
 
         const chat = yield* Effect.promise(() =>
           runOpenTUIChat(contextName, initialMessages, {
             onSubmit: (text) => {
-              Effect.runFork(Queue.offer(signalQueue, { _tag: "Input", text }))
+              debug(`onSubmit callback, text: ${text}`)
+              mailbox.unsafeOffer({ _tag: "Input", text })
             },
             onEscape: () => {
-              Effect.runFork(Queue.offer(signalQueue, { _tag: "Escape" }))
+              debug("onEscape callback")
+              mailbox.unsafeOffer({ _tag: "Escape" })
+            },
+            onExit: () => {
+              debug("onExit callback - offering Exit to mailbox")
+              // Signal exit and end the mailbox
+              const offerResult = mailbox.unsafeOffer({ _tag: "Exit" })
+              debug(`mailbox.unsafeOffer returned: ${offerResult}`)
+              const doneResult = mailbox.unsafeDone(Exit.void)
+              debug(`mailbox.unsafeDone returned: ${doneResult}`)
             }
           })
         )
 
-        yield* runChatLoop(contextName, contextService, chat, signalQueue).pipe(
-          Effect.catchAll(() => Effect.void),
-          Effect.ensuring(Effect.sync(() => chat.cleanup()))
+        yield* runChatLoop(contextName, contextService, chat, mailbox).pipe(
+          Effect.tap(() => Effect.sync(() => debug("runChatLoop completed normally"))),
+          Effect.catchAll((e) => {
+            debug(`runChatLoop catchAll error: ${e}`)
+            return Effect.void
+          }),
+          Effect.catchAllCause((cause) => {
+            debug(`runChatLoop catchAllCause, isInterruptedOnly: ${Cause.isInterruptedOnly(cause)}`)
+            return Cause.isInterruptedOnly(cause) ? Effect.void : Effect.logError("Chat loop error", cause)
+          }),
+          Effect.ensuring(Effect.sync(() => {
+            debug("Running cleanup")
+            chat.cleanup()
+            debug("Cleanup completed")
+          }))
         )
+        debug("runChat completed")
       })
 
       return ChatUI.of({ runChat })
@@ -91,16 +123,22 @@ const runChatLoop = (
   contextName: string,
   contextService: Context.Tag.Service<typeof ContextService>,
   chat: ChatController,
-  signalQueue: Queue.Queue<ChatSignal>
+  mailbox: Mailbox.Mailbox<ChatSignal>
 ): Effect.Effect<
   void,
   AiError.AiError | ContextLoadError | ContextSaveError,
   LanguageModel.LanguageModel
 > =>
   Effect.fn("ChatUI.runChatLoop")(function*() {
+    debug("runChatLoop starting")
     while (true) {
-      const result = yield* runChatTurn(contextName, contextService, chat, signalQueue)
-      if (result === EXIT_REQUESTED) return
+      debug("runChatLoop waiting for turn result")
+      const result = yield* runChatTurn(contextName, contextService, chat, mailbox)
+      debug(`runChatLoop got result: ${result === EXIT_REQUESTED ? "EXIT_REQUESTED" : "continue"}`)
+      if (result === EXIT_REQUESTED) {
+        debug("runChatLoop exiting")
+        return
+      }
     }
   })()
 
@@ -108,16 +146,27 @@ const runChatTurn = (
   contextName: string,
   contextService: Context.Tag.Service<typeof ContextService>,
   chat: ChatController,
-  signalQueue: Queue.Queue<ChatSignal>
+  mailbox: Mailbox.Mailbox<ChatSignal>
 ): Effect.Effect<
   void | typeof EXIT_REQUESTED,
   AiError.AiError | ContextLoadError | ContextSaveError,
   LanguageModel.LanguageModel
 > =>
   Effect.fn("ChatUI.runChatTurn")(function*() {
-    // Wait for input or escape (no polling - blocks on queue)
-    const signal = yield* Queue.take(signalQueue)
-    if (signal._tag === "Escape") return EXIT_REQUESTED
+    // Wait for input or escape/exit (blocks on mailbox.take)
+    debug("runChatTurn waiting on mailbox.take")
+    const signal = yield* mailbox.take.pipe(
+      Effect.tap((s) => Effect.sync(() => debug(`mailbox.take received: ${JSON.stringify(s)}`))),
+      Effect.catchTag("NoSuchElementException", () => {
+        debug("mailbox.take got NoSuchElementException (mailbox done)")
+        return Effect.succeed({ _tag: "Exit" } as const)
+      })
+    )
+    debug(`runChatTurn got signal: ${JSON.stringify(signal)}`)
+    if (signal._tag === "Escape" || signal._tag === "Exit") {
+      debug("runChatTurn returning EXIT_REQUESTED")
+      return EXIT_REQUESTED
+    }
 
     const userMessage = signal.text
 
@@ -147,7 +196,7 @@ const runChatTurn = (
     )
 
     // Wait for completion or interruption
-    const wasInterrupted = yield* awaitStreamCompletion(streamFiber, signalQueue)
+    const wasInterrupted = yield* awaitStreamCompletion(streamFiber, mailbox)
 
     if (wasInterrupted && accumulatedText.length > 0) {
       yield* contextService.persistEvent(
@@ -173,15 +222,17 @@ const runChatTurn = (
 /** Wait for stream fiber to complete or be interrupted by escape. Returns true if interrupted. */
 const awaitStreamCompletion = (
   fiber: Fiber.RuntimeFiber<void, AiError.AiError | ContextLoadError | ContextSaveError>,
-  signalQueue: Queue.Queue<ChatSignal>
+  mailbox: Mailbox.Mailbox<ChatSignal>
 ): Effect.Effect<boolean, AiError.AiError | ContextLoadError | ContextSaveError> =>
   Effect.fn("ChatUI.awaitStreamCompletion")(function*() {
     // Race: fiber completion vs escape signal
     const waitForFiber = Fiber.join(fiber).pipe(Effect.as(false))
     const waitForEscape = Effect.gen(function*() {
       while (true) {
-        const signal = yield* Queue.take(signalQueue)
-        if (signal._tag === "Escape") {
+        const signal = yield* mailbox.take.pipe(
+          Effect.catchTag("NoSuchElementException", () => Effect.succeed({ _tag: "Exit" } as const))
+        )
+        if (signal._tag === "Escape" || signal._tag === "Exit") {
           yield* Fiber.interrupt(fiber)
           return true
         }

@@ -13,9 +13,9 @@ import {
   type PersistedEvent,
   TextDeltaEvent,
   UserMessageEvent
-} from "./context.model.ts"
-import { ContextService } from "./context.service.ts"
-import { printTraceLinks } from "./tracing/index.ts"
+} from "../context.model.ts"
+import { ContextService } from "../context.service.ts"
+import { printTraceLinks } from "../tracing/index.ts"
 
 // =============================================================================
 // Global CLI Options

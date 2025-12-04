@@ -7,7 +7,6 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
-import { cli, GenAISpanTransformerLayer } from "./cli.ts"
 import {
   AppConfig,
   extractConfigPath,
@@ -15,11 +14,12 @@ import {
   MiniAgentConfig,
   type MiniAgentConfig as MiniAgentConfigType,
   resolveBaseDir
-} from "./config.ts"
-import { ContextRepository } from "./context.repository.ts"
-import { ContextService } from "./context.service.ts"
-import { createLoggingLayer } from "./logging.ts"
-import { createTracingLayer } from "./tracing/index.ts"
+} from "../config.ts"
+import { ContextRepository } from "../context.repository.ts"
+import { ContextService } from "../context.service.ts"
+import { createLoggingLayer } from "../logging.ts"
+import { createTracingLayer } from "../tracing/index.ts"
+import { cli, GenAISpanTransformerLayer } from "./commands.ts"
 
 // =============================================================================
 // Layer Factories

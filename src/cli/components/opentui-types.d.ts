@@ -34,6 +34,18 @@ declare module "@opentui/core" {
     shift: boolean
     sequence: string
   }
+
+  export const TextAttributes: {
+    NONE: number
+    BOLD: number
+    DIM: number
+    ITALIC: number
+    UNDERLINE: number
+    BLINK: number
+    INVERSE: number
+    HIDDEN: number
+    STRIKETHROUGH: number
+  }
 }
 
 declare module "@opentui/react" {
