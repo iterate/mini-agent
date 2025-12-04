@@ -373,6 +373,49 @@ describe("CLI options", () => {
   })
 })
 
+describe.each(allLlms)("LLM: $llm", ({ llm }) => {
+  test(
+    "basic chat works",
+    { timeout: 60000 },
+    async ({ testDir }) => {
+      const result = await Effect.runPromise(
+        runCliWithEnv(testDir, { LLM: llm }, "chat", "-n", "test", "-m", "Say exactly: TEST_SUCCESS")
+      )
+      expect(result.stdout.length).toBeGreaterThan(0)
+      expect(result.exitCode).toBe(0)
+    }
+  )
+})
+
+describe.each(llmsWithVision)("LLM Vision: $llm", ({ llm }) => {
+  test(
+    "recognizes letter in image",
+    { timeout: 60000 },
+    async ({ testDir }) => {
+      // Path to test image: white "i" on black background
+      const imagePath = path.resolve(__dirname, "fixtures/letter-i.png")
+
+      const result = await Effect.runPromise(
+        runCliWithEnv(
+          testDir,
+          { LLM: llm },
+          "chat",
+          "-n",
+          "image-test",
+          "-i",
+          imagePath,
+          "-m",
+          "What letter does this image show? Log just the lowercase letter."
+        )
+      )
+
+      // LLM uses codemode, so output includes the letter via tools.log
+      expect(result.stdout.toLowerCase()).toContain("i")
+      expect(result.exitCode).toBe(0)
+    }
+  )
+})
+
 describe("CLI option aliases", () => {
   test("-i is alias for --image", async () => {
     const result = await Effect.runPromise(runCli(["chat", "--help"]))

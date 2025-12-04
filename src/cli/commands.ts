@@ -94,12 +94,6 @@ const imageOption = Options.text("image").pipe(
   Options.optional
 )
 
-const codemodeOption = Options.boolean("codemode").pipe(
-  Options.withAlias("x"),
-  Options.withDescription("Enable codemode: parse, typecheck, and execute code blocks from responses"),
-  Options.withDefault(false)
-)
-
 const MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -123,7 +117,6 @@ const isUrl = (input: string): boolean => input.startsWith("http://") || input.s
 interface OutputOptions {
   raw: boolean
   showEphemeral: boolean
-  codemode: boolean
 }
 
 const green = (s: string) => `\x1b[32m${s}\x1b[0m`
@@ -277,8 +270,8 @@ const runEventStream = (
 
     inputEvents.push(new UserMessageEvent({ content: userMessage }))
 
-    // Pass codemode option to ContextService - it handles execution internally
-    yield* contextService.addEvents(contextName, inputEvents, { codemode: options.codemode }).pipe(
+    // Codemode is always enabled - ContextService handles execution internally
+    yield* contextService.addEvents(contextName, inputEvents, { codemode: true }).pipe(
       Stream.runForEach((event) => handleEvent(event, options)),
       Effect.scoped
     )
@@ -332,7 +325,7 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
           yield* Console.log(JSON.stringify(event))
 
           if (Schema.is(UserMessageEvent)(event)) {
-            yield* contextService.addEvents(contextName, [event], { codemode: options.codemode }).pipe(
+            yield* contextService.addEvents(contextName, [event], { codemode: true }).pipe(
               Stream.runForEach((outputEvent) => handleEvent(outputEvent, options)),
               Effect.scoped
             )
@@ -402,7 +395,6 @@ const runChat = (options: {
   raw: boolean
   script: boolean
   showEphemeral: boolean
-  codemode: boolean
 }) =>
   Effect.gen(function*() {
     yield* Effect.logDebug("Starting chat session")
@@ -412,8 +404,7 @@ const runChat = (options: {
 
     const outputOptions: OutputOptions = {
       raw: mode === "script" || options.raw,
-      showEphemeral: mode === "script" || options.showEphemeral,
-      codemode: options.codemode
+      showEphemeral: mode === "script" || options.showEphemeral
     }
 
     switch (mode) {
@@ -432,7 +423,7 @@ const runChat = (options: {
           yield* runEventStream(
             contextName,
             input,
-            { raw: false, showEphemeral: false, codemode: options.codemode },
+            { raw: false, showEphemeral: false },
             imagePath
           )
         }
@@ -532,11 +523,10 @@ const chatCommand = Command.make(
     image: imageOption,
     raw: rawOption,
     script: scriptOption,
-    showEphemeral: showEphemeralOption,
-    codemode: codemodeOption
+    showEphemeral: showEphemeralOption
   },
-  ({ codemode, image, message, name, raw, script, showEphemeral }) =>
-    runChat({ codemode, image, message, name, raw, script, showEphemeral })
+  ({ image, message, name, raw, script, showEphemeral }) =>
+    runChat({ image, message, name, raw, script, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
 const logTestCommand = Command.make(
