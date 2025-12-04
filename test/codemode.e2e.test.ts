@@ -195,6 +195,7 @@ export default async function(t: Tools) {
 export default async function(t: Tools) {
   await t.log("First message")
   await t.log("Second message")
+  return { endTurn: true }
 }
 </codemode>`
 
@@ -216,6 +217,99 @@ export default async function(t: Tools) {
           const fullOutput = outputs.join("")
           expect(fullOutput).toContain("First message")
           expect(fullOutput).toContain("Second message")
+        }
+      }).pipe(
+        Effect.provide(fullLayer)
+      )
+
+      await Effect.runPromise(program)
+    } finally {
+      process.chdir(originalCwd)
+    }
+  })
+
+  test("getSecret tool retrieves secrets hidden from LLM", async ({ testDir }) => {
+    const originalCwd = process.cwd()
+    process.chdir(testDir)
+
+    try {
+      const program = Effect.gen(function*() {
+        const service = yield* CodemodeService
+
+        // Code that uses getSecret - LLM can't see the implementation
+        const response = `<codemode>
+export default async function(t: Tools) {
+  const secret = await t.getSecret("demo-secret")
+  await t.log("Got secret: " + secret)
+  return { endTurn: true, data: { secret } }
+}
+</codemode>`
+
+        const streamOpt = yield* service.processResponse(response)
+        expect(streamOpt._tag).toBe("Some")
+
+        if (streamOpt._tag === "Some") {
+          const outputs: Array<string> = []
+          yield* streamOpt.value.pipe(
+            Stream.runForEach((event) => {
+              if (event._tag === "ExecutionOutput" && (event as { stream: string }).stream === "stdout") {
+                outputs.push((event as { data: string }).data)
+              }
+              return Effect.void
+            }),
+            Effect.scoped
+          )
+
+          const fullOutput = outputs.join("")
+          // The secret should be revealed by the execution
+          expect(fullOutput).toContain("SUPERSECRET42")
+        }
+      }).pipe(
+        Effect.provide(fullLayer)
+      )
+
+      await Effect.runPromise(program)
+    } finally {
+      process.chdir(originalCwd)
+    }
+  })
+
+  test("returns CodemodeResult with endTurn and data fields", async ({ testDir }) => {
+    const originalCwd = process.cwd()
+    process.chdir(testDir)
+
+    try {
+      const program = Effect.gen(function*() {
+        const service = yield* CodemodeService
+
+        // Code that returns structured data
+        const response = `<codemode>
+export default async function(t: Tools) {
+  await t.log("Processing...")
+  return { endTurn: false, data: { step: 1, result: "intermediate" } }
+}
+</codemode>`
+
+        const streamOpt = yield* service.processResponse(response)
+        expect(streamOpt._tag).toBe("Some")
+
+        if (streamOpt._tag === "Some") {
+          const outputs: Array<string> = []
+          yield* streamOpt.value.pipe(
+            Stream.runForEach((event) => {
+              if (event._tag === "ExecutionOutput" && (event as { stream: string }).stream === "stdout") {
+                outputs.push((event as { data: string }).data)
+              }
+              return Effect.void
+            }),
+            Effect.scoped
+          )
+
+          const fullOutput = outputs.join("")
+          // The result marker should be in stdout
+          expect(fullOutput).toContain("__CODEMODE_RESULT__")
+          expect(fullOutput).toContain("\"endTurn\":false")
+          expect(fullOutput).toContain("\"step\":1")
         }
       }).pipe(
         Effect.provide(fullLayer)

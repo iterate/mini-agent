@@ -33,8 +33,18 @@ const DEFAULT_TSCONFIG = JSON.stringify(
 
 /** Default types.ts defining available tools */
 const DEFAULT_TYPES = `/**
+ * Result type that signals whether to continue the agent loop.
+ */
+export interface CodemodeResult {
+  /** If true, the agent loop ends. If false, the LLM is called again with this result. */
+  endTurn: boolean
+  /** Optional data to pass back to the LLM */
+  data?: unknown
+}
+
+/**
  * Tools available to generated code.
- * The default function receives this interface.
+ * The default function receives this interface and must return CodemodeResult.
  */
 export interface Tools {
   /** Log a message to the console */
@@ -48,6 +58,9 @@ export interface Tools {
 
   /** Execute a shell command */
   readonly exec: (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>
+
+  /** Get a secret value. The implementation is hidden from the LLM. */
+  readonly getSecret: (name: string) => Promise<string | undefined>
 }
 `
 

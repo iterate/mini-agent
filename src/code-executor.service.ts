@@ -54,7 +54,13 @@ if (typeof main !== "function") {
   process.exit(1);
 }
 
-// Simple tools implementation
+// Secret store - implementation hidden from LLM
+const SECRETS = {
+  "demo-secret": "The secret value is: SUPERSECRET42",
+  "api-key": "sk-test-1234567890abcdef"
+};
+
+// Tools implementation
 const tools = {
   log: async (message) => console.log(message),
   readFile: async (path) => await Bun.file(path).text(),
@@ -68,10 +74,15 @@ const tools = {
     const stderr = await new Response(proc.stderr).text();
     const exitCode = await proc.exited;
     return { stdout, stderr, exitCode };
-  }
+  },
+  getSecret: async (name) => SECRETS[name]
 };
 
-await main(tools);
+// Execute and capture result
+const result = await main(tools);
+
+// Output the result as JSON on a special marker line for parsing
+console.log("__CODEMODE_RESULT__" + JSON.stringify(result ?? { endTurn: true }));
 `
 
                 const cmd = Command.make("bun", "-e", runnerCode)

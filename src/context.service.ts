@@ -19,6 +19,7 @@ import type { CodemodeStreamEvent } from "./codemode.service.ts"
 import { CodemodeService } from "./codemode.service.ts"
 import {
   AssistantMessageEvent,
+  CODEMODE_SYSTEM_PROMPT,
   CodemodeResultEvent,
   type ContextEvent,
   DEFAULT_SYSTEM_PROMPT,
@@ -116,6 +117,33 @@ export class ContextService extends Context.Tag("@app/ContextService")<
             yield* repo.save(contextName, [...current, event])
           })
 
+        /** Marker used by code executor to signal the result */
+        const CODEMODE_RESULT_MARKER = "__CODEMODE_RESULT__"
+
+        /** Parse the codemode result from stdout */
+        const parseCodemodeResult = (stdout: string): { endTurn: boolean; data?: unknown } => {
+          const lines = stdout.split("\n")
+          for (const line of lines) {
+            const markerIdx = line.indexOf(CODEMODE_RESULT_MARKER)
+            if (markerIdx !== -1) {
+              try {
+                const json = line.slice(markerIdx + CODEMODE_RESULT_MARKER.length)
+                return JSON.parse(json) as { endTurn: boolean; data?: unknown }
+              } catch {
+                return { endTurn: true }
+              }
+            }
+          }
+          return { endTurn: true }
+        }
+
+        /** Strip the codemode result marker line from stdout for display */
+        const stripResultMarker = (stdout: string): string =>
+          stdout
+            .split("\n")
+            .filter((line) => !line.includes(CODEMODE_RESULT_MARKER))
+            .join("\n")
+
         /** Process codemode if enabled and assistant has code blocks */
         const processCodemodeIfNeeded = (
           assistantContent: string
@@ -168,7 +196,17 @@ export class ContextService extends Context.Tag("@app/ContextService")<
                 Stream.concat(
                   Stream.fromEffect(
                     Effect.gen(function*() {
-                      const result = new CodemodeResultEvent({ stdout, stderr, exitCode })
+                      // Parse the result from stdout
+                      const parsed = parseCodemodeResult(stdout)
+                      const displayStdout = stripResultMarker(stdout)
+
+                      const result = new CodemodeResultEvent({
+                        stdout: displayStdout,
+                        stderr,
+                        exitCode,
+                        endTurn: parsed.endTurn,
+                        data: parsed.data
+                      })
                       yield* persistEvent(result)
                       return result as ContextOrCodemodeEvent
                     })
@@ -177,6 +215,65 @@ export class ContextService extends Context.Tag("@app/ContextService")<
               )
             })
           )
+        }
+
+        /** Agent loop: process LLM response, execute codemode, and loop if endTurn=false */
+        const agentLoopStream = (
+          currentEvents: ReadonlyArray<PersistedEventType>
+        ): Stream.Stream<
+          ContextOrCodemodeEvent,
+          AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
+          LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig | Scope.Scope
+        > =>
+          pipe(
+            streamLLMResponse(currentEvents),
+            Stream.tap((event) =>
+              Schema.is(PersistedEvent)(event) ? persistEvent(event as PersistedEventType) : Effect.void
+            ),
+            // After AssistantMessage, process codemode if enabled
+            Stream.flatMap((event) =>
+              Schema.is(AssistantMessageEvent)(event)
+                ? pipe(
+                  Stream.make(event as ContextOrCodemodeEvent),
+                  Stream.concat(processCodemodeIfNeeded(event.content))
+                )
+                : Stream.make(event as ContextOrCodemodeEvent)
+            ),
+            // Check if we need to continue the loop (endTurn=false)
+            Stream.flatMap((event) => {
+              if (Schema.is(CodemodeResultEvent)(event) && !event.endTurn) {
+                // Continue agent loop: reload context and stream new LLM response
+                return pipe(
+                  Stream.make(event as ContextOrCodemodeEvent),
+                  Stream.concat(
+                    Stream.unwrap(
+                      Effect.gen(function*() {
+                        yield* Effect.logDebug("Agent loop continuing (endTurn=false)")
+                        const reloadedEvents = yield* repo.load(contextName)
+                        return agentLoopStream(reloadedEvents)
+                      })
+                    )
+                  )
+                )
+              }
+              return Stream.make(event)
+            })
+          )
+
+        /** Replace the system prompt with codemode prompt if codemode is enabled */
+        const ensureCodemodePrompt = (events: Array<PersistedEventType>): Array<PersistedEventType> => {
+          if (!codemodeEnabled) return events
+          if (events.length === 0) return events
+
+          // If first event is a SystemPrompt, replace it with codemode prompt
+          const first = events[0]
+          if (first && Schema.is(SystemPromptEvent)(first)) {
+            return [
+              new SystemPromptEvent({ content: CODEMODE_SYSTEM_PROMPT }),
+              ...events.slice(1)
+            ]
+          }
+          return events
         }
 
         return pipe(
@@ -198,29 +295,19 @@ export class ContextService extends Context.Tag("@app/ContextService")<
 
             const newPersistedInputs = inputEvents.filter(Schema.is(PersistedEvent)) as Array<PersistedEventType>
 
+            // Apply codemode system prompt if needed
+            const eventsWithPrompt = ensureCodemodePrompt(baseEvents)
+
             if (isNewContext || newPersistedInputs.length > 0) {
-              const allEvents = [...baseEvents, ...newPersistedInputs]
+              const allEvents = [...eventsWithPrompt, ...newPersistedInputs]
               yield* repo.save(contextName, allEvents)
               return allEvents
             }
-            return baseEvents
+            return eventsWithPrompt
           })(),
           // Only stream LLM response if there's a UserMessage
-          Effect.andThen((events) => hasUserMessage ? streamLLMResponse(events) : Stream.empty),
-          Stream.unwrap,
-          // Persist events as they complete (only persisted ones)
-          Stream.tap((event) =>
-            Schema.is(PersistedEvent)(event) ? persistEvent(event as PersistedEventType) : Effect.void
-          ),
-          // After AssistantMessage, process codemode if enabled
-          Stream.flatMap((event) =>
-            Schema.is(AssistantMessageEvent)(event)
-              ? pipe(
-                Stream.make(event as ContextOrCodemodeEvent),
-                Stream.concat(processCodemodeIfNeeded(event.content))
-              )
-              : Stream.make(event as ContextOrCodemodeEvent)
-          )
+          Effect.andThen((events) => hasUserMessage ? agentLoopStream(events) : Stream.empty),
+          Stream.unwrap
         )
       }
 
