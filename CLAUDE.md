@@ -28,7 +28,8 @@ See README.md for context
 - `bun run lint` / `bun run lint:fix` — eslint only
 - `bun run check` — typecheck + lint
 - `bun run check:fix` — typecheck + lint:fix
-- `bun run test` / `bun run test:watch` — vitest
+- `doppler run -- bun run test` — vitest (requires Doppler for API keys)
+- `doppler run -- bun run test:watch` — vitest watch mode
 
 ## Pull Requests
 
@@ -98,6 +99,31 @@ class MyService extends Context.Tag("@app/MyService")<
 - Supports service-driven development (sketch interfaces before implementations)
 - Explicit separation of contract and implementation
 - Clearer dependency graph
+
+## Prefer Schema Over Plain Types
+
+Use `Schema` instead of plain TypeScript types for domain values. Schemas provide runtime validation, encoding/decoding, and type guards - plain types only exist at compile time.
+
+```typescript
+// ❌ Plain type - no runtime validation
+type Status = "pending" | "active" | "done"
+
+// ✅ Schema - runtime validation + type derivation
+const Status = Schema.Literal("pending", "active", "done")
+type Status = typeof Status.Type
+
+// Use the schema for validation
+const validateStatus = Schema.decodeUnknown(Status)
+const isStatus = Schema.is(Status)
+```
+
+This applies to:
+- **Enums/Literals**: `Schema.Literal("a", "b", "c")` over `type T = "a" | "b" | "c"`
+- **Domain objects**: `Schema.Struct({...})` or `Schema.TaggedClass` over `interface`
+- **Unions**: `Schema.Union(A, B, C)` over `type T = A | B | C`
+- **Branded types**: `Schema.String.pipe(Schema.brand("UserId"))` over `string & { _brand: "UserId" }`
+
+The pattern: define Schema first, derive type with `typeof Schema.Type`.
 
 ## Branded Types
 
@@ -202,6 +228,24 @@ Effect.gen(function*() {
 })
 ```
 
+## Launching Commands
+
+Use `@effect/platform` Command for subprocess execution. Pipe stdin with `Command.stdin(Stream)`, capture output with `Command.string` / `Command.lines` / `Command.stream`:
+
+```typescript
+import { Command } from "@effect/platform"
+import { Stream } from "effect"
+
+// Run command with stdin input
+const output = yield* Command.make("cat").pipe(
+  Command.stdin(Stream.make(Buffer.from("hello\n", "utf-8"))),
+  Command.string
+)
+
+// Stream output line by line
+const lines = Command.streamLines(Command.make("ls", "-la"))
+```
+
 ## Logging vs User Output
 
 Two different output mechanisms:
@@ -220,7 +264,7 @@ yield* Console.log(assistantMessage)  // User-facing output
 yield* Console.error("Error: ...")    // User-visible error
 ```
 
-Config defaults: stdout=info, file=debug (in `.mini-agent/logs/mini-agent.log`).
+Config defaults: stdout=warn, file=debug (in `.mini-agent/logs/`).
 
 For errors, do BOTH - log for observability AND show user:
 ```typescript

@@ -6,7 +6,9 @@
  *
  * NOTE: This is actually an eval - the LLM is in the loop. Will get to proper evals later.
  */
-import { Effect } from "effect"
+import { Command } from "@effect/platform"
+import { BunContext } from "@effect/platform-bun"
+import { Effect, Stream } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { describe } from "vitest"
@@ -20,6 +22,24 @@ const llms = [
 
 /** Context name used in tests - safe to reuse since each test has isolated testDir */
 const TEST_CONTEXT = "test-context"
+
+const CLI_PATH = path.resolve(__dirname, "../src/main.ts")
+
+/** Run CLI with stdin input using Command.stdin */
+const runCliWithStdin = (cwd: string, input: string, ...args: Array<string>) => {
+  const cwdArgs = ["--cwd", cwd]
+  const env = {
+    ...process.env,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "test-api-key"
+  }
+
+  return Command.make("bun", CLI_PATH, ...cwdArgs, ...args).pipe(
+    Command.stdin(Stream.make(Buffer.from(input, "utf-8"))),
+    Command.env(env),
+    Command.string,
+    Effect.provide(BunContext.layer)
+  )
+}
 
 /** Extract JSON objects from CLI response that contain _tag field (event objects) */
 const extractJsonOutput = (output: string): string => {
@@ -46,6 +66,14 @@ const extractJsonOutput = (output: string): string => {
   }
 
   return jsonObjects.join("\n")
+}
+
+/** Extract JSONL lines from CLI response (strips log messages) */
+const extractJsonLines = (output: string): Array<string> => {
+  // JSONL format: each line is a complete JSON object
+  return output
+    .split("\n")
+    .filter((line) => line.trim().startsWith("{") && line.includes("\"_tag\""))
 }
 
 describe("CLI", () => {
@@ -82,12 +110,18 @@ describe("CLI", () => {
       expect(result.stdout.length).toBeGreaterThan(0)
     })
 
-    test("uses 'default' context when no name provided", { timeout: 30000 }, async ({ testDir }) => {
+    test("generates random context when no name provided", { timeout: 30000 }, async ({ testDir }) => {
       const result = await Effect.runPromise(
         runCli(["chat", "-m", "Say exactly: HELLO"], { cwd: testDir })
       )
 
       expect(result.stdout.length).toBeGreaterThan(0)
+
+      // Context file should exist with random name (chat-xxxxx pattern)
+      const contextsDir = path.join(testDir, ".mini-agent", "contexts")
+      const files = fs.readdirSync(contextsDir)
+      expect(files.length).toBe(1)
+      expect(files[0]).toMatch(/^chat-[a-z0-9]{5}\.yaml$/)
     })
   })
 
@@ -113,6 +147,145 @@ describe("CLI", () => {
       const jsonOutput = extractJsonOutput(result.stdout)
       // Should contain TextDelta events when showing ephemeral
       expect(jsonOutput).toContain("\"TextDelta\"")
+    })
+  })
+
+  describe("pipe mode (default for piped stdin)", () => {
+    test("reads all stdin as one message, outputs plain text", { timeout: 30000 }, async ({ testDir }) => {
+      const output = await Effect.runPromise(
+        runCliWithStdin(
+          testDir,
+          "Say exactly: PIPE_TEST",
+          "--stdout-log-level",
+          "none",
+          "chat",
+          "-n",
+          TEST_CONTEXT
+        )
+      )
+
+      // Should output plain text, not JSONL
+      expect(output.length).toBeGreaterThan(0)
+      // Output should NOT be JSON (pipe mode outputs plain text)
+      const jsonLines = extractJsonLines(output)
+      expect(jsonLines.length).toBe(0)
+    })
+
+    test("handles multi-line input as single message", { timeout: 30000 }, async ({ testDir }) => {
+      const output = await Effect.runPromise(
+        runCliWithStdin(
+          testDir,
+          "Line 1: Hello\nLine 2: World\nLine 3: Test",
+          "--stdout-log-level",
+          "none",
+          "chat",
+          "-n",
+          TEST_CONTEXT
+        )
+      )
+
+      // All lines treated as one message, plain text output
+      expect(output.length).toBeGreaterThan(0)
+    })
+  })
+
+  describe("script mode (--script)", () => {
+    test("accepts UserMessage events and outputs JSONL", { timeout: 30000 }, async ({ testDir }) => {
+      // Script mode now expects JSONL events as input
+      const input = "{\"_tag\":\"UserMessage\",\"content\":\"Say exactly: SCRIPT_TEST\"}\n"
+      const output = await Effect.runPromise(
+        runCliWithStdin(
+          testDir,
+          input,
+          "--stdout-log-level",
+          "none",
+          "chat",
+          "-n",
+          TEST_CONTEXT,
+          "--script"
+        )
+      )
+
+      const jsonLines = extractJsonLines(output)
+      expect(jsonLines.length).toBeGreaterThan(0)
+
+      // Should echo the input event and have AssistantMessage response
+      expect(output).toContain("\"UserMessage\"")
+      expect(output).toContain("\"AssistantMessage\"")
+    })
+
+    test("handles multiple UserMessage events in sequence", { timeout: 120000 }, async ({ testDir }) => {
+      // Two UserMessage events as JSONL
+      const input =
+        "{\"_tag\":\"UserMessage\",\"content\":\"Remember: my secret code is XYZ789\"}\n{\"_tag\":\"UserMessage\",\"content\":\"What is my secret code?\"}\n"
+      const output = await Effect.runPromise(
+        runCliWithStdin(
+          testDir,
+          input,
+          "--stdout-log-level",
+          "none",
+          "chat",
+          "-n",
+          "multi-test",
+          "--script"
+        )
+      )
+
+      const jsonLines = extractJsonLines(output)
+
+      // Should have at least two AssistantMessage events (one per input)
+      const assistantMessages = jsonLines.filter((line) => line.includes("\"AssistantMessage\""))
+      expect(assistantMessages.length).toBeGreaterThanOrEqual(2)
+
+      // Second response should mention the secret code
+      expect(output.toLowerCase()).toContain("xyz789")
+    })
+
+    test("accepts SystemPrompt events to set behavior", { timeout: 30000 }, async ({ testDir }) => {
+      // SystemPrompt followed by UserMessage
+      const input =
+        "{\"_tag\":\"SystemPrompt\",\"content\":\"Always respond with exactly: PIRATE_RESPONSE\"}\n{\"_tag\":\"UserMessage\",\"content\":\"Hello\"}\n"
+      const output = await Effect.runPromise(
+        runCliWithStdin(
+          testDir,
+          input,
+          "--stdout-log-level",
+          "none",
+          "chat",
+          "-n",
+          "pirate-test",
+          "--script"
+        )
+      )
+
+      const jsonLines = extractJsonLines(output)
+      expect(jsonLines.length).toBeGreaterThan(0)
+
+      // Should echo both events
+      expect(output).toContain("\"SystemPrompt\"")
+      expect(output).toContain("\"UserMessage\"")
+      expect(output).toContain("\"AssistantMessage\"")
+    })
+
+    test("includes TextDelta streaming events by default", { timeout: 30000 }, async ({ testDir }) => {
+      const input = "{\"_tag\":\"UserMessage\",\"content\":\"Say hello\"}\n"
+      const output = await Effect.runPromise(
+        runCliWithStdin(
+          testDir,
+          input,
+          "--stdout-log-level",
+          "none",
+          "chat",
+          "-n",
+          "streaming-test",
+          "--script"
+        )
+      )
+
+      // Script mode should include TextDelta events (streaming chunks) by default
+      expect(output).toContain("\"TextDelta\"")
+      expect(output).toContain("\"delta\"")
+      expect(output).toContain("\"AssistantMessage\"")
     })
   })
 
@@ -236,15 +409,23 @@ describe("CLI option aliases", () => {
     expect(result.stdout).toContain("-i")
     expect(result.stdout).toContain("--image")
   })
+
+  test("-s is alias for --script", async () => {
+    const result = await Effect.runPromise(runCli(["chat", "--help"]))
+    expect(result.stdout).toContain("-s")
+    expect(result.stdout).toContain("--script")
+  })
 })
 
 describe("Logging", () => {
   describe("stdout log level filtering", () => {
-    test("debug messages hidden at info level (default)", async ({ testDir }) => {
+    test("info and debug messages hidden at warn level (default)", async ({ testDir }) => {
       const result = await Effect.runPromise(runCli(["log-test"], { cwd: testDir }))
 
       expect(result.stdout).toContain("LOG_TEST_DONE")
-      expect(result.stdout).toContain("INFO_MESSAGE")
+      expect(result.stdout).toContain("WARN_MESSAGE")
+      expect(result.stdout).toContain("ERROR_MESSAGE")
+      expect(result.stdout).not.toContain("INFO_MESSAGE")
       expect(result.stdout).not.toContain("DEBUG_MESSAGE")
     })
 
@@ -299,7 +480,7 @@ describe("Logging", () => {
       const logPath = path.join(logsDir, logFiles[0]!)
       const logContent = fs.readFileSync(logPath, "utf-8")
 
-      // File logger should capture DEBUG even when stdout is INFO
+      // File logger should capture DEBUG even when stdout is WARN
       expect(logContent).toContain("DEBUG_MESSAGE")
       expect(logContent).toContain("INFO_MESSAGE")
     })

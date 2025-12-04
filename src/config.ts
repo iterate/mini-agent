@@ -52,7 +52,7 @@ export const makeConfigProvider = (configPath: string, args: ReadonlyArray<strin
     const defaultsProvider = ConfigProvider.fromMap(
       new Map([
         ["DATA_STORAGE_DIR", ".mini-agent"],
-        ["STDOUT_LOG_LEVEL", "info"],
+        ["STDOUT_LOG_LEVEL", "warning"],
         ["FILE_LOG_LEVEL", "debug"]
       ])
     )
@@ -69,8 +69,19 @@ const logLevelConfig = (name: string) =>
     Config.map((s): LogLevel.LogLevel => {
       const level = s.toLowerCase()
       if (level === "none" || level === "off") return LogLevel.None
-      const capitalized = level.charAt(0).toUpperCase() + level.slice(1)
-      return LogLevel.fromLiteral(capitalized as LogLevel.Literal)
+      // Map common aliases to Effect's expected literals
+      const literalMap: Record<string, LogLevel.Literal> = {
+        trace: "Trace",
+        debug: "Debug",
+        info: "Info",
+        warn: "Warning", // CLI uses "warn" but Effect uses "Warning"
+        warning: "Warning",
+        error: "Error",
+        fatal: "Fatal"
+      }
+      const literal = literalMap[level]
+      if (!literal) return LogLevel.Info // fallback
+      return LogLevel.fromLiteral(literal)
     })
   )
 
@@ -89,7 +100,7 @@ export const MiniAgentConfig = Config.all({
   cwd: Config.string("CWD").pipe(Config.option),
 
   stdoutLogLevel: logLevelConfig("STDOUT_LOG_LEVEL").pipe(
-    Config.withDefault(LogLevel.Info)
+    Config.withDefault(LogLevel.Warning)
   ),
   fileLogLevel: logLevelConfig("FILE_LOG_LEVEL").pipe(
     Config.withDefault(LogLevel.Debug)

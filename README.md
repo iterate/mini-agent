@@ -1,15 +1,100 @@
-This project serves three goals:
+CLI chat agent with persistent conversation contexts. Multiple named conversations, each keeping full history.
 
-1. I want to learn effect and evaluate it for use in [iterate](https://iterate.com)
-2. I want to experiment with some ideas I've had about building agents
-3. I am on parental leave, want to code but don't have enough time to do real work, so I do this
+# Quick Start
 
-# What is this?
+```bash
+# 1. Simple question
+doppler run -- bun src/main.ts chat -m "What is 2+2?"
 
+# 2. Pipe content
+echo "Explain this" | doppler run -- bun src/main.ts chat
 
-This is a CLI for chat agent that maintains persistent conversation contexts. You can have multiple named conversations, and each one keeps its full history.
+# 3. Interactive mode
+doppler run -- bun src/main.ts chat
 
-**Interactive mode** (runs an agent loop until you Ctrl+C):
+# 4. Script mode (JSONL events)
+cat examples/pirate.jsonl | doppler run -- bun src/main.ts chat --script
+```
+
+# Script Mode Demo
+
+Script mode accepts JSONL events on stdin. Example files in `examples/`:
+
+```bash
+# examples/pirate.jsonl
+{"_tag":"SystemPrompt","content":"You are a pirate. Always respond in pirate speak."}
+{"_tag":"UserMessage","content":"Hello, how are you?"}
+```
+
+Run it:
+```bash
+cat examples/pirate.jsonl | doppler run -- bun src/main.ts chat --script -n pirate-demo
+```
+
+Output (JSONL with streaming):
+```json
+{"_tag":"SystemPrompt","content":"You are a pirate..."}
+{"_tag":"UserMessage","content":"Hello, how are you?"}
+{"_tag":"TextDelta","delta":"Ahoy"}
+{"_tag":"TextDelta","delta":" there"}
+{"_tag":"TextDelta","delta":", matey!"}
+...
+{"_tag":"AssistantMessage","content":"Ahoy there, matey! I be doin' just fine..."}
+```
+
+### Interactive demo with named pipe
+
+Keep a process running and send events from another terminal:
+
+```bash
+# Terminal 1: create pipe and start agent (loop keeps pipe alive)
+mkfifo /tmp/agent
+while true; do cat /tmp/agent; done | doppler run -- bun src/main.ts chat --script -n live-demo
+
+# Terminal 2: send events one at a time
+echo '{"_tag":"UserMessage","content":"Hello!"}' > /tmp/agent
+# (watch Terminal 1 for response)
+echo '{"_tag":"UserMessage","content":"What did I just say?"}' > /tmp/agent
+
+# Cleanup: Ctrl+C in Terminal 1, then:
+rm /tmp/agent
+```
+
+# Modes Overview
+
+| Mode | Trigger | Input | Output |
+|------|---------|-------|--------|
+| Single-turn | `-m "msg"` | CLI arg | Plain text |
+| Pipe | piped stdin | Plain text | Plain text |
+| Script | `--script` | JSONL events | JSONL events |
+| Interactive | TTY stdin | Prompts | Plain text |
+
+Add `--raw` to any mode for JSONL output. Add `-n name` to persist context.
+
+# Options
+
+| Option | Alias | Description |
+|--------|-------|-------------|
+| `--name` | `-n` | Context name (persists conversation) |
+| `--message` | `-m` | Single message (non-interactive) |
+| `--raw` | `-r` | Output as JSONL |
+| `--script` | `-s` | JSONL in/out |
+| `--show-ephemeral` | `-e` | Include streaming deltas |
+| `--image` | `-i` | Attach image file or URL |
+| `--config` | `-c` | YAML config file |
+| `--cwd` | | Working directory |
+| `--stdout-log-level` | | trace/debug/info/warn/error/none |
+
+# Event Types
+
+Input:
+- `{"_tag":"UserMessage","content":"..."}` - user says something
+- `{"_tag":"SystemPrompt","content":"..."}` - set system behavior
+
+Output:
+- `UserMessage`, `SystemPrompt` - echoed input
+- `TextDelta` - streaming chunks (included by default in script mode)
+- `AssistantMessage` - final response
 
 ## LLM Configuration
 
