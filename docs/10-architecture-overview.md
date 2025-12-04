@@ -112,24 +112,30 @@ The architecture follows an "onion" or "layered" pattern where each layer wraps 
 
 ### Layer 2: Reducer
 
-**Responsibility**: Fold events into a `ReducedContext` using a pure reducer function.
+**Responsibility**: Apply new events to the current reduced state, producing a new reduced state.
 
 This is a true functional reducer in the FP sense:
 
 ```typescript
-// Pure reducer signature
-type EventReducer = (accumulator: ReducedContext, event: PersistedEvent) => ReducedContext
+// The reducer layer
+type ReducerLayer = (
+  current: ReducedContext,
+  newEvents: readonly PersistedEvent[]
+) => ReducedContext
 
-// Usage: fold over all events
-const reduce = (events: readonly PersistedEvent[]): ReducedContext =>
-  events.reduce(eventReducer, initialReducedContext)
+// Internally uses a pure step function for each event
+type ReducerStep = (accumulator: ReducedContext, event: PersistedEvent) => ReducedContext
+
+// Implementation: fold new events over current state
+const reduce: ReducerLayer = (current, newEvents) =>
+  newEvents.reduce(reducerStep, current)
 ```
 
-**Input**: `(accumulator: ReducedContext, event: PersistedEvent)`
-**Output**: `ReducedContext` (new accumulator)
+**Input**: `(current: ReducedContext, newEvents: readonly PersistedEvent[])`
+**Output**: `ReducedContext` (updated state with new events applied)
 
 **Key Capabilities**:
-- Apply each event to the accumulator state
+- Apply each new event to the current accumulator
 - Build up messages from content events
 - Update configuration from config events
 - Validate the final reduced state
