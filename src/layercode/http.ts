@@ -4,9 +4,11 @@
  * Provides HTTP endpoints that mirror the CLI interface:
  * - POST /context/:contextName - Send events, receive SSE stream of responses
  */
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Chunk, Effect, Schema, Stream } from "effect"
+import { LanguageModel } from "@effect/ai"
+import { FileSystem, HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
+import { Effect, Schema, Stream } from "effect"
 import type { ContextEvent } from "../context.model.ts"
+import { CurrentLlmConfig } from "../llm-config.ts"
 import { AgentServer, ScriptInputEvent } from "./server.service.ts"
 
 /** Encode a ContextEvent as an SSE data line */
@@ -33,6 +35,11 @@ const contextHandler = Effect.gen(function*() {
   const agentServer = yield* AgentServer
   const params = yield* HttpRouter.params
 
+  // Get context services to provide to the stream
+  const langModel = yield* LanguageModel.LanguageModel
+  const fs = yield* FileSystem.FileSystem
+  const llmConfig = yield* CurrentLlmConfig
+
   const contextName = params.contextName
   if (!contextName) {
     return HttpServerResponse.text("Missing contextName", { status: 400 })
@@ -48,19 +55,15 @@ const contextHandler = Effect.gen(function*() {
     return HttpServerResponse.text("No valid events in body", { status: 400 })
   }
 
-  // Collect all events and send as SSE
-  // Note: For true streaming, we'd need to use a different approach
-  // This collects first, then streams - acceptable for chat responses
-  const responseEvents = yield* agentServer.handleRequest(contextName, events).pipe(
-    Stream.runCollect
+  // Stream SSE events directly - provide services to remove context requirements
+  const sseStream = agentServer.handleRequest(contextName, events).pipe(
+    Stream.map(encodeSSE),
+    Stream.provideService(LanguageModel.LanguageModel, langModel),
+    Stream.provideService(FileSystem.FileSystem, fs),
+    Stream.provideService(CurrentLlmConfig, llmConfig)
   )
 
-  const sseData = Chunk.toArray(responseEvents)
-    .map(encodeSSE)
-
-  const stream = Stream.fromIterable(sseData)
-
-  return HttpServerResponse.stream(stream, {
+  return HttpServerResponse.stream(sseStream, {
     contentType: "text/event-stream",
     headers: {
       "Cache-Control": "no-cache",

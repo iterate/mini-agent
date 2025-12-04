@@ -14,12 +14,12 @@
  *   →
  *   data: {"type":"response.tts","content":"Hi","turn_id":"123"}
  */
-import type { LanguageModel } from "@effect/ai"
-import { type FileSystem, HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Chunk, Effect, Option, Schema, Stream } from "effect"
+import { LanguageModel } from "@effect/ai"
+import { FileSystem, HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
+import { Effect, Option, Schema, Stream } from "effect"
 import { AppConfig } from "../config.ts"
 import { AssistantMessageEvent, type ContextEvent, TextDeltaEvent, UserMessageEvent } from "../context.model.ts"
-import type { CurrentLlmConfig } from "../llm-config.ts"
+import { CurrentLlmConfig } from "../llm-config.ts"
 import { AgentServer } from "./server.service.ts"
 import { maybeVerifySignature } from "./signature.ts"
 
@@ -115,6 +115,11 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
     const agentServer = yield* AgentServer
     const config = yield* AppConfig
 
+    // Get context services to provide to the stream
+    const langModel = yield* LanguageModel.LanguageModel
+    const fs = yield* FileSystem.FileSystem
+    const llmConfig = yield* CurrentLlmConfig
+
     // Read body
     const body = yield* request.text
 
@@ -151,19 +156,17 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
         // Convert to our format
         const userMessage = new UserMessageEvent({ content: webhookEvent.text })
 
-        // Collect response events first (required for context-free stream)
-        const responseEvents = yield* agentServer.handleRequest(contextName, [userMessage]).pipe(
-          Stream.runCollect
+        // Stream SSE events directly - provide services to remove context requirements
+        const sseStream = agentServer.handleRequest(contextName, [userMessage]).pipe(
+          Stream.map((event) => toLayerCodeResponse(event, turnId)),
+          Stream.filter((r): r is LayerCodeResponse => r !== null),
+          Stream.map(encodeLayerCodeSSE),
+          Stream.provideService(LanguageModel.LanguageModel, langModel),
+          Stream.provideService(FileSystem.FileSystem, fs),
+          Stream.provideService(CurrentLlmConfig, llmConfig)
         )
 
-        const sseData = Chunk.toArray(responseEvents)
-          .map((event) => toLayerCodeResponse(event, turnId))
-          .filter((r): r is LayerCodeResponse => r !== null)
-          .map(encodeLayerCodeSSE)
-
-        const stream = Stream.fromIterable(sseData)
-
-        return HttpServerResponse.stream(stream, {
+        return HttpServerResponse.stream(sseStream, {
           contentType: "text/event-stream",
           headers: {
             "Cache-Control": "no-cache",
