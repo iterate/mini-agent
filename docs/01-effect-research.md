@@ -10,12 +10,124 @@ Research gathered from exploring the Effect source code and EffectPatterns repos
 
 ---
 
-## 1. Schedule & Retry Patterns
+## 1. Schema Extension Patterns
+
+### Spreading Shared Fields
+
+The canonical pattern for sharing fields across multiple schemas is object spread:
+
+```typescript
+// Define shared fields once
+const BaseEventFields = {
+  id: EventId,
+  timestamp: Schema.DateTimeUtc,
+  contextName: ContextName
+}
+
+// Spread into each event
+export class UserMessageEvent extends Schema.TaggedClass<UserMessageEvent>()(
+  "UserMessageEvent",
+  {
+    ...BaseEventFields,  // Spread shared fields
+    content: Schema.String
+  }
+) {}
+
+export class AssistantMessageEvent extends Schema.TaggedClass<AssistantMessageEvent>()(
+  "AssistantMessageEvent",
+  {
+    ...BaseEventFields,
+    content: Schema.String
+  }
+) {}
+```
+
+This pattern is used throughout `@effect/ai` (e.g., Response.ts uses `Base.fields` spread).
+
+### Schema.Class.extend()
+
+For OOP-style inheritance with methods:
+
+```typescript
+class Entity extends Schema.Class<Entity>("Entity")({
+  id: Schema.String,
+  timestamp: Schema.DateTimeUtc
+}) {}
+
+class UserMessage extends Entity.extend<UserMessage>("UserMessage")({
+  content: Schema.String
+}) {
+  getPreview(): string {
+    return this.content.substring(0, 50)
+  }
+}
+```
+
+### When to Use Which
+
+| Pattern | Use When |
+|---------|----------|
+| Object spread `...BaseFields` | Simple field sharing, no methods needed |
+| `Schema.Class.extend()` | Need shared methods/behavior, OOP inheritance |
+
+---
+
+## 2. @effect/ai Message Types
+
+The `@effect/ai` package provides complete LLM message types. **Use these instead of custom types.**
+
+### Available Types
+
+```typescript
+import type { Prompt } from "@effect/ai"
+
+// Message union
+type Message = Prompt.SystemMessage | Prompt.UserMessage | Prompt.AssistantMessage | Prompt.ToolMessage
+
+// Each has role literal embedded
+interface SystemMessage { role: "system"; content: string }
+interface UserMessage { role: "user"; content: ReadonlyArray<UserMessagePart> }
+interface AssistantMessage { role: "assistant"; content: ReadonlyArray<AssistantMessagePart> }
+interface ToolMessage { role: "tool"; content: ReadonlyArray<ToolMessagePart> }
+```
+
+### Part Types
+
+- `TextPart` - Plain text
+- `FilePart` - File attachments (images, documents)
+- `ReasoningPart` - Chain-of-thought
+- `ToolCallPart` - Tool invocations
+- `ToolResultPart` - Tool results
+
+### Constructor Functions
+
+```typescript
+Prompt.systemMessage({ content: "You are helpful" })
+Prompt.userMessage({ content: "Hello" })
+Prompt.assistantMessage({ content: "Hi there!" })
+Prompt.toolMessage({ content: [ToolResultPart.make({ ... })] })
+```
+
+### Schema Validation
+
+All types have schemas for runtime validation:
+
+```typescript
+import { Prompt } from "@effect/ai"
+
+const validate = Schema.decodeUnknown(Prompt.Message)
+const isValid = Schema.is(Prompt.Message)
+```
+
+---
+
+## 3. Schedule & Retry Patterns
+
+**Use Effect Schedule for retry configuration.** No custom RetryConfig schema needed.
 
 ### Schedule Basics
 
 ```typescript
-// Schedule<Out, In, R> - consumes In, produces Out
 Schedule.recurs(n)           // Retry exactly n times
 Schedule.fixed(duration)     // Fixed delay between retries
 Schedule.spaced(duration)    // Same as fixed
@@ -29,11 +141,11 @@ Schedule.once                // Retry exactly once
 ```typescript
 // Limit exponential backoff to 3 retries
 const schedule = Schedule.exponential("100 millis").pipe(
-  Schedule.compose(Schedule.recurs(3))
+  Schedule.intersect(Schedule.recurs(3))
 )
 
 // Add jitter
-const withJitter = schedule.pipe(Schedule.jittered)
+const withJitter = schedule.pipe(Schedule.jittered())
 
 // Cap maximum delay
 const capped = Schedule.exponential("100 millis").pipe(
@@ -81,7 +193,7 @@ stream.pipe(
 
 ---
 
-## 2. Parallel Execution Patterns
+## 4. Parallel Execution Patterns
 
 ### Effect.all - Collect All Results
 
@@ -140,7 +252,7 @@ const chain = providers.reduce(
 
 ---
 
-## 3. Stateful Services
+## 5. Stateful Services
 
 ### Ref - Atomic Immutable State
 
@@ -199,7 +311,7 @@ const result = yield* SynchronizedRef.modifyEffect(syncRef, (state) =>
 
 ---
 
-## 4. Fiber Interruption
+## 6. Fiber Interruption
 
 ### Basic Interruption
 
@@ -246,7 +358,7 @@ const task = Effect.gen(function*() {
 
 ---
 
-## 5. Deferred - One-Time Signals
+## 7. Deferred - One-Time Signals
 
 ### Basic Usage
 
@@ -300,7 +412,7 @@ yield* Deferred.succeed(signal, void 0)
 
 ---
 
-## 6. Stream Interruption
+## 8. Stream Interruption
 
 ### Stream.interruptWhen
 
@@ -350,7 +462,7 @@ yield* Fiber.interrupt(fiber)
 
 ---
 
-## 7. PubSub - Event Broadcasting
+## 9. PubSub - Event Broadcasting
 
 ### Basic Usage
 
@@ -380,7 +492,7 @@ const pubsub = yield* PubSub.unbounded<Event>({ replay: 100 })
 ### Multiple Subscribers
 
 ```typescript
-const eventBus = yield* PubSub.unbounded<LLMEvent>()
+const eventBus = yield* PubSub.unbounded<ContextEvent>()
 
 // Subscriber 1: logging
 yield* Effect.fork(
@@ -397,14 +509,14 @@ yield* Effect.fork(
 )
 
 // Both receive all published events
-yield* eventBus.publish(LLMRequestStarted.make({ ... }))
+yield* eventBus.publish(AgentTurnStartedEvent.make({ ... }))
 ```
 
 **Source**: `effect/packages/effect/src/PubSub.ts`
 
 ---
 
-## 8. FiberRef - Fiber-Scoped State
+## 10. FiberRef - Fiber-Scoped State
 
 ### Basic Usage
 
@@ -441,7 +553,7 @@ yield* Effect.locally(requestContext, newContext)(
 
 ---
 
-## 9. Hooks & Middleware Patterns
+## 11. Hooks & Middleware Patterns
 
 ### HTTP Middleware Pattern (@effect/platform)
 
@@ -508,7 +620,7 @@ const pipeline = flow(
 
 ---
 
-## 10. Service-First Design (Effect Solutions)
+## 12. Service-First Design (Effect Solutions)
 
 ### Core Principle
 
@@ -569,7 +681,7 @@ Users.testLayer = Layer.sync(Users, () => /* mock */)
 
 ---
 
-## 11. Layer Composition
+## 13. Layer Composition
 
 ### Basic Composition
 
@@ -631,7 +743,7 @@ const appLayer = Layer.mergeAll(
 
 ---
 
-## 12. Debouncing Pattern
+## 14. Debouncing Pattern
 
 Effect doesn't have a built-in debounce, but it's easy to implement:
 
@@ -704,7 +816,9 @@ class Debouncer<A> {
 
 | Need | Pattern |
 |------|---------|
-| Retry with backoff | `Effect.retry(Schedule.exponential(...).pipe(Schedule.compose(Schedule.recurs(n))))` |
+| Shared event fields | `...BaseEventFields` object spread |
+| LLM message types | `@effect/ai` Prompt.Message (not custom) |
+| Retry with backoff | `Schedule.exponential(...).pipe(Schedule.intersect(Schedule.recurs(n)))` |
 | Fallback provider | `primary.pipe(Effect.retry(schedule), Effect.orElse(() => fallback))` |
 | Parallel requests | `Effect.all([...], { concurrency: n })` |
 | Race providers | `Effect.race(provider1, provider2)` |

@@ -30,8 +30,8 @@ Context "chat-123"
 │       ↓                                                      │
 │  ┌───────────────────────────────────────────────────────┐   │
 │  │              ReducedContext                           │   │
-│  │  • messages: [{role, content}, ...]                   │   │
-│  │  • config: {provider, retry, timeout, ...}            │   │
+│  │  • messages: Prompt.Message[] (from @effect/ai)       │   │
+│  │  • config: {provider, timeout, ...}                   │   │
 │  └───────────────────────────────────────────────────────┘   │
 └──────────────────────────────────────────────────────────────┘
 ```
@@ -41,7 +41,7 @@ Context "chat-123"
 We represent context as **event-sourced state**:
 - The event log is the source of truth (immutable, append-only)
 - A **reducer** folds events into a working data structure (`ReducedContext`)
-- `ReducedContext` controls the LLM request (messages, provider, retry config)
+- `ReducedContext` controls the agent turn (messages, provider, timeout)
 
 ### External Interface
 
@@ -49,14 +49,14 @@ A context has exactly one interface: **events in, events out**.
 
 ```
                  ┌─────────────────────┐
-  InputEvents ──▶│      Context        │──▶ OutputEvents
+     Events ────▶│      Context        │────▶ Events
                  │  (name → event[])   │
                  └─────────────────────┘
 
-  Input examples:              Output examples:
-  • UserMessageEvent           • TextDeltaEvent (ephemeral)
-  • SetProviderConfigEvent     • AssistantMessageEvent
-  • FileAttachmentEvent        • LLMRequestCompletedEvent
+  Examples:
+  • UserMessageEvent           • AssistantMessageEvent
+  • SetLlmProviderConfigEvent   • TextDeltaEvent
+  • FileAttachmentEvent        • AgentTurnCompletedEvent
 ```
 
 What might be called an "agent" in other systems is simply a context here—a named collection of events that gets reduced and fed to an LLM.
@@ -69,21 +69,17 @@ The architecture follows an "onion" or "layered" pattern where each layer wraps 
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                     5. Application Layer                            │
+│                     4. Application Layer                            │
 │                     (CLI, HTTP API)                                 │
 │  ┌───────────────────────────────────────────────────────────────┐  │
-│  │                4. Handler Layer                                │  │
-│  │                (Interruption, Debouncing)                      │  │
+│  │             3. Session Layer                                   │  │
+│  │             (Load/Persist, Lifecycle, Cancellation)            │  │
 │  │  ┌─────────────────────────────────────────────────────────┐  │  │
-│  │  │             3. Session Layer                             │  │  │
-│  │  │             (Load/Persist, Lifecycle)                    │  │  │
+│  │  │          2. Reducer Layer                                │  │  │
+│  │  │          (State + Events → State)                        │  │  │
 │  │  │  ┌─────────────────────────────────────────────────┐    │  │  │
-│  │  │  │          2. Reducer Layer                        │    │  │  │
-│  │  │  │          (State + Events → State)                │    │  │  │
-│  │  │  │  ┌─────────────────────────────────────────┐    │    │  │  │
-│  │  │  │  │       1. LLM Request Layer               │    │    │  │  │
-│  │  │  │  │       (Retry, Fallback, Parallel)        │    │    │  │  │
-│  │  │  │  └─────────────────────────────────────────┘    │    │  │  │
+│  │  │  │       1. Agent Layer                             │    │  │  │
+│  │  │  │       (Retry, Fallback, Parallel)                │    │  │  │
 │  │  │  └─────────────────────────────────────────────────┘    │  │  │
 │  │  └─────────────────────────────────────────────────────────┘  │  │
 │  └───────────────────────────────────────────────────────────────┘  │
@@ -92,15 +88,15 @@ The architecture follows an "onion" or "layered" pattern where each layer wraps 
 
 ## Layer Responsibilities
 
-### Layer 1: LLM Request (Innermost)
+### Layer 1: Agent (Innermost)
 
-**Responsibility**: Make LLM API calls with retry, fallback, and parallel execution support.
+**Responsibility**: Take agent turns with retry, fallback, and parallel execution support.
 
-**Input**: `ReducedContext` (everything needed for the request)
+**Input**: `ReducedContext` (everything needed for the turn)
 **Output**: `Stream<ContextEvent>` (TextDelta events during streaming, AssistantMessage at end)
 
 **Key Capabilities**:
-- Retry with configurable schedule (exponential backoff, etc.)
+- Retry with Effect Schedule (exponential backoff, etc.)
 - Fallback to alternate provider on failure
 - Parallel requests (e.g., content + injection detection)
 - Timeout handling
@@ -117,83 +113,80 @@ The architecture follows an "onion" or "layered" pattern where each layer wraps 
 This is a true functional reducer in the FP sense:
 
 ```typescript
-// The reducer layer
-type ReducerLayer = (
+// The reducer service
+readonly reduce: (
   current: ReducedContext,
-  newEvents: readonly PersistedEvent[]
-) => ReducedContext
+  newEvents: readonly ContextEvent[]
+) => Effect.Effect<ReducedContext, ReducerError>
 
 // Internally uses a pure step function for each event
-type ReducerStep = (accumulator: ReducedContext, event: PersistedEvent) => ReducedContext
+type ReducerStep = (accumulator: ReducedContext, event: ContextEvent) => ReducedContext
 
 // Implementation: fold new events over current state
-const reduce: ReducerLayer = (current, newEvents) =>
+const reduce = (current, newEvents) =>
   newEvents.reduce(reducerStep, current)
 ```
 
-**Input**: `(current: ReducedContext, newEvents: readonly PersistedEvent[])`
+**Input**: `(current: ReducedContext, newEvents: readonly ContextEvent[])`
 **Output**: `ReducedContext` (updated state with new events applied)
 
 **Key Capabilities**:
 - Apply each new event to the current accumulator
-- Build up messages from content events
+- Build up messages from content events (using `@effect/ai` Prompt.Message)
 - Update configuration from config events
 - Validate the final reduced state
 
 **Does NOT know about**:
 - Where events are stored
-- How LLM requests are made
+- How agent turns are executed
 - Session lifecycle
 
 ### Layer 3: Session
 
-**Responsibility**: Manage a context's lifecycle—loading events, running reducers, persisting new events.
+**Responsibility**: Manage a context's lifecycle—loading events, running reducers, persisting new events, handling cancellation.
+
+Session handles both state management and turn interruption (no separate Handler layer).
 
 **Input**: Context name + new events
-**Output**: `Stream<ContextEvent>` (all output events including lifecycle)
+**Output**: Continuous `Stream<ContextEvent>` (all output events including lifecycle)
+
+**Key Interface**:
+```typescript
+readonly addEvent: (event: ContextEvent) => Effect.Effect<void, SessionError>
+readonly events: Stream.Stream<ContextEvent, SessionError>
+```
+
+`addEvent` returns void (fire and forget). `events` is a separate continuous stream that emits all events until session ends.
 
 **Key Capabilities**:
 - Load events from storage
 - Emit `SessionStartedEvent` on initialization
 - Persist events immediately as they arrive
-- Emit lifecycle events (RequestStarted, RequestCompleted)
+- Emit lifecycle events (AgentTurnStarted, AgentTurnCompleted)
+- Cancel in-flight agent turn on new user input
+- Emit `AgentTurnInterruptedEvent` with partial response
 - Emit `SessionEndedEvent` on cleanup
 
 **Does NOT know about**:
-- Request interruption
-- Debouncing
 - External interface (CLI/HTTP)
-
-### Layer 4: Handler
-
-**Responsibility**: Handle concurrent requests—debounce rapid input, cancel in-flight requests on new input.
-
-**Input**: Stream of individual events
-**Output**: Stream of output events
-
-**Key Capabilities**:
-- "Wait for quiet" debouncing (configurable delay)
-- Cancel in-flight LLM request on new user input
-- Emit `LLMRequestInterruptedEvent` with partial response
-- Manage request state (accumulate partial responses)
-
-**Does NOT know about**:
-- How input arrives (CLI vs HTTP)
 - Display formatting
-- External lifecycle
 
-### Layer 5: Application (Outermost)
+### Layer 4: Application (Outermost)
 
-**Responsibility**: Provide a clean interface for external consumers (CLI, HTTP API).
+**Responsibility**: Provide a clean interface for external consumers (CLI, HTTP API). Route by context name.
 
-**Input**: User commands (start session, send message, etc.)
-**Output**: Event stream for display/serialization
+**Key Interface**:
+```typescript
+readonly addEvent: (contextName: ContextName, event: ContextEvent) => Effect.Effect<void, SessionError>
+readonly eventStream: (contextName: ContextName) => Stream.Stream<ContextEvent, SessionError>
+readonly shutdown: () => Effect.Effect<void>
+```
 
 **Key Capabilities**:
-- Initialize sessions on startup
-- Route user input to handler
-- Format output for display
-- Clean shutdown with `SessionEndedEvent`
+- Create sessions on demand (per context name)
+- Route events to correct session
+- Graceful shutdown of all sessions
+- Clean interface for CLI and HTTP
 
 ---
 
@@ -206,19 +199,15 @@ flowchart TB
         HTTP[HTTP Request]
     end
 
-    subgraph "Layer 5: Application"
+    subgraph "Layer 4: Application"
         APP[ApplicationService]
-    end
-
-    subgraph "Layer 4: Handler"
-        DEB[Debouncer]
-        INT[Interrupter]
     end
 
     subgraph "Layer 3: Session"
         LOAD[Load Events]
         RED[Run Reducer]
         PERS[Persist Events]
+        CANCEL[Cancellation]
         LIFE[Lifecycle Events]
     end
 
@@ -226,10 +215,9 @@ flowchart TB
         REDUCE[reduce state + events]
     end
 
-    subgraph "Layer 1: LLM Request"
+    subgraph "Layer 1: Agent"
         RETRY[Retry Logic]
         FALL[Fallback Logic]
-        PAR[Parallel Requests]
         LLM[LLM API]
     end
 
@@ -239,17 +227,15 @@ flowchart TB
 
     CLI --> APP
     HTTP --> APP
-    APP --> DEB
-    DEB --> INT
-    INT --> LOAD
+    APP --> LOAD
     LOAD --> RED
     RED --> REDUCE
     REDUCE --> RETRY
     RETRY --> FALL
-    FALL --> PAR
-    PAR --> LLM
+    FALL --> LLM
     LLM --> PERS
-    PERS --> LIFE
+    PERS --> CANCEL
+    CANCEL --> LIFE
     LIFE --> STREAM
 ```
 
@@ -257,61 +243,54 @@ flowchart TB
 
 ## Event Flow Example
 
-### Successful Request
+### Successful Turn
 
 ```
 1. User sends "Hello"
    → UserMessageEvent created
 
-2. Layer 4 (Handler)
-   → Debounce timer starts (10ms)
-   → Timer expires, no more input
+2. Layer 4 (Application)
+   → Routes to session for context name
 
 3. Layer 3 (Session)
    → UserMessageEvent persisted
-   → LLMRequestStartedEvent emitted + persisted
+   → AgentTurnStartedEvent emitted + persisted
    → Events passed to reducer
 
 4. Layer 2 (Reducer)
    → New event applied to current ReducedContext
-   → Updated messages: [{role: "user", content: "Hello"}]
-   → Config: {provider: "openai", retry: {maxRetries: 3, ...}}
+   → Updated messages: [Prompt.userMessage({ content: "Hello" })]
+   → Config: {provider: "openai", timeout: 30000}
 
-5. Layer 1 (LLM Request)
+5. Layer 1 (Agent)
+   → takeTurn called with ReducedContext
    → Request made to OpenAI
-   → TextDeltaEvent streamed (ephemeral, not persisted)
+   → TextDeltaEvent streamed
    → AssistantMessageEvent created on completion
 
 6. Layer 3 (Session)
    → AssistantMessageEvent persisted
-   → LLMRequestCompletedEvent emitted + persisted
+   → AgentTurnCompletedEvent emitted + persisted
 
 7. Output
-   → Stream contains: LLMRequestStarted, TextDelta*, AssistantMessage, LLMRequestCompleted
+   → Stream contains: AgentTurnStarted, TextDelta*, AssistantMessage, AgentTurnCompleted
 ```
 
-### Interrupted Request
+### Interrupted Turn
 
 ```
 1. User sends "Hello"
-   → Request starts, TextDelta events streaming
+   → Turn starts, TextDelta events streaming
 
 2. User sends "Actually, goodbye" (while streaming)
-   → Layer 4 detects new UserMessageEvent
 
-3. Layer 4 (Handler)
-   → Cancels in-flight fiber
+3. Layer 3 (Session)
+   → Detects new UserMessageEvent
+   → Interrupts in-flight fiber
    → Captures partial response ("Hi there! How can I h...")
-   → LLMRequestInterruptedEvent emitted with partial response
-
-4. Layer 4 (Handler)
-   → Debounce timer starts for new message
-   → Timer expires
-
-5. Layer 3 (Session)
+   → AgentTurnInterruptedEvent emitted with partial response
    → New UserMessageEvent persisted
-   → New LLMRequestStartedEvent emitted
-   → Process continues...
+   → New turn starts...
 ```
 
 ---
@@ -320,24 +299,22 @@ flowchart TB
 
 ```mermaid
 graph TD
-    APP[ApplicationService] --> HANDLER[InterruptibleHandler]
-    HANDLER --> SESSION[ContextSession]
+    APP[ApplicationService] --> SESSION[ContextSession]
     SESSION --> REDUCER[EventReducer]
     SESSION --> REPO[ContextRepository]
-    SESSION --> LLM[LLMRequest]
-    LLM --> PROVIDER[LanguageModel Provider]
+    SESSION --> AGENT[Agent]
+    SESSION --> HOOKS[HooksService]
+    AGENT --> PROVIDER[LanguageModel Provider]
 
     classDef layer1 fill:#e1f5fe
     classDef layer2 fill:#e8f5e9
     classDef layer3 fill:#fff3e0
-    classDef layer4 fill:#fce4ec
-    classDef layer5 fill:#f3e5f5
+    classDef layer4 fill:#f3e5f5
 
-    class LLM,PROVIDER layer1
+    class AGENT,PROVIDER layer1
     class REDUCER layer2
-    class SESSION,REPO layer3
-    class HANDLER layer4
-    class APP layer5
+    class SESSION,REPO,HOOKS layer3
+    class APP layer4
 ```
 
 ---
@@ -345,34 +322,29 @@ graph TD
 ## Layer Composition (Effect Layers)
 
 ```typescript
-// Layer 1: LLM Request
-const llmRequestLayer = LLMRequest.layer.pipe(
-  Layer.provide(OpenAiLanguageModel.layer)
+// Layer 1: Agent
+const agentLayer = Agent.layer.pipe(
+  Layer.provide(LanguageModel.layer)
 )
 
-// Layer 2: Reducer (pure function or service)
+// Layer 2: Reducer
 const reducerLayer = EventReducer.layer
 
 // Layer 3: Session
 const sessionLayer = ContextSession.layer.pipe(
   Layer.provide(reducerLayer),
-  Layer.provide(llmRequestLayer),
-  Layer.provide(ContextRepository.layer)
+  Layer.provide(agentLayer),
+  Layer.provide(ContextRepository.layer),
+  Layer.provide(HooksService.layer)
 )
 
-// Layer 4: Handler
-const handlerLayer = InterruptibleHandler.layer.pipe(
-  Layer.provide(sessionLayer)
-)
-
-// Layer 5: Application
+// Layer 4: Application
 const applicationLayer = ApplicationService.layer.pipe(
-  Layer.provide(handlerLayer)
+  Layer.provide(sessionLayer)
 )
 
 // Full app
 const appLayer = applicationLayer.pipe(
-  Layer.provideMerge(HooksService.layer),
   Layer.provideMerge(AppConfig.layer),
   Layer.provideMerge(BunContext.layer)
 )
@@ -388,26 +360,26 @@ Define service interfaces before implementations:
 
 ```typescript
 // Interface first
-class LLMRequest extends Context.Tag("@app/LLMRequest")<
-  LLMRequest,
-  { readonly stream: (ctx: ReducedContext) => Stream.Stream<ContextEvent, LLMError> }
+class Agent extends Context.Tag("@app/Agent")<
+  Agent,
+  { readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError> }
 >() {}
 
 // Implementation later
-LLMRequest.layer = Layer.effect(LLMRequest, /* ... */)
-LLMRequest.testLayer = Layer.sync(LLMRequest, /* mock */)
+Agent.layer = Layer.effect(Agent, /* ... */)
+Agent.testLayer = Layer.sync(Agent, /* mock */)
 ```
 
 ### 2. Stateless Inner Layers
 
-Inner layers (1, 2) are stateless—they receive everything they need as parameters. Outer layers (3, 4, 5) manage state.
+Inner layers (1, 2) are stateless—they receive everything they need as parameters. Outer layers (3, 4) manage state.
 
-### 3. Stream-First Response
+### 3. Decoupled Input and Output
 
-LLM responses are always streams, even for non-streaming use cases. This enables:
-- Progressive display (TextDelta)
-- Cancellation mid-stream
-- Consistent API
+`addEvent` returns void. `events` is a separate continuous stream. This allows:
+- Fire-and-forget input
+- Multiple subscribers to output
+- Clean cancellation semantics
 
 ### 4. Events as Source of Truth
 
@@ -418,8 +390,13 @@ Everything is an event. Configuration changes are events. Lifecycle markers are 
 
 ### 5. Hooks at Layer Boundaries
 
-Extensibility via hooks at each layer boundary:
-- Before/after LLM request (Layer 1)
-- Before/after reduction (Layer 2)
-- On event persist (Layer 3)
-- On input/output (Layer 4)
+Extensibility via HooksService:
+- `beforeTurn` - Transform context before agent turn
+- `afterTurn` - Transform events after agent turn (can expand 1→N)
+- `onEvent` - Observe all events (for logging, metrics)
+
+### 6. Use Effect Ecosystem
+
+- `@effect/ai` Prompt.Message for LLM messages (not custom types)
+- Effect Schedule for retry configuration (not custom RetryConfig)
+- Schema with `...BaseEventFields` spread for shared event fields
