@@ -55,7 +55,7 @@ export const makeConfigProvider = (configPath: string, args: ReadonlyArray<strin
         ["STDOUT_LOG_LEVEL", "warning"],
         ["FILE_LOG_LEVEL", "debug"],
         ["PORT", "3000"],
-        ["HOST", "localhost"]
+        ["HOST", "0.0.0.0"]
       ])
     )
 
@@ -110,7 +110,7 @@ export const MiniAgentConfig = Config.all({
 
   // HTTP server config
   port: Config.number("PORT").pipe(Config.withDefault(3000)),
-  host: Config.string("HOST").pipe(Config.withDefault("localhost")),
+  host: Config.string("HOST").pipe(Config.withDefault("0.0.0.0")),
 
   // LayerCode webhook secret for signature verification
   layercodeWebhookSecret: Config.redacted("LAYERCODE_WEBHOOK_SECRET").pipe(Config.option)

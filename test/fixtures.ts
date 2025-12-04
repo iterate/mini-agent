@@ -77,7 +77,7 @@ export const testAppConfigLayer = Layer.succeed(
     stdoutLogLevel: LogLevel.None,
     fileLogLevel: LogLevel.None,
     port: 3000,
-    host: "localhost",
+    host: "0.0.0.0",
     layercodeWebhookSecret: Option.none()
   } satisfies MiniAgentConfig
 )
