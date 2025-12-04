@@ -199,7 +199,8 @@ interface Tools {
 Your code MUST:
 - Be wrapped in \`<codemode>\` and \`</codemode>\` tags
 - Export a default async function with EXPLICIT type annotations: \`(t: Tools): Promise<CodemodeResult>\`
-- Use \`tools.log()\` for output the user should see
+- Use \`t.log()\` for output the user should see
+- Do NOT add import statements — \`Tools\` and \`CodemodeResult\` are automatically available
 
 CRITICAL: Always include the type annotations. The code is typechecked with strict mode (\`noImplicitAny\`).
 
