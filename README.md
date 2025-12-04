@@ -38,21 +38,22 @@ Output (JSONL):
 {"_tag":"AssistantMessage","content":"Ahoy there, matey! I be doin' just fine..."}
 ```
 
-### Live demo with named pipe
+### Interactive demo with named pipe
 
-Send events to a running process:
+Keep a process running and send events from another terminal:
 
 ```bash
-# Terminal 1: create pipe and start agent
-mkfifo /tmp/agent-input
-cat /tmp/agent-input | doppler run -- bun src/main.ts chat --script -n live-demo
+# Terminal 1: create pipe and start agent (loop keeps pipe alive)
+mkfifo /tmp/agent
+while true; do cat /tmp/agent; done | doppler run -- bun src/main.ts chat --script -n live-demo
 
-# Terminal 2: send events
-echo '{"_tag":"UserMessage","content":"Hello!"}' > /tmp/agent-input
-echo '{"_tag":"UserMessage","content":"What did I just say?"}' > /tmp/agent-input
+# Terminal 2: send events one at a time
+echo '{"_tag":"UserMessage","content":"Hello!"}' > /tmp/agent
+# (watch Terminal 1 for response)
+echo '{"_tag":"UserMessage","content":"What did I just say?"}' > /tmp/agent
 
-# Cleanup
-rm /tmp/agent-input
+# Cleanup: Ctrl+C in Terminal 1, then:
+rm /tmp/agent
 ```
 
 # Modes Overview
