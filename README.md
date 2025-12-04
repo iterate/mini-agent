@@ -31,10 +31,14 @@ Run it:
 cat examples/pirate.jsonl | doppler run -- bun src/main.ts chat --script -n pirate-demo
 ```
 
-Output (JSONL):
+Output (JSONL with streaming):
 ```json
 {"_tag":"SystemPrompt","content":"You are a pirate..."}
 {"_tag":"UserMessage","content":"Hello, how are you?"}
+{"_tag":"TextDelta","delta":"Ahoy"}
+{"_tag":"TextDelta","delta":" there"}
+{"_tag":"TextDelta","delta":", matey!"}
+...
 {"_tag":"AssistantMessage","content":"Ahoy there, matey! I be doin' just fine..."}
 ```
 
@@ -89,8 +93,8 @@ Input:
 
 Output:
 - `UserMessage`, `SystemPrompt` - echoed input
+- `TextDelta` - streaming chunks (included by default in script mode)
 - `AssistantMessage` - final response
-- `TextDelta` - streaming chunks (with `-e`)
 
 ## LLM Configuration
 
