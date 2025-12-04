@@ -12,9 +12,14 @@
  */
 import type { AiError, LanguageModel } from "@effect/ai"
 import type { Error as PlatformError, FileSystem } from "@effect/platform"
-import { Context, Effect, Layer, pipe, Schema, Stream } from "effect"
+import type { Scope } from "effect"
+import { Context, Effect, Layer, Option, pipe, Schema, Stream } from "effect"
+import { parseCodeBlock } from "./codemode.model.ts"
+import type { CodemodeStreamEvent } from "./codemode.service.ts"
+import { CodemodeService } from "./codemode.service.ts"
 import {
   AssistantMessageEvent,
+  CodemodeResultEvent,
   type ContextEvent,
   DEFAULT_SYSTEM_PROMPT,
   type InputEvent,
@@ -26,9 +31,17 @@ import {
   UserMessageEvent
 } from "./context.model.ts"
 import { ContextRepository } from "./context.repository.ts"
-import type { ContextLoadError, ContextSaveError } from "./errors.ts"
+import type { CodeStorageError, ContextLoadError, ContextSaveError } from "./errors.ts"
 import { CurrentLlmConfig, LlmConfig } from "./llm-config.ts"
 import { streamLLMResponse } from "./llm.ts"
+
+/** Options for addEvents */
+export interface AddEventsOptions {
+  readonly codemode?: boolean
+}
+
+/** Union of context events and codemode streaming events */
+export type ContextOrCodemodeEvent = ContextEvent | CodemodeStreamEvent
 
 // =============================================================================
 // Context Service
@@ -45,15 +58,17 @@ export class ContextService extends Context.Tag("@app/ContextService")<
      * 2. Appends the input events (UserMessage and/or FileAttachment)
      * 3. Runs LLM with full history (only if UserMessage present)
      * 4. Streams back TextDelta (ephemeral) and AssistantMessage (persisted)
-     * 5. Persists new events as they complete
+     * 5. If codemode enabled, executes code blocks and streams codemode events
+     * 6. Persists new events as they complete (including CodemodeResult)
      */
     readonly addEvents: (
       contextName: string,
-      inputEvents: ReadonlyArray<InputEvent>
+      inputEvents: ReadonlyArray<InputEvent>,
+      options?: AddEventsOptions
     ) => Stream.Stream<
-      ContextEvent,
-      AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
-      LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
+      ContextOrCodemodeEvent,
+      AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
+      LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig | Scope.Scope
     >
 
     /** Load all events from a context. */
@@ -76,20 +91,93 @@ export class ContextService extends Context.Tag("@app/ContextService")<
     ContextService,
     Effect.gen(function*() {
       const repo = yield* ContextRepository
+      const codemodeService = yield* CodemodeService
 
       // Service methods wrapped with Effect.fn for call-site tracing
       // See: https://www.effect.solutions/services-and-layers
 
       const addEvents = (
         contextName: string,
-        inputEvents: ReadonlyArray<InputEvent>
+        inputEvents: ReadonlyArray<InputEvent>,
+        options?: AddEventsOptions
       ): Stream.Stream<
-        ContextEvent,
-        AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
-        LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
+        ContextOrCodemodeEvent,
+        AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
+        LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig | Scope.Scope
       > => {
         // Check if any UserMessage is present (triggers LLM)
         const hasUserMessage = inputEvents.some(Schema.is(UserMessageEvent))
+        const codemodeEnabled = options?.codemode ?? false
+
+        /** Persist a single event to the context */
+        const persistEvent = (event: PersistedEventType) =>
+          Effect.gen(function*() {
+            const current = yield* repo.load(contextName)
+            yield* repo.save(contextName, [...current, event])
+          })
+
+        /** Process codemode if enabled and assistant has code blocks */
+        const processCodemodeIfNeeded = (
+          assistantContent: string
+        ): Stream.Stream<
+          ContextOrCodemodeEvent,
+          PlatformError.PlatformError | CodeStorageError | ContextLoadError | ContextSaveError,
+          Scope.Scope
+        > => {
+          if (!codemodeEnabled) {
+            return Stream.empty
+          }
+
+          return Stream.unwrap(
+            Effect.gen(function*() {
+              // Check if there's a code block
+              const codeOpt = yield* parseCodeBlock(assistantContent)
+              if (Option.isNone(codeOpt)) {
+                return Stream.empty
+              }
+
+              // Get the codemode stream
+              const streamOpt = yield* codemodeService.processResponse(assistantContent)
+              if (Option.isNone(streamOpt)) {
+                return Stream.empty
+              }
+
+              // Track stdout/stderr/exitCode for CodemodeResult
+              let stdout = ""
+              let stderr = ""
+              let exitCode = 0
+
+              // Process codemode events and collect output
+              return pipe(
+                streamOpt.value,
+                Stream.tap((event) =>
+                  Effect.sync(() => {
+                    if (event._tag === "ExecutionOutput") {
+                      const e = event as { stream: string; data: string }
+                      if (e.stream === "stdout") {
+                        stdout += e.data
+                      } else {
+                        stderr += e.data
+                      }
+                    } else if (event._tag === "ExecutionComplete") {
+                      exitCode = (event as { exitCode: number }).exitCode
+                    }
+                  })
+                ),
+                // After codemode stream completes, emit CodemodeResult
+                Stream.concat(
+                  Stream.fromEffect(
+                    Effect.gen(function*() {
+                      const result = new CodemodeResultEvent({ stdout, stderr, exitCode })
+                      yield* persistEvent(result)
+                      return result as ContextOrCodemodeEvent
+                    })
+                  )
+                )
+              )
+            })
+          )
+        }
 
         return pipe(
           // Load or create context, append input events
@@ -122,12 +210,16 @@ export class ContextService extends Context.Tag("@app/ContextService")<
           Stream.unwrap,
           // Persist events as they complete (only persisted ones)
           Stream.tap((event) =>
-            Schema.is(PersistedEvent)(event)
-              ? Effect.gen(function*() {
-                const current = yield* repo.load(contextName)
-                yield* repo.save(contextName, [...current, event])
-              })
-              : Effect.void
+            Schema.is(PersistedEvent)(event) ? persistEvent(event as PersistedEventType) : Effect.void
+          ),
+          // After AssistantMessage, process codemode if enabled
+          Stream.flatMap((event) =>
+            Schema.is(AssistantMessageEvent)(event)
+              ? pipe(
+                Stream.make(event as ContextOrCodemodeEvent),
+                Stream.concat(processCodemodeIfNeeded(event.content))
+              )
+              : Stream.make(event as ContextOrCodemodeEvent)
           )
         )
       }
@@ -179,8 +271,9 @@ export class ContextService extends Context.Tag("@app/ContextService")<
     return ContextService.of({
       addEvents: (
         contextName: string,
-        inputEvents: ReadonlyArray<InputEvent>
-      ): Stream.Stream<ContextEvent, never, never> => {
+        inputEvents: ReadonlyArray<InputEvent>,
+        _options?: AddEventsOptions
+      ): Stream.Stream<ContextOrCodemodeEvent, never, never> => {
         // Load or create context
         let events = store.get(contextName)
         if (!events) {
@@ -206,19 +299,20 @@ export class ContextService extends Context.Tag("@app/ContextService")<
           return Stream.empty
         }
 
-        // Mock LLM response stream
+        // Mock LLM response stream (codemode not implemented in test layer)
         const mockResponse = "This is a mock response for testing."
         const assistantEvent = new AssistantMessageEvent({ content: mockResponse })
 
-        return Stream.make(
-          new TextDeltaEvent({ delta: mockResponse }),
-          assistantEvent
-        ).pipe(
+        return pipe(
+          Stream.make(
+            new TextDeltaEvent({ delta: mockResponse }) as ContextOrCodemodeEvent,
+            assistantEvent as ContextOrCodemodeEvent
+          ),
           Stream.tap((event) =>
             Schema.is(PersistedEvent)(event)
               ? Effect.sync(() => {
                 const current = store.get(contextName) ?? []
-                store.set(contextName, [...current, event])
+                store.set(contextName, [...current, event as PersistedEventType])
               })
               : Effect.void
           )

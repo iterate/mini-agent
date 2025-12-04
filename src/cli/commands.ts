@@ -131,8 +131,8 @@ const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`
 const red = (s: string) => `\x1b[31m${s}\x1b[0m`
 const dim = (s: string) => `\x1b[90m${s}\x1b[0m`
 
-/** Handle codemode events with colored output */
-const handleCodemodeEvent = (
+/** Handle codemode streaming events with colored output */
+const handleCodemodeStreamEvent = (
   event: CodemodeStreamEvent,
   options: OutputOptions
 ): Effect.Effect<void, PlatformError.PlatformError, Terminal.Terminal> =>
@@ -178,16 +178,51 @@ const handleCodemodeEvent = (
     }
   })
 
-/**
- * Handle a single context event based on output options.
- */
+/** Check if an event is a codemode streaming event */
+const isCodemodeStreamEvent = (event: ContextOrCodemodeEvent): event is CodemodeStreamEvent =>
+  event._tag === "CodeBlock" ||
+  event._tag === "TypecheckStart" ||
+  event._tag === "TypecheckPass" ||
+  event._tag === "TypecheckFail" ||
+  event._tag === "ExecutionStart" ||
+  event._tag === "ExecutionOutput" ||
+  event._tag === "ExecutionComplete"
+
+/** Handle a single context or codemode event based on output options. */
 const handleEvent = (
-  event: ContextEvent,
+  event: ContextOrCodemodeEvent,
   options: OutputOptions
 ): Effect.Effect<void, PlatformError.PlatformError, Terminal.Terminal> =>
   Effect.gen(function*() {
     const terminal = yield* Terminal.Terminal
 
+    // Handle codemode streaming events
+    if (isCodemodeStreamEvent(event)) {
+      yield* handleCodemodeStreamEvent(event, options)
+      return
+    }
+
+    // Handle CodemodeResult (persisted result, shown differently)
+    if (Schema.is(CodemodeResultEvent)(event)) {
+      if (options.raw) {
+        yield* Console.log(JSON.stringify(event))
+      } else {
+        yield* Console.log(dim(`  [Result persisted to context]`))
+      }
+      return
+    }
+
+    // Handle CodemodeValidationError (LLM didn't output codemode)
+    if (Schema.is(CodemodeValidationErrorEvent)(event)) {
+      if (options.raw) {
+        yield* Console.log(JSON.stringify(event))
+      } else {
+        yield* Console.log(red(`\n⚠ LLM response missing <codemode> tags. Retrying...`))
+      }
+      return
+    }
+
+    // Handle standard context events
     if (options.raw) {
       if (Schema.is(TextDeltaEvent)(event) && !options.showEphemeral) {
         return
@@ -215,7 +250,6 @@ const runEventStream = (
 ) =>
   Effect.gen(function*() {
     const contextService = yield* ContextService
-    const codemodeService = yield* CodemodeService
     const inputEvents: Array<InputEvent> = []
 
     if (imageInput) {
@@ -243,33 +277,11 @@ const runEventStream = (
 
     inputEvents.push(new UserMessageEvent({ content: userMessage }))
 
-    // Track the last assistant message content for codemode processing
-    let lastAssistantContent = ""
-
-    yield* contextService.addEvents(contextName, inputEvents).pipe(
-      Stream.runForEach((event) =>
-        Effect.gen(function*() {
-          yield* handleEvent(event, options)
-
-          // Capture assistant message content
-          if (Schema.is(AssistantMessageEvent)(event)) {
-            lastAssistantContent = event.content
-          }
-        })
-      )
+    // Pass codemode option to ContextService - it handles execution internally
+    yield* contextService.addEvents(contextName, inputEvents, { codemode: options.codemode }).pipe(
+      Stream.runForEach((event) => handleEvent(event, options)),
+      Effect.scoped
     )
-
-    // If codemode enabled and we have assistant content, check for code blocks
-    if (options.codemode && lastAssistantContent) {
-      const codemodeStreamOpt = yield* codemodeService.processResponse(lastAssistantContent)
-
-      if (Option.isSome(codemodeStreamOpt)) {
-        yield* codemodeStreamOpt.value.pipe(
-          Stream.runForEach((codemodeEvent) => handleCodemodeEvent(codemodeEvent, options)),
-          Effect.scoped
-        )
-      }
-    }
   })
 
 /** CLI interaction mode - determines how input/output is handled */
@@ -320,8 +332,9 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
           yield* Console.log(JSON.stringify(event))
 
           if (Schema.is(UserMessageEvent)(event)) {
-            yield* contextService.addEvents(contextName, [event]).pipe(
-              Stream.runForEach((outputEvent) => handleEvent(outputEvent, options))
+            yield* contextService.addEvents(contextName, [event], { codemode: options.codemode }).pipe(
+              Stream.runForEach((outputEvent) => handleEvent(outputEvent, options)),
+              Effect.scoped
             )
           } else if (Schema.is(SystemPromptEvent)(event)) {
             yield* Effect.logDebug("SystemPrompt events in script mode are echoed but not persisted")

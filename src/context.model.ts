@@ -96,6 +96,28 @@ export class SetLlmConfigEvent extends Schema.TaggedClass<SetLlmConfigEvent>()(
   { config: LlmConfig }
 ) {}
 
+/** Codemode execution result - persisted, included in next LLM request as user message */
+export class CodemodeResultEvent extends Schema.TaggedClass<CodemodeResultEvent>()(
+  "CodemodeResult",
+  {
+    stdout: Schema.String,
+    stderr: Schema.String,
+    exitCode: Schema.Number
+  }
+) {
+  toLLMMessage(): LLMMessage {
+    const parts: Array<string> = []
+    if (this.stdout) parts.push(this.stdout)
+    if (this.stderr) parts.push(`stderr:\n${this.stderr}`)
+    if (this.exitCode !== 0) parts.push(`(exit code: ${this.exitCode})`)
+    const output = parts.join("\n") || "(no output)"
+    return {
+      role: "user",
+      content: `Code execution result:\n\`\`\`\n${output}\n\`\`\``
+    }
+  }
+}
+
 /** Events that get persisted to the context file */
 export const PersistedEvent = Schema.Union(
   SystemPromptEvent,
@@ -103,7 +125,8 @@ export const PersistedEvent = Schema.Union(
   AssistantMessageEvent,
   LLMRequestInterruptedEvent,
   FileAttachmentEvent,
-  SetLlmConfigEvent
+  SetLlmConfigEvent,
+  CodemodeResultEvent
 )
 export type PersistedEvent = typeof PersistedEvent.Type
 
@@ -115,6 +138,7 @@ export const ContextEvent = Schema.Union(
   LLMRequestInterruptedEvent,
   FileAttachmentEvent,
   SetLlmConfigEvent,
+  CodemodeResultEvent,
   TextDeltaEvent
 )
 export type ContextEvent = typeof ContextEvent.Type
