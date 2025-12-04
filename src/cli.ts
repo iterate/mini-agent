@@ -382,10 +382,10 @@ const runChat = (options: {
     const contextName = Option.getOrElse(options.name, generateRandomContextName)
     const imagePath = Option.getOrNull(options.image) ?? undefined
 
-    // Script mode always uses raw output
+    // Script mode: raw output + ephemeral events by default (for full streaming)
     const outputOptions: OutputOptions = {
       raw: mode === "script" || options.raw,
-      showEphemeral: options.showEphemeral
+      showEphemeral: mode === "script" || options.showEphemeral
     }
 
     switch (mode) {

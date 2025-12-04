@@ -266,6 +266,27 @@ describe("CLI", () => {
       expect(output).toContain("\"UserMessage\"")
       expect(output).toContain("\"AssistantMessage\"")
     })
+
+    test("includes TextDelta streaming events by default", { timeout: 30000 }, async ({ testDir }) => {
+      const input = "{\"_tag\":\"UserMessage\",\"content\":\"Say hello\"}\n"
+      const output = await Effect.runPromise(
+        runCliWithStdin(
+          testDir,
+          input,
+          "--stdout-log-level",
+          "none",
+          "chat",
+          "-n",
+          "streaming-test",
+          "--script"
+        )
+      )
+
+      // Script mode should include TextDelta events (streaming chunks) by default
+      expect(output).toContain("\"TextDelta\"")
+      expect(output).toContain("\"delta\"")
+      expect(output).toContain("\"AssistantMessage\"")
+    })
   })
 
   describe("context persistence", () => {
