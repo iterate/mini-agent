@@ -14,7 +14,7 @@ See README.md for context
 # Typescript
 
 - Use bun as runtime and package manager
-- Run using `doppler run -- bun src/main.ts` (for env vars)
+- Run CLI using `bun run mini-agent` (includes doppler for env vars)
 - kebab-case filenames
 - tests using vitest; colocate test files with .test.ts
 - import using .ts extension; no .js

@@ -13,8 +13,8 @@
     "lint:fix": "eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix",
     "check": "bun run typecheck && bun run lint",
     "check:fix": "bun run typecheck && bun run lint:fix",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "doppler run -- vitest run",
+    "test:watch": "doppler run -- vitest"
   },
   "devDependencies": {
     "@effect/eslint-plugin": "^0.3.2",
