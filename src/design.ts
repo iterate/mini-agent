@@ -33,11 +33,14 @@ export type EventId = typeof EventId.Type
 /**
  * All context events must have these fields.
  * Use spread: { ...BaseEventFields, myField: Schema.String }
+ *
+ * parentEventId enables future forking - events can reference their causal parent.
  */
 export const BaseEventFields = {
   id: EventId,
   timestamp: Schema.DateTimeUtc,
-  contextName: ContextName
+  contextName: ContextName,
+  parentEventId: Schema.optionalWith(EventId, { as: "Option" })
 }
 
 // =============================================================================

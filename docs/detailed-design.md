@@ -24,7 +24,7 @@ A layered architecture for managing LLM conversations using Effect's service pat
 
 **Context** = Named conversation (e.g., "chat", "code-review"). Append-only event log.
 
-**Events** = Immutable facts with shared fields (id, timestamp, contextName): user messages, assistant responses, config changes, lifecycle markers.
+**Events** = Immutable facts with shared fields (id, timestamp, contextName, parentEventId): user messages, assistant responses, config changes, lifecycle markers.
 
 **Reducer** = Functional fold: `(current, newEvents) => new`. Transforms event history into LLM-ready input.
 
@@ -94,10 +94,12 @@ All events share common fields via object spread:
 
 ```typescript
 // Shared fields for all events
+// parentEventId enables future forking - events can reference their causal parent
 export const BaseEventFields = {
   id: EventId,
   timestamp: Schema.DateTimeUtc,
-  contextName: ContextName
+  contextName: ContextName,
+  parentEventId: Schema.optionalWith(EventId, { as: "Option" })
 }
 
 // Usage in event definitions

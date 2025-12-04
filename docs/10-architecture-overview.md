@@ -400,3 +400,34 @@ Extensibility via HooksService:
 - `@effect/ai` Prompt.Message for LLM messages (not custom types)
 - Effect Schedule for retry configuration (not custom RetryConfig)
 - Schema with `...BaseEventFields` spread for shared event fields
+
+### 7. Forking via parentEventId
+
+Every event has an optional `parentEventId` field enabling future forking:
+
+```typescript
+export const BaseEventFields = {
+  id: EventId,
+  timestamp: Schema.DateTimeUtc,
+  contextName: ContextName,
+  parentEventId: Schema.optionalWith(EventId, { as: "Option" })
+}
+```
+
+This allows branching conversations—an event can reference its causal parent, enabling tree-structured contexts.
+
+---
+
+## Debouncing
+
+When events arrive rapidly (e.g., file attachment + message), use "wait for quiet" debouncing:
+
+```
+Event 1 @ 0ms  → Start 10ms timer
+Event 2 @ 5ms  → Cancel timer, start new 10ms timer
+No more events → Timer fires @ 15ms, start agent turn
+```
+
+**Configuration**: `debounceMs` in AppConfig (default: 10ms). Use 0 for next-tick batching via `Effect.yieldNow()`.
+
+**Implementation**: Session layer manages debounce timer with `Fiber.interruptFork` for non-blocking cancellation.
