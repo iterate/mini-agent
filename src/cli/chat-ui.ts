@@ -5,16 +5,10 @@
  * Escape during streaming cancels; Escape at prompt exits.
  */
 import type { AiError, LanguageModel } from "@effect/ai"
-import { type Error as PlatformError, FileSystem } from "@effect/platform"
+import type { Error as PlatformError, FileSystem } from "@effect/platform"
 import { Cause, Context, Effect, Exit, Fiber, Layer, Mailbox, Stream } from "effect"
-import * as fs from "node:fs"
-
-// Debug logging to file (bypasses OpenTUI's terminal management)
-const DEBUG_LOG = "/tmp/chat-ui-debug.log"
-const debug = (msg: string) => {
-  fs.appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`)
-}
 import { is } from "effect/Schema"
+import * as fs from "node:fs"
 import {
   AssistantMessageEvent,
   LLMRequestInterruptedEvent,
@@ -27,6 +21,12 @@ import type { ContextLoadError, ContextSaveError } from "../errors.ts"
 import type { CurrentLlmConfig } from "../llm-config.ts"
 import { streamLLMResponse } from "../llm.ts"
 import { type ChatController, type Message, runOpenTUIChat } from "./components/opentui-chat.tsx"
+
+// Debug logging to file (bypasses OpenTUI's terminal management)
+const DEBUG_LOG = "/tmp/chat-ui-debug.log"
+const debug = (msg: string) => {
+  fs.appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`)
+}
 
 // =============================================================================
 // Types
