@@ -84,62 +84,47 @@ export class CodemodeService extends Context.Tag("@app/CodemodeService")<
             CodemodeStreamEvent,
             PlatformError.PlatformError | CodeStorageError,
             Scope.Scope
-          > = pipe(
-            // Step 1: Create response directory
-            Stream.fromEffect(repo.createResponseDir(responseId)),
-            Stream.flatMap(() =>
+          > = Stream.unwrap(
+            Effect.gen(function*() {
+              // Step 1: Create response directory
+              yield* repo.createResponseDir(responseId)
+
               // Step 2: Write code
-              Stream.fromEffect(repo.writeCode(responseId, code, 1))
-            ),
-            Stream.flatMap((codePath) =>
-              pipe(
-                // Emit CodeBlockEvent
-                Stream.make(new CodeBlockEvent({ code, responseId, attempt: 1 })),
-                Stream.concat(
-                  // Step 3: Typecheck
-                  Stream.fromEffect(
-                    Effect.gen(function*() {
-                      yield* Effect.logDebug("Starting typecheck", { responseId, codePath })
-                      return new TypecheckStartEvent({ responseId, attempt: 1 })
-                    })
-                  )
-                ),
-                Stream.concat(
-                  Stream.fromEffect(
-                    Effect.gen(function*() {
-                      const result = yield* typechecker.check([codePath])
+              const codePath = yield* repo.writeCode(responseId, code, 1)
 
-                      if (Option.isSome(result)) {
-                        yield* Effect.logWarning("Typecheck failed", {
-                          responseId,
-                          diagnostics: result.value.diagnostics
-                        })
-                        return new TypecheckFailEvent({
-                          responseId,
-                          attempt: 1,
-                          errors: result.value.diagnostics
-                        })
-                      }
+              // Step 3: Typecheck
+              const typecheckResult = yield* typechecker.check([codePath])
 
-                      yield* Effect.logDebug("Typecheck passed", { responseId })
-                      return new TypecheckPassEvent({ responseId, attempt: 1 })
-                    })
-                  )
-                ),
-                // Step 4: Execute if typecheck passed
-                Stream.flatMap((event) => {
-                  if (event._tag === "TypecheckFail") {
-                    // Don't execute on typecheck failure
-                    return Stream.make(event)
-                  }
-                  // Emit typecheck pass then execute
-                  return pipe(
-                    Stream.make(event as CodemodeStreamEvent),
-                    Stream.concat(executor.execute(codePath, responseId))
-                  )
+              if (Option.isSome(typecheckResult)) {
+                // Typecheck failed - emit events and stop
+                yield* Effect.logWarning("Typecheck failed", {
+                  responseId,
+                  diagnostics: typecheckResult.value.diagnostics
                 })
+
+                return Stream.make(
+                  new CodeBlockEvent({ code, responseId, attempt: 1 }) as CodemodeStreamEvent,
+                  new TypecheckStartEvent({ responseId, attempt: 1 }) as CodemodeStreamEvent,
+                  new TypecheckFailEvent({
+                    responseId,
+                    attempt: 1,
+                    errors: typecheckResult.value.diagnostics
+                  }) as CodemodeStreamEvent
+                )
+              }
+
+              // Typecheck passed - emit events and execute
+              yield* Effect.logDebug("Typecheck passed", { responseId })
+
+              return pipe(
+                Stream.make(
+                  new CodeBlockEvent({ code, responseId, attempt: 1 }) as CodemodeStreamEvent,
+                  new TypecheckStartEvent({ responseId, attempt: 1 }) as CodemodeStreamEvent,
+                  new TypecheckPassEvent({ responseId, attempt: 1 }) as CodemodeStreamEvent
+                ),
+                Stream.concat(executor.execute(codePath, responseId))
               )
-            )
+            })
           )
 
           return Option.some(stream)

@@ -8,17 +8,20 @@ import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
 import { type Error as PlatformError, FileSystem, HttpServer, Terminal } from "@effect/platform"
 import { BunHttpServer, BunStream } from "@effect/platform-bun"
 import { Chunk, Console, Effect, Layer, Option, Schema, Stream } from "effect"
+import { codemodeCommand } from "../codemode-run.ts"
+import type { CodemodeStreamEvent } from "../codemode.service.ts"
 import { AppConfig, resolveBaseDir } from "../config.ts"
 import {
   AssistantMessageEvent,
-  type ContextEvent,
+  CodemodeResultEvent,
+  CodemodeValidationErrorEvent,
   FileAttachmentEvent,
   type InputEvent,
   SystemPromptEvent,
   TextDeltaEvent,
   UserMessageEvent
 } from "../context.model.ts"
-import { ContextService } from "../context.service.ts"
+import { type ContextOrCodemodeEvent, ContextService } from "../context.service.ts"
 import { makeRouter } from "../http.ts"
 import { layercodeCommand } from "../layercode/index.ts"
 import { AgentServer } from "../server.service.ts"
@@ -91,6 +94,12 @@ const imageOption = Options.text("image").pipe(
   Options.optional
 )
 
+const codemodeOption = Options.boolean("codemode").pipe(
+  Options.withAlias("x"),
+  Options.withDescription("Enable codemode: parse, typecheck, and execute code blocks from responses"),
+  Options.withDefault(false)
+)
+
 const MIME_TYPES: Record<string, string> = {
   ".png": "image/png",
   ".jpg": "image/jpeg",
@@ -114,7 +123,60 @@ const isUrl = (input: string): boolean => input.startsWith("http://") || input.s
 interface OutputOptions {
   raw: boolean
   showEphemeral: boolean
+  codemode: boolean
 }
+
+const green = (s: string) => `\x1b[32m${s}\x1b[0m`
+const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`
+const red = (s: string) => `\x1b[31m${s}\x1b[0m`
+const dim = (s: string) => `\x1b[90m${s}\x1b[0m`
+
+/** Handle codemode events with colored output */
+const handleCodemodeEvent = (
+  event: CodemodeStreamEvent,
+  options: OutputOptions
+): Effect.Effect<void, PlatformError.PlatformError, Terminal.Terminal> =>
+  Effect.gen(function*() {
+    const terminal = yield* Terminal.Terminal
+
+    if (options.raw) {
+      yield* Console.log(JSON.stringify(event))
+      return
+    }
+
+    switch (event._tag) {
+      case "CodeBlock":
+        yield* Console.log(`\n${yellow("◆ Code block detected")} ${dim(`(attempt ${event.attempt})`)}`)
+        break
+      case "TypecheckStart":
+        yield* terminal.display(dim("  Typechecking..."))
+        break
+      case "TypecheckPass":
+        yield* Console.log(` ${green("✓")}`)
+        break
+      case "TypecheckFail":
+        yield* Console.log(` ${red("✗")}`)
+        yield* Console.log(red(event.errors))
+        break
+      case "ExecutionStart":
+        yield* Console.log(dim("  Executing..."))
+        break
+      case "ExecutionOutput":
+        if (event.stream === "stdout") {
+          yield* terminal.display(event.data)
+        } else {
+          yield* terminal.display(red(event.data))
+        }
+        break
+      case "ExecutionComplete":
+        if (event.exitCode === 0) {
+          yield* Console.log(dim(`  Exit: ${event.exitCode}`))
+        } else {
+          yield* Console.log(red(`  Exit: ${event.exitCode}`))
+        }
+        break
+    }
+  })
 
 /**
  * Handle a single context event based on output options.
@@ -153,6 +215,7 @@ const runEventStream = (
 ) =>
   Effect.gen(function*() {
     const contextService = yield* ContextService
+    const codemodeService = yield* CodemodeService
     const inputEvents: Array<InputEvent> = []
 
     if (imageInput) {
@@ -180,9 +243,33 @@ const runEventStream = (
 
     inputEvents.push(new UserMessageEvent({ content: userMessage }))
 
+    // Track the last assistant message content for codemode processing
+    let lastAssistantContent = ""
+
     yield* contextService.addEvents(contextName, inputEvents).pipe(
-      Stream.runForEach((event) => handleEvent(event, options))
+      Stream.runForEach((event) =>
+        Effect.gen(function*() {
+          yield* handleEvent(event, options)
+
+          // Capture assistant message content
+          if (Schema.is(AssistantMessageEvent)(event)) {
+            lastAssistantContent = event.content
+          }
+        })
+      )
     )
+
+    // If codemode enabled and we have assistant content, check for code blocks
+    if (options.codemode && lastAssistantContent) {
+      const codemodeStreamOpt = yield* codemodeService.processResponse(lastAssistantContent)
+
+      if (Option.isSome(codemodeStreamOpt)) {
+        yield* codemodeStreamOpt.value.pipe(
+          Stream.runForEach((codemodeEvent) => handleCodemodeEvent(codemodeEvent, options)),
+          Effect.scoped
+        )
+      }
+    }
   })
 
 /** CLI interaction mode - determines how input/output is handled */
@@ -302,6 +389,7 @@ const runChat = (options: {
   raw: boolean
   script: boolean
   showEphemeral: boolean
+  codemode: boolean
 }) =>
   Effect.gen(function*() {
     yield* Effect.logDebug("Starting chat session")
@@ -311,7 +399,8 @@ const runChat = (options: {
 
     const outputOptions: OutputOptions = {
       raw: mode === "script" || options.raw,
-      showEphemeral: mode === "script" || options.showEphemeral
+      showEphemeral: mode === "script" || options.showEphemeral,
+      codemode: options.codemode
     }
 
     switch (mode) {
@@ -327,7 +416,12 @@ const runChat = (options: {
       case "pipe": {
         const input = yield* readAllStdin
         if (input !== "") {
-          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false }, imagePath)
+          yield* runEventStream(
+            contextName,
+            input,
+            { raw: false, showEphemeral: false, codemode: options.codemode },
+            imagePath
+          )
         }
         break
       }
@@ -425,10 +519,11 @@ const chatCommand = Command.make(
     image: imageOption,
     raw: rawOption,
     script: scriptOption,
-    showEphemeral: showEphemeralOption
+    showEphemeral: showEphemeralOption,
+    codemode: codemodeOption
   },
-  ({ image, message, name, raw, script, showEphemeral }) =>
-    runChat({ image, message, name, raw, script, showEphemeral })
+  ({ codemode, image, message, name, raw, script, showEphemeral }) =>
+    runChat({ codemode, image, message, name, raw, script, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
 const logTestCommand = Command.make(
