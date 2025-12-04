@@ -8,7 +8,14 @@ The reducer is a full service with `Context.Tag`, allowing maximum flexibility a
 class EventReducer extends Context.Tag("@app/EventReducer")<
   EventReducer,
   {
-    readonly reduce: (events: readonly PersistedEvent[]) => Effect.Effect<ReducedContext, ReducerError>
+    // Reducer takes current state + new events, returns updated state
+    readonly reduce: (
+      current: ReducedContext,
+      newEvents: readonly PersistedEvent[]
+    ) => Effect.Effect<ReducedContext, ReducerError>
+
+    // Initial state for fresh contexts
+    readonly initialReducedContext: ReducedContext
   }
 >() {}
 ```
@@ -19,7 +26,11 @@ class EventReducer extends Context.Tag("@app/EventReducer")<
 class EventReducer extends Context.Tag("@app/EventReducer")<
   EventReducer,
   {
-    readonly reduce: (events: readonly PersistedEvent[]) => Effect.Effect<ReducedContext, ReducerError>
+    readonly reduce: (
+      current: ReducedContext,
+      newEvents: readonly PersistedEvent[]
+    ) => Effect.Effect<ReducedContext, ReducerError>
+    readonly initialReducedContext: ReducedContext
   }
 >() {
   static readonly layer = Layer.effect(
@@ -29,17 +40,21 @@ class EventReducer extends Context.Tag("@app/EventReducer")<
       const tokenCounter = yield* TokenCounter
       const config = yield* AppConfig
 
-      const reduce = Effect.fn("EventReducer.reduce")(
-        function*(events: readonly PersistedEvent[]) {
-          // Core reduction
-          const state = events.reduce(reduceEvent, {
-            ...initialState,
-            // Use config defaults
-            retryConfig: config.defaultRetry,
-            timeoutMs: config.defaultTimeoutMs,
-          })
+      const initialReducedContext = ReducedContext.make({
+        messages: [],
+        config: LLMRequestConfig.make({
+          primary: getDefaultProvider(),
+          retry: config.defaultRetry,
+          timeoutMs: config.defaultTimeoutMs,
+        }),
+      })
 
-          const reduced = stateToReducedContext(state)
+      const reduce = Effect.fn("EventReducer.reduce")(
+        function*(current: ReducedContext, newEvents: readonly PersistedEvent[]) {
+          // Apply new events to current state
+          const currentState = reducedContextToState(current)
+          const newState = newEvents.reduce(reduceEvent, currentState)
+          const reduced = stateToReducedContext(newState)
 
           // Validation
           if (reduced.messages.length === 0) {
@@ -53,24 +68,37 @@ class EventReducer extends Context.Tag("@app/EventReducer")<
 
           if (tokenCount > config.maxTokens) {
             yield* Effect.logWarning(`Token count ${tokenCount} exceeds limit ${config.maxTokens}`)
-            // Could truncate or fail here
           }
 
-          yield* Effect.logDebug(`Reduced ${events.length} events to ${reduced.messages.length} messages`)
+          yield* Effect.logDebug(`Applied ${newEvents.length} events, now ${reduced.messages.length} messages`)
 
           return reduced
         }
       )
 
-      return EventReducer.of({ reduce })
+      return EventReducer.of({ reduce, initialReducedContext })
     })
   )
 
-  static readonly testLayer = Layer.sync(EventReducer, () =>
-    EventReducer.of({
-      reduce: (events) => {
-        // Simple test implementation
-        const messages = events
+  static readonly testLayer = Layer.sync(EventReducer, () => {
+    const initialReducedContext = ReducedContext.make({
+      messages: [],
+      config: LLMRequestConfig.make({
+        primary: ProviderConfig.make({
+          providerId: ProviderId.make("test"),
+          model: "test-model",
+          apiKey: Redacted.make("test-key"),
+        }),
+        retry: RetryConfig.default,
+        timeoutMs: 30000,
+      }),
+    })
+
+    return EventReducer.of({
+      initialReducedContext,
+      reduce: (current, newEvents) => {
+        // Simple test implementation - apply events to current
+        const newMessages = newEvents
           .filter((e): e is UserMessageEvent | AssistantMessageEvent =>
             e._tag === "UserMessageEvent" || e._tag === "AssistantMessageEvent"
           )
@@ -80,20 +108,12 @@ class EventReducer extends Context.Tag("@app/EventReducer")<
           }))
 
         return Effect.succeed(ReducedContext.make({
-          messages,
-          config: LLMRequestConfig.make({
-            primary: ProviderConfig.make({
-              providerId: ProviderId.make("test"),
-              model: "test-model",
-              apiKey: Redacted.make("test-key"),
-            }),
-            retry: RetryConfig.default,
-            timeoutMs: 30000,
-          }),
+          messages: [...current.messages, ...newMessages],
+          config: current.config,
         }))
       }
     })
-  )
+  })
 }
 
 // The core reduction logic (same as other designs)
@@ -120,7 +140,8 @@ Could support different reduction strategies:
 class EventReducer extends Context.Tag("@app/EventReducer")<
   EventReducer,
   {
-    readonly reduce: (events: readonly PersistedEvent[]) => Effect.Effect<ReducedContext, ReducerError>
+    readonly reduce: (current: ReducedContext, newEvents: readonly PersistedEvent[]) => Effect.Effect<ReducedContext, ReducerError>
+    readonly initialReducedContext: ReducedContext
   }
 >() {
   // Standard reducer
@@ -133,20 +154,20 @@ class EventReducer extends Context.Tag("@app/EventReducer")<
       const config = yield* AppConfig
 
       const reduce = Effect.fn("EventReducer.reduce.truncating")(
-        function*(events: readonly PersistedEvent[]) {
-          const full = reduceEventsSync(events)
+        function*(current: ReducedContext, newEvents: readonly PersistedEvent[]) {
+          const currentState = reducedContextToState(current)
+          const newState = newEvents.reduce(reduceEvent, currentState)
+          const full = stateToReducedContext(newState)
 
           // Keep only last N messages
-          const truncated = {
+          return ReducedContext.make({
             ...full,
             messages: full.messages.slice(-config.maxMessages),
-          }
-
-          return truncated
+          })
         }
       )
 
-      return EventReducer.of({ reduce })
+      return EventReducer.of({ reduce, initialReducedContext })
     })
   )
 
@@ -157,8 +178,10 @@ class EventReducer extends Context.Tag("@app/EventReducer")<
       const llm = yield* LLMRequest  // Use LLM to summarize!
 
       const reduce = Effect.fn("EventReducer.reduce.summarizing")(
-        function*(events: readonly PersistedEvent[]) {
-          const full = reduceEventsSync(events)
+        function*(current: ReducedContext, newEvents: readonly PersistedEvent[]) {
+          const currentState = reducedContextToState(current)
+          const newState = newEvents.reduce(reduceEvent, currentState)
+          const full = stateToReducedContext(newState)
 
           if (full.messages.length <= 10) {
             return full
@@ -170,17 +193,17 @@ class EventReducer extends Context.Tag("@app/EventReducer")<
 
           const summary = yield* summarizeMessages(llm, oldMessages)
 
-          return {
+          return ReducedContext.make({
             ...full,
             messages: [
               LLMMessage.make({ role: "system", content: `Previous context summary: ${summary}` }),
               ...recentMessages,
             ],
-          }
+          })
         }
       )
 
-      return EventReducer.of({ reduce })
+      return EventReducer.of({ reduce, initialReducedContext })
     })
   )
 }
@@ -189,14 +212,18 @@ class EventReducer extends Context.Tag("@app/EventReducer")<
 ## Usage
 
 ```typescript
-// In Layer 3 (Session)
+// In Layer 3 (Session) - first load
 const program = Effect.gen(function*() {
   const reducer = yield* EventReducer
   const events = yield* repository.load(contextName)
-  const reduced = yield* reducer.reduce(events)
+  const reduced = yield* reducer.reduce(reducer.initialReducedContext, events)
   const stream = yield* llmRequest.stream(reduced)
   // ...
 })
+
+// On new event - incremental update
+const newEvent = UserMessageEvent.make({ content: "Hello" })
+const updatedReduced = yield* reducer.reduce(currentReduced, [newEvent])
 
 // Choose reducer at app composition
 const appLayer = SessionLayer.pipe(
@@ -222,7 +249,7 @@ describe("EventReducer", () => {
         AssistantMessageEvent.make({ content: "Hi!" }),
       ]
 
-      const result = yield* reducer.reduce(events)
+      const result = yield* reducer.reduce(reducer.initialReducedContext, events)
 
       expect(result.messages).toHaveLength(2)
     }).pipe(
@@ -232,18 +259,21 @@ describe("EventReducer", () => {
     )
   )
 
-  // Test with mock layer
-  it.effect("can mock reducer for testing", () =>
+  // Test incremental reduction
+  it.effect("incrementally applies new events", () =>
     Effect.gen(function*() {
       const reducer = yield* EventReducer
 
-      const result = yield* reducer.reduce([])
+      const initial = yield* reducer.reduce(reducer.initialReducedContext, [
+        UserMessageEvent.make({ content: "Hello" }),
+      ])
 
-      // Test layer returns empty messages
-      expect(result.messages).toHaveLength(0)
-    }).pipe(
-      Effect.provide(EventReducer.testLayer)
-    )
+      const updated = yield* reducer.reduce(initial, [
+        AssistantMessageEvent.make({ content: "Hi!" }),
+      ])
+
+      expect(updated.messages).toHaveLength(2)
+    }).pipe(Effect.provide(EventReducer.testLayer))
   )
 })
 ```

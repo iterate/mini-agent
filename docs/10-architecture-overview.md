@@ -79,7 +79,7 @@ The architecture follows an "onion" or "layered" pattern where each layer wraps 
 │  │  │             (Load/Persist, Lifecycle)                    │  │  │
 │  │  │  ┌─────────────────────────────────────────────────┐    │  │  │
 │  │  │  │          2. Reducer Layer                        │    │  │  │
-│  │  │  │          (Events → ReducedContext)               │    │  │  │
+│  │  │  │          (State + Events → State)                │    │  │  │
 │  │  │  │  ┌─────────────────────────────────────────┐    │    │  │  │
 │  │  │  │  │       1. LLM Request Layer               │    │    │  │  │
 │  │  │  │  │       (Retry, Fallback, Parallel)        │    │    │  │  │
@@ -223,7 +223,7 @@ flowchart TB
     end
 
     subgraph "Layer 2: Reducer"
-        REDUCE[reduceEvents]
+        REDUCE[reduce state + events]
     end
 
     subgraph "Layer 1: LLM Request"
@@ -273,8 +273,8 @@ flowchart TB
    → Events passed to reducer
 
 4. Layer 2 (Reducer)
-   → All events reduced to ReducedContext
-   → Messages: [{role: "user", content: "Hello"}]
+   → New event applied to current ReducedContext
+   → Updated messages: [{role: "user", content: "Hello"}]
    → Config: {provider: "openai", retry: {maxRetries: 3, ...}}
 
 5. Layer 1 (LLM Request)

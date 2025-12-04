@@ -252,8 +252,8 @@ export const validateReducedContext = (
 ## Usage Example
 
 ```typescript
-// After reducing events
-const reduced: ReducedContext = yield* reducer.reduce(events)
+// Apply new events to current state
+const reduced: ReducedContext = yield* reducer.reduce(currentReduced, newEvents)
 
 // Validate
 const validated = yield* validateReducedContext(reduced)

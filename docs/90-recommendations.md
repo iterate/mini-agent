@@ -46,12 +46,15 @@ class LLMRequest extends Context.Tag("@app/LLMRequest")<
 ### Recommendation: Design B (Effect-returning function)
 
 ```typescript
-export const reduceEvents = (
-  events: readonly PersistedEvent[]
+// Reducer takes current state + new events, returns updated state
+export const reduce = (
+  current: ReducedContext,
+  newEvents: readonly PersistedEvent[]
 ): Effect.Effect<ReducedContext, ReducerError> =>
   Effect.gen(function*() {
-    const state = events.reduce(reduceEvent, initialState)
-    const reduced = stateToReducedContext(state)
+    const currentState = reducedContextToState(current)
+    const newState = newEvents.reduce(reduceEvent, currentState)
+    const reduced = stateToReducedContext(newState)
 
     // Validation
     if (reduced.messages.length === 0) {
@@ -60,9 +63,13 @@ export const reduceEvents = (
 
     return reduced
   })
+
+// Initial state for fresh contexts
+export const initialReducedContext: ReducedContext = /* ... */
 ```
 
 **Why:**
+- True functional reducer: `(current, newEvents) => new`
 - Simpler than full service (no Context.Tag overhead)
 - Can do validation, logging, optional token counting
 - Easy to test (just an Effect)

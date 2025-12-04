@@ -5,9 +5,14 @@ The reducer returns an Effect, allowing dependencies and async operations.
 ## Interface
 
 ```typescript
-export const reduceEvents: (
-  events: readonly PersistedEvent[]
+// Reducer takes current state + new events, returns updated state
+export const reduce: (
+  current: ReducedContext,
+  newEvents: readonly PersistedEvent[]
 ) => Effect.Effect<ReducedContext, ReducerError, TokenCounter>
+
+// Initial state for fresh contexts
+export const initialReducedContext: ReducedContext
 ```
 
 ## Implementation
@@ -39,17 +44,27 @@ export class ReducerError extends Schema.TaggedError<ReducerError>()(
   }
 ) {}
 
-export const reduceEvents = (
-  events: readonly PersistedEvent[]
+// Initial state for fresh contexts
+export const initialReducedContext: ReducedContext = ReducedContext.make({
+  messages: [],
+  config: LLMRequestConfig.make({
+    primary: getDefaultProvider(),
+    retry: defaultRetryConfig,
+    timeoutMs: 30000,
+  }),
+})
+
+export const reduce = (
+  current: ReducedContext,
+  newEvents: readonly PersistedEvent[]
 ): Effect.Effect<ReducedContext, ReducerError, TokenCounter> =>
   Effect.gen(function*() {
     const tokenCounter = yield* TokenCounter
 
-    // Reduce events (same logic as pure function)
-    const state = events.reduce(reduceEvent, initialState)
-
-    // Convert to ReducedContext
-    const reduced = stateToReducedContext(state)
+    // Convert current state, apply new events
+    const currentState = reducedContextToState(current)
+    const newState = newEvents.reduce(reduceEvent, currentState)
+    const reduced = stateToReducedContext(newState)
 
     // Validate
     if (reduced.messages.length === 0) {
@@ -71,8 +86,8 @@ export const reduceEvents = (
 
     return reduced
   }).pipe(
-    Effect.withSpan("reduceEvents", {
-      attributes: { eventCount: events.length }
+    Effect.withSpan("reduce", {
+      attributes: { newEventCount: newEvents.length }
     })
   )
 
@@ -87,15 +102,17 @@ const reduceEvent = (state: ReducerState, event: PersistedEvent): ReducerState =
 If token counting is optional:
 
 ```typescript
-export const reduceEvents = (
-  events: readonly PersistedEvent[]
+export const reduce = (
+  current: ReducedContext,
+  newEvents: readonly PersistedEvent[]
 ): Effect.Effect<ReducedContext, ReducerError> =>
   Effect.gen(function*() {
     // Try to get token counter, use fallback if not provided
     const tokenCounter = yield* Effect.serviceOption(TokenCounter)
 
-    const state = events.reduce(reduceEvent, initialState)
-    const reduced = stateToReducedContext(state)
+    const currentState = reducedContextToState(current)
+    const newState = newEvents.reduce(reduceEvent, currentState)
+    const reduced = stateToReducedContext(newState)
 
     // Only count if service is available
     if (Option.isSome(tokenCounter)) {
@@ -110,13 +127,17 @@ export const reduceEvents = (
 ## Usage
 
 ```typescript
-// In Layer 3 (Session)
+// In Layer 3 (Session) - first load
 const program = Effect.gen(function*() {
   const events = yield* repository.load(contextName)
-  const reduced = yield* reduceEvents(events)  // Now returns Effect
+  const reduced = yield* reduce(initialReducedContext, events)
   const stream = yield* llmRequest.stream(reduced)
   // ...
 })
+
+// On new event - incremental update
+const newEvent = UserMessageEvent.make({ content: "Hello" })
+const updatedReduced = yield* reduce(currentReduced, [newEvent])
 
 // Provide token counter if needed
 program.pipe(Effect.provide(TokenCounter.layer))
@@ -127,7 +148,7 @@ program.pipe(Effect.provide(TokenCounter.layer))
 ```typescript
 import { describe, expect, it } from "@effect/vitest"
 
-describe("reduceEvents", () => {
+describe("reduce", () => {
   const testTokenCounter = Layer.succeed(TokenCounter, {
     count: (messages) => Effect.succeed(messages.length * 10)
   })
@@ -139,27 +160,30 @@ describe("reduceEvents", () => {
         UserMessageEvent.make({ content: "Hello" }),
       ]
 
-      const result = yield* reduceEvents(events)
+      const result = yield* reduce(initialReducedContext, events)
 
       expect(result.messages).toHaveLength(2)
     }).pipe(Effect.provide(testTokenCounter))
   )
 
-  it.effect("fails on empty messages", () =>
+  it.effect("incrementally applies new events", () =>
     Effect.gen(function*() {
-      const result = yield* reduceEvents([]).pipe(Effect.flip)
-      expect(result._tag).toBe("ReducerError")
+      const initial = yield* reduce(initialReducedContext, [
+        UserMessageEvent.make({ content: "Hello" }),
+      ])
+
+      const updated = yield* reduce(initial, [
+        AssistantMessageEvent.make({ content: "Hi!" }),
+      ])
+
+      expect(updated.messages).toHaveLength(2)
     }).pipe(Effect.provide(testTokenCounter))
   )
 
-  it.effect("logs token count", () =>
+  it.effect("fails on empty messages", () =>
     Effect.gen(function*() {
-      const events = [
-        UserMessageEvent.make({ content: "Hello" }),
-      ]
-
-      yield* reduceEvents(events)
-      // Token count would be logged
+      const result = yield* reduce(initialReducedContext, []).pipe(Effect.flip)
+      expect(result._tag).toBe("ReducerError")
     }).pipe(Effect.provide(testTokenCounter))
   )
 })
@@ -206,10 +230,10 @@ This design aligns with:
 
 ```typescript
 // Design A: Pure function
-const reduced = reduceEvents(events)
+const reduced = reduce(current, newEvents)
 
 // Design B: Effect function
-const reduced = yield* reduceEvents(events)
+const reduced = yield* reduce(current, newEvents)
 ```
 
 The call site is nearly identical, but Design B allows dependencies and error handling.

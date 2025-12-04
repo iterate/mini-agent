@@ -120,8 +120,8 @@ class ContextSession extends Context.Tag("@app/ContextSession")<
           // Notify hook of input event
           yield* hooks.onEvent(event)
 
-          // Reduce events
-          const reduced = yield* reducer.reduce(allEvents)
+          // Reduce - apply new event to current state
+          const reduced = yield* reducer.reduce(currentReduced, [event])
 
           // Before request hook
           const processedInput = yield* hooks.beforeRequest(reduced)

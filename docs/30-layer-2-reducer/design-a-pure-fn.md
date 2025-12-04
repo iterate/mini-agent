@@ -5,7 +5,14 @@ The simplest approach—reducer is just a function with no dependencies.
 ## Interface
 
 ```typescript
-export const reduceEvents: (events: readonly PersistedEvent[]) => ReducedContext
+// Reducer takes current state + new events, returns updated state
+export const reduce: (
+  current: ReducedContext,
+  newEvents: readonly PersistedEvent[]
+) => ReducedContext
+
+// Initial state for fresh contexts
+export const initialReducedContext: ReducedContext
 ```
 
 ## Implementation
@@ -37,10 +44,38 @@ const initialState: ReducerState = {
   pendingAttachments: [],
 }
 
-export const reduceEvents = (events: readonly PersistedEvent[]): ReducedContext => {
-  const state = events.reduce(reduceEvent, initialState)
-  return stateToReducedContext(state)
+// Initial state for fresh contexts
+export const initialReducedContext: ReducedContext = ReducedContext.make({
+  messages: [],
+  config: LLMRequestConfig.make({
+    primary: getDefaultProvider(),
+    retry: initialState.retryConfig,
+    timeoutMs: initialState.timeoutMs,
+  }),
+})
+
+// Reducer: (current, newEvents) => updated
+export const reduce = (
+  current: ReducedContext,
+  newEvents: readonly PersistedEvent[]
+): ReducedContext => {
+  // Convert ReducedContext to internal state
+  const currentState = reducedContextToState(current)
+  // Apply new events
+  const newState = newEvents.reduce(reduceEvent, currentState)
+  // Convert back to ReducedContext
+  return stateToReducedContext(newState)
 }
+
+const reducedContextToState = (ctx: ReducedContext): ReducerState => ({
+  messages: ctx.messages.filter(m => m.role !== "system"),
+  systemPrompt: ctx.messages.find(m => m.role === "system")?.content ?? null,
+  retryConfig: ctx.config.retry,
+  primaryProvider: ctx.config.primary,
+  fallbackProvider: ctx.config.fallback ?? null,
+  timeoutMs: ctx.config.timeoutMs,
+  pendingAttachments: [],
+})
 
 const reduceEvent = (state: ReducerState, event: PersistedEvent): ReducerState => {
   switch (event._tag) {
@@ -174,10 +209,14 @@ const buildMultiModalContent = (
 ## Usage
 
 ```typescript
-// In Layer 3 (Session)
+// In Layer 3 (Session) - first load
 const events = yield* repository.load(contextName)
-const reduced = reduceEvents(events)
+const reduced = reduce(initialReducedContext, events)
 const stream = yield* llmRequest.stream(reduced)
+
+// On new event - incremental update
+const newEvent = UserMessageEvent.make({ content: "Hello" })
+const updatedReduced = reduce(currentReduced, [newEvent])
 ```
 
 ## Testing
@@ -185,7 +224,7 @@ const stream = yield* llmRequest.stream(reduced)
 ```typescript
 import { describe, expect, it } from "vitest"
 
-describe("reduceEvents", () => {
+describe("reduce", () => {
   it("builds messages from content events", () => {
     const events = [
       SystemPromptEvent.make({ content: "You are helpful" }),
@@ -193,7 +232,7 @@ describe("reduceEvents", () => {
       AssistantMessageEvent.make({ content: "Hi there!" }),
     ]
 
-    const result = reduceEvents(events)
+    const result = reduce(initialReducedContext, events)
 
     expect(result.messages).toHaveLength(3)
     expect(result.messages[0]).toEqual(
@@ -206,21 +245,25 @@ describe("reduceEvents", () => {
       SetRetryConfigEvent.make({ maxRetries: 5, initialDelayMs: 200 }),
     ]
 
-    const result = reduceEvents(events)
+    const result = reduce(initialReducedContext, events)
 
     expect(result.config.retry.maxRetries).toBe(5)
     expect(result.config.retry.initialDelayMs).toBe(200)
   })
 
-  it("attaches files to next user message", () => {
-    const events = [
-      FileAttachmentEvent.make({ source: "image.png", mediaType: "image/png" }),
-      UserMessageEvent.make({ content: "What's in this image?" }),
-    ]
+  it("incrementally applies new events", () => {
+    // First batch
+    const initial = reduce(initialReducedContext, [
+      UserMessageEvent.make({ content: "Hello" }),
+    ])
 
-    const result = reduceEvents(events)
+    // Apply more events to existing state
+    const updated = reduce(initial, [
+      AssistantMessageEvent.make({ content: "Hi!" }),
+      UserMessageEvent.make({ content: "How are you?" }),
+    ])
 
-    expect(result.messages[0].content).toContain("[Attached: image.png]")
+    expect(updated.messages).toHaveLength(3)
   })
 })
 ```

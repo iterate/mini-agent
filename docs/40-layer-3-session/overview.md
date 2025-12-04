@@ -47,11 +47,12 @@ The session maintains state across calls:
 interface SessionState {
   contextName: ContextName | null
   events: PersistedEvent[]
+  reduced: ReducedContext  // Current reduced state for incremental updates
   initialized: boolean
 }
 ```
 
-Uses `Ref` or `SynchronizedRef` for state management.
+Uses `Ref` or `SynchronizedRef` for state management. The `reduced` field caches the current reduced context, allowing incremental application of new events without re-reducing all historical events.
 
 ## Key Features
 
@@ -159,8 +160,8 @@ class ContextSession extends Context.Tag("@app/ContextSession")<
             Effect.map((s) => s.events)
           )
 
-          // Reduce
-          const reduced = yield* reducer.reduce(updatedEvents)
+          // Reduce - apply new event to current state
+          const reduced = yield* reducer.reduce(state.reduced, [event])
 
           // Emit request started
           const requestId = RequestId.make(crypto.randomUUID())

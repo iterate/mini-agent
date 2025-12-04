@@ -1,12 +1,14 @@
 # Layer 2: Event Reducer - Overview
 
-Transforms a sequence of events into a `ReducedContext` containing everything needed for an LLM request.
+Applies new events to the current reduced state, producing an updated `ReducedContext`.
 
 ## Responsibility
 
-Given all events in a context, produce:
-- Messages in LLM format
-- Configuration (provider, retry, timeout, parallel)
+A true functional reducer: takes current state + new events, produces new state.
+
+```typescript
+type Reducer = (current: ReducedContext, newEvents: readonly PersistedEvent[]) => ReducedContext
+```
 
 ## Interface Options
 
@@ -14,13 +16,14 @@ The key design question: **Should the reducer be a pure function, an Effect-retu
 
 | Design | Type | See |
 |--------|------|-----|
-| A. Pure Function | `(events) => ReducedContext` | [design-a-pure-fn.md](./design-a-pure-fn.md) |
-| B. Effect Function | `(events) => Effect<ReducedContext>` | [design-b-effect-fn.md](./design-b-effect-fn.md) |
+| A. Pure Function | `(current, events) => ReducedContext` | [design-a-pure-fn.md](./design-a-pure-fn.md) |
+| B. Effect Function | `(current, events) => Effect<ReducedContext>` | [design-b-effect-fn.md](./design-b-effect-fn.md) |
 | C. Service | `Context.Tag` with `reduce` method | [design-c-service.md](./design-c-service.md) |
 
 ## Input
 
-`readonly PersistedEvent[]` - All persisted events in order
+- `current: ReducedContext` - Current accumulated state
+- `newEvents: readonly PersistedEvent[]` - New events to apply
 
 ## Output
 
@@ -71,12 +74,12 @@ Options:
 - **B)** FileAttachment creates a separate message part
 - **C)** FileAttachments are grouped with the next user message
 
-### 3. Should reduction be lazy or eager?
+### 3. State management
 
-- **Eager**: Reduce all events upfront, cache result
-- **Lazy**: Reduce on-demand (re-reduce after each new event)
-
-Given events are append-only and reduction is fast, **lazy** is simpler.
+Since reduction is incremental `(current, newEvents) => new`, the session layer can:
+- Cache the current `ReducedContext`
+- Apply only new events when they arrive
+- Avoid re-reducing all historical events
 
 ## Does NOT Handle
 

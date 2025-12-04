@@ -250,8 +250,8 @@ const addEvent = Effect.fn("ContextSession.addEvent")(
     // Persist input
     yield* repository.append(state.contextName!, [event])
 
-    // Reduce
-    const reduced = yield* reducer.reduce([...state.events, event])
+    // Reduce - apply new event to current state
+    const reduced = yield* reducer.reduce(state.reduced, [event])
 
     // Started event
     const requestId = RequestId.make(crypto.randomUUID())
