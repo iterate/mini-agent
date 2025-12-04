@@ -1,0 +1,31 @@
+events:
+  - _tag: UserMessage
+    content: "hi there "
+  - _tag: AssistantMessage
+    content: Hello! How can I assist you today?
+  - _tag: UserMessage
+    content: tell me a long story
+  - _tag: LLMRequestInterrupted
+    requestId: 95064845-f826-457a-9ad7-b08107ce3eb0
+    reason: user_cancel
+    partialResponse: >-
+      Once upon a time, in a quaint village nestled between two towering
+      mountains, there lived a young girl named Elara. She was known for her
+      curious spirit and a heart full of dreams. The villagers often spoke of
+      the Whispering Woods, a mysterious forest that bordered their village. It
+      was said that the woods held ancient secrets and magical creatures, but
+      many warned that it was easy to get lost among the trees.
+
+
+      Elara was captivated by the stories she heard. Every evening, she would
+      sit by the village fire, listening intently to the tales spun by the
+      elders. They spoke of the shimmering fairies that danced on moonlit nights
+      and the wise old owl that could grant one wish to those pure of heart.
+      Despite the warnings, Elara felt a pull towards the woods
+  - _tag: UserMessage
+    content: asdasdasdad
+  - _tag: LLMRequestInterrupted
+    requestId: 4dd69638-17be-4608-bd95-b3e5bbeed616
+    reason: user_cancel
+    partialResponse: It seems like something might be off. How can I assist you
+      better? Feel free to share your thoughts!

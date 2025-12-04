@@ -37,7 +37,6 @@ declare module "@opentui/core" {
 }
 
 declare module "@opentui/react" {
-  import type { ReactNode } from "react"
   import type { KeyEvent } from "@opentui/core"
 
   export function useKeyboard(handler: (key: KeyEvent) => void, options?: { release?: boolean }): void

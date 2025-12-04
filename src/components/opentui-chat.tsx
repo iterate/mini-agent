@@ -117,6 +117,8 @@ function ChatApp({
         width="100%"
         borderStyle="single"
         borderColor={colors.separator}
+        stickyScroll={true}
+        stickyStart="bottom"
       >
         <box flexDirection="column" width="100%" padding={1}>
           {/* History header */}
@@ -266,7 +268,7 @@ export async function runOpenTUIChat(
       render()
     },
 
-    endStreaming(finalContent?: string, interrupted?: boolean) {
+    endStreaming(finalContent?: string, interrupted = false) {
       const messages = finalContent
         ? [...state.messages, { role: "assistant" as const, content: finalContent, interrupted }]
         : state.messages

@@ -1,0 +1,33 @@
+events:
+  - _tag: UserMessage
+    content: hi there
+  - _tag: AssistantMessage
+    content: Hello! How can I assist you today?
+  - _tag: UserMessage
+    content: tell me a long story
+  - _tag: LLMRequestInterrupted
+    requestId: 5a4a86db-197a-4221-8bd9-bbc69a2aa29e
+    reason: user_cancel
+    partialResponse: >-
+      Once upon a time in a small village nestled at the foot of a great
+      mountain, there lived a young girl named Elara. Elara was known throughout
+      the village for her insatiable curiosity and adventurous spirit. Every day
+      after her chores, she would explore the nearby woods, dreaming of the
+      wonders that lay beyond the village.
+
+
+      One crisp autumn morning, Elara noticed a faint glimmer coming from the
+      mountain peak. Intrigued, she decided to embark on a quest to discover
+      what it was. She packed a small satchel with bread, cheese, and a flask of
+      water, and set off at dawn, her heart racing with excitement.
+
+
+      As Elara climbed the winding path, the air grew cooler and the trees
+      changed from vibrant greens to fiery reds and yellows. She marveled at the
+      beauty around her, but she was focused on her goal. Hours passed and the
+      sun was high in the sky when she finally reached a clearing near the
+      summit. There, she found a shimmering lake with water as clear as crystal.
+
+
+      As she approached the water, she noticed the glimmer was coming from the
+      center of

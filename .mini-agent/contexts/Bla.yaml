@@ -8,3 +8,73 @@ events:
     content: hi there
   - _tag: AssistantMessage
     content: Hello! How can I assist you today?
+  - _tag: UserMessage
+    content: hi there
+  - _tag: AssistantMessage
+    content: Hi again! What’s on your mind?
+  - _tag: UserMessage
+    content: tell me a long story
+  - _tag: LLMRequestInterrupted
+    requestId: ad5a71f5-ddf0-4cae-abd9-fd6552fd9aba
+    reason: user_cancel
+    partialResponse: >-
+      Sure! Here’s a story for you:
+
+
+      ### The Lantern of Loria
+
+
+      Once upon a time, in the quaint village of Loria, nestled between lush
+      green hills and sparkling rivers, there lived a young girl named Elara.
+      Loria was famous for its enchanting moonflowers that bloomed at night and
+      bathed the village in a silvery glow.
+
+
+      Elara was known for her curiosity and adventurous spirit. She was
+      fascinated by the stories her grandmother told her about the Ancient
+      Lantern, a magical artifact said to illuminate the path to one’s true
+      destiny. It was hidden deep within the Whispering Woods, a mysterious
+      forest that nobody dared to enter, filled with shadows and enchanted
+      creatures.
+
+
+      One evening, under the light of a full moon, Elara decided she would find
+      the lantern. She packed a small bag with some bread, cheese, a flask of
+      water, and an old map her grandmother had drawn. With a determined heart,
+      she set off towards the Whispering Woods.
+
+
+      As she ventured deeper into the forest, the towering trees seemed to
+      whisper secrets to each other. The air was filled with the sweet scent of
+      moonflowers, mingling with the earthy aroma of the forest. Just as she
+      felt a tingle of fear creep in, Elara spotted a flickering light between
+      the trees. Her heart raced; could it be the lantern?
+
+
+      Following the light, she found a clearing where a beautiful willow tree
+      stood, its branches swaying gently. Beneath the tree was a small pond,
+      shimmering with silver light. Elara approached cautiously and gasped as
+      she saw that the light was coming from a tiny, glowing lantern that danced
+      above the water.
+
+
+      As she reached out to grab it, a gentle voice echoed around her, “Only the
+  - _tag: UserMessage
+    content: nice one
+  - _tag: AssistantMessage
+    content: I'm glad you liked it! Would you like to hear more, or do you have
+      another topic in mind?
+  - _tag: UserMessage
+    content: you rock
+  - _tag: AssistantMessage
+    content: Thank you! You rock too! If there's anything else you’d like to know or
+      talk about, just let me know!
+  - _tag: UserMessage
+    content: haha
+  - _tag: AssistantMessage
+    content: Haha! I’m glad to bring a smile! What’s next on your mind?
+  - _tag: UserMessage
+    content: what?
+  - _tag: AssistantMessage
+    content: Just checking in! If you have any questions, want to hear more stories,
+      or chat about anything else, feel free to share!

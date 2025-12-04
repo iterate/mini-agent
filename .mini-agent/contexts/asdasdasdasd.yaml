@@ -1,0 +1,14 @@
+events:
+  - _tag: UserMessage
+    content: hi there
+  - _tag: AssistantMessage
+    content: Hello! How can I assist you today?
+  - _tag: UserMessage
+    content: what?
+  - _tag: AssistantMessage
+    content: I’m here to help! What would you like to know or discuss?
+  - _tag: UserMessage
+    content: haha no streaming
+  - _tag: AssistantMessage
+    content: Got it! If you have any questions or need assistance with something
+      specific, just let me know.

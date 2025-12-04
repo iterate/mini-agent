@@ -1,0 +1,34 @@
+events:
+  - _tag: UserMessage
+    content: tell me a long story
+  - _tag: LLMRequestInterrupted
+    requestId: ccba7fc6-154a-4234-95e2-f44887fd5b33
+    reason: user_cancel
+    partialResponse: >-
+      **The Tale of Eldergrove and the Whispering Woods**
+
+
+      Once upon a time in a quiet corner of the realm, nestled between rolling
+      hills and sparkling streams, lay a tranquil village named Eldergrove. The
+      villagers lived harmoniously, tending to their crops, weaving beautiful
+      fabrics, and crafting intricate wooden carvings.
+  - _tag: UserMessage
+    content: now a joke
+  - _tag: LLMRequestInterrupted
+    requestId: a589993a-fbbd-431c-894d-2e7a6be58768
+    reason: user_cancel
+    partialResponse: |-
+      Why don’t scientists trust atoms?
+
+      Because they make up everything!
+  - _tag: UserMessage
+    content: haha
+  - _tag: AssistantMessage
+    content: Glad you liked it! Want to hear another one?
+  - _tag: UserMessage
+    content: what
+  - _tag: AssistantMessage
+    content: |-
+      What did one ocean say to the other ocean?  
+
+      Nothing, they just waved! 🌊😊

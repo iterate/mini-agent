@@ -1,0 +1,96 @@
+events:
+  - _tag: UserMessage
+    content: tell me a long story
+  - _tag: UserMessage
+    content: tell me a long story
+  - _tag: LLMRequestInterrupted
+    requestId: ea6940d9-943c-42d5-885c-1a67d95f18a6
+    reason: user_cancel
+    partialResponse: >-
+      Once upon a time in a vibrant kingdom named Eldoria, where the skies were
+      eternally painted in hues of pastel and the air was filled with the scent
+      of blooming flowers, there lived a young girl named Liora. Liora was known
+      throughout her village for her extraordinary ability to converse with
+      animals. From the tiniest sparrow to the majestic deer, Liora understood
+      their languages, and they understood hers. 
+
+
+      Every day after her chores, Liora would wander into the Enchanted Forest
+      that bordered her village. The forest was filled with magical creatures
+      and ancient trees that whispered tales of old. One afternoon, while
+      exploring a new trail she had never ventured before, she stumbled upon a
+      clearing drenched in sunlight, where a shimmering pond lay nestled among
+      wildflowers. As she approached, Liora noticed a peculiar creature peering
+      out from behind a rock—a small, furry creature with vibrant blue fur and
+      large, expressive eyes. 
+
+
+      “Hello!” Liora greeted, squatting down to get a better look. 
+
+
+      The creature blinked and replied, “Hello, kind girl. My name is Pippin,
+      and I’m in a bit of trouble.”
+
+
+      Liora’s curiosity peaked. “What kind of trouble?”
+
+
+      Pippin explained that he belonged to a magical race known as the Lumifolk,
+      who were guardian spirits of the forest. Recently, an ancient artifact
+      known as the Crystal of Harmony had gone missing, which held the balance
+      of magic within the forest. Without it, the once-vibrant land was slowly
+      losing its magic, causing plants to wilt and animals to fall ill.
+
+
+      “Will you help me find it?” Pippin asked, his eyes wide with hope.
+
+
+      Determined to save the forest, Liora agreed. Pippin shared that the last
+      known location of the Crystal was a hidden cave deep within the heart of
+      the forest, guarded by the mystical Serpent of Time. This serpent was said
+      to be wise but temperamental, and those who sought the Crystal had to
+      prove their intentions were pure.
+
+
+      The next morning, Liora and Pippin set off on their quest. They traveled
+      through the winding paths of the Enchanted Forest, where vibrant flowers
+      glowed with magical light, and streams sang soft melodies. Along the way,
+      they encountered various animals who offered help. A wise old owl shared
+      riddles that tested their knowledge, while friendly rabbits provided
+      nourishment for their journey.
+
+
+      After days of travel, Liora and Pippin finally reached the cave. Dark and
+      mysterious, it loomed before them like a mouth ready to swallow them
+      whole. They took a deep breath and entered, where they were greeted by the
+      warm flicker of luminescent crystals clinging to the walls.
+
+
+      At the center of the cave, they found the Serpent of Time, coiled around a
+      pedestal that held the Crystal of Harmony. Its scales shimmered like
+      silver, and its eyes glowed like the stars. 
+
+
+      “Who dares approach?” the serpent hissed, its voice echoing off the walls.
+
+
+      “It is I, Pippin, and my friend
+  - _tag: UserMessage
+    content: asdasdasd
+  - _tag: LLMRequestInterrupted
+    requestId: 2c839f35-2df5-4663-9350-29fc97a63510
+    reason: user_cancel
+    partialResponse: It seems like you entered a string of letters. If you'd like, I
+      can continue the story,
+  - _tag: UserMessage
+    content: hello
+  - _tag: AssistantMessage
+    content: Hello! How can I assist you today? If you’d like, I can continue the
+      story or help with something else!
+  - _tag: UserMessage
+    content: who are you?
+  - _tag: AssistantMessage
+    content: I'm an AI created to assist you with information, storytelling, and a
+      variety of other tasks. Whether you have questions, need help with a
+      story, or want to chat about something specific, I'm here for you! What
+      would you like to do?

@@ -1,0 +1,51 @@
+events:
+  - _tag: UserMessage
+    content: hello
+  - _tag: AssistantMessage
+    content: Hello! How can I assist you today?
+  - _tag: UserMessage
+    content: You can eat my shorts
+  - _tag: AssistantMessage
+    content: That’s a classic! Are you feeling playful today?
+  - _tag: UserMessage
+    content: no
+  - _tag: AssistantMessage
+    content: Got it! If there's something on your mind or if you need assistance
+      with something specific, just let me know.
+  - _tag: UserMessage
+    content: what is this?
+  - _tag: AssistantMessage
+    content: Could you clarify what you're referring to? That way, I can provide a
+      more specific answer!
+  - _tag: UserMessage
+    content: not much
+  - _tag: AssistantMessage
+    content: Gotcha! If you want to chat about anything in particular or if you have
+      questions, feel free to share. I'm here to help!
+  - _tag: UserMessage
+    content: hahahahahahahahasdasdadadaadkoqwe
+  - _tag: LLMRequestInterrupted
+    requestId: 4d5e7009-3fc5-4fd8-9834-a857ac58a38c
+    reason: user_cancel
+    partialResponse: Sounds like you’re having a good time! What’s got you laughing?
+  - _tag: UserMessage
+    content: what?
+  - _tag: AssistantMessage
+    content: It seemed like you were having a bit of fun! If there's something
+      specific you want to talk about or if you're just in a silly mood, let me
+      know!
+  - _tag: UserMessage
+    content: asdasd\
+  - _tag: LLMRequestInterrupted
+    requestId: 23a1504a-534c-4ab7-bcee-a690a6ffa377
+    reason: user_cancel
+    partialResponse: Looks like you’re having a bit of keyboard fun! If
+  - _tag: UserMessage
+    content: asdas\
+  - _tag: LLMRequestInterrupted
+    requestId: c24c733b-cad2-4c4a-bbcb-a90cdc004f65
+    reason: user_cancel
+    partialResponse: "It seems like you're typing random letters. Is there something
+      specific on your mind, or are you just having some fun? "
+  - _tag: UserMessage
+    content: ad
