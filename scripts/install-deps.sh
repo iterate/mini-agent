@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 # Install dependencies for the project
 
 # Install Doppler only in Claude Cloud environment
@@ -17,5 +18,3 @@ fi
 # Install project dependencies
 echo "Installing project dependencies..."
 bun install
-
-exit 0
