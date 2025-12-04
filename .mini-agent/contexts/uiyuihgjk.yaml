@@ -1,7 +1,0 @@
-events:
-  - _tag: UserMessage
-    content: hi
-  - _tag: UserMessage
-    content: ha
-  - _tag: AssistantMessage
-    content: Hello! How's it going?

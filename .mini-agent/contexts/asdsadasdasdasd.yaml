@@ -1,5 +1,0 @@
-events:
-  - _tag: UserMessage
-    content: hello
-  - _tag: AssistantMessage
-    content: Hello! How can I assist you today?
