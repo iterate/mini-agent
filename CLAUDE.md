@@ -340,6 +340,25 @@ static readonly testLayer = Layer.sync(MyService, () => {
 })
 ```
 
+## Layer Memoization
+
+Layers are memoized by reference. Functions returning layers defeat memoization—each call creates a new object, causing duplicate construction, resource leaks, and inconsistent state.
+
+```typescript
+// ❌ Factory function - new reference each call
+const makeDatabase = () => Layer.effect(Database, ...)
+makeDatabase() === makeDatabase()  // false
+
+// ✅ Module-level constant - single reference
+export const DatabaseLive = Layer.effect(Database, ...)
+```
+
+For parameterized layers, call factory once and export the result:
+```typescript
+const createDbLayer = (url: string) => Layer.scoped(Database, ...)
+export const ProductionDb = createDbLayer(process.env.DB_URL!)
+```
+
 ## Common Patterns
 
 **Generator vs Pipe**: Use `Effect.gen` for business logic with control flow; use `pipe()` for linear transformations.
