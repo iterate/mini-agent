@@ -160,7 +160,7 @@ export class CodemodeRepository extends Context.Tag("@app/CodemodeRepository")<
           const dir = pathService.join(baseDir, responseId)
 
           // Prepend import statement
-          const fullCode = `import type { Tools } from "./types.ts"\n\n${code}`
+          const fullCode = `import type { Tools, CodemodeResult } from "./types.ts"\n\n${code}`
 
           // For attempt > 1, save previous attempts
           const filename = attempt > 1 ? `index.attempt-${attempt}.ts` : "index.ts"
