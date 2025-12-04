@@ -1,5 +1,68 @@
 # Architecture Overview
 
+## Core Concepts
+
+AI agents of arbitrary complexity can be represented as a **pure function** that takes a context and transforms it—via one or more LLM requests—into a new context.
+
+```
+                    ┌─────────────────────────────────────┐
+                    │           Agent Function            │
+   Context In ─────▶│  (events) → LLM → (more events)    │─────▶ Context Out
+                    └─────────────────────────────────────┘
+```
+
+### Context = Named Event Log
+
+A **context** is simply a named, append-only log of events. The name is just a string identifier.
+
+```
+Context "chat-123"
+┌──────────────────────────────────────────────────────────────┐
+│  Event Log (immutable, append-only)                          │
+│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐        │
+│  │ System   │ │ User     │ │ Assistant│ │ User     │ ...    │
+│  │ Prompt   │ │ Message  │ │ Message  │ │ Message  │        │
+│  └──────────┘ └──────────┘ └──────────┘ └──────────┘        │
+│       ↓            ↓            ↓            ↓               │
+│  ─────────────────────────────────────────────────────────── │
+│                         Reducer                              │
+│  ─────────────────────────────────────────────────────────── │
+│       ↓                                                      │
+│  ┌───────────────────────────────────────────────────────┐   │
+│  │              ReducedContext                           │   │
+│  │  • messages: [{role, content}, ...]                   │   │
+│  │  • config: {provider, retry, timeout, ...}            │   │
+│  └───────────────────────────────────────────────────────┘   │
+└──────────────────────────────────────────────────────────────┘
+```
+
+### Event Sourcing
+
+We represent context as **event-sourced state**:
+- The event log is the source of truth (immutable, append-only)
+- A **reducer** folds events into a working data structure (`ReducedContext`)
+- `ReducedContext` controls the LLM request (messages, provider, retry config)
+
+### External Interface
+
+A context has exactly one interface: **events in, events out**.
+
+```
+                 ┌─────────────────────┐
+  InputEvents ──▶│      Context        │──▶ OutputEvents
+                 │  (name → event[])   │
+                 └─────────────────────┘
+
+  Input examples:              Output examples:
+  • UserMessageEvent           • TextDeltaEvent (ephemeral)
+  • SetProviderConfigEvent     • AssistantMessageEvent
+  • FileAttachmentEvent        • LLMRequestCompletedEvent
+```
+
+What might be called an "agent" in other systems is simply a context here—a named collection of events that gets reduced and fed to an LLM.
+
+---
+
 ## The Onion Model
 
 The architecture follows an "onion" or "layered" pattern where each layer wraps the one inside it, adding specific responsibilities. Dependencies flow inward—outer layers depend on inner layers, never the reverse.
@@ -49,15 +112,27 @@ The architecture follows an "onion" or "layered" pattern where each layer wraps 
 
 ### Layer 2: Reducer
 
-**Responsibility**: Transform a sequence of events into a `ReducedContext`.
+**Responsibility**: Fold events into a `ReducedContext` using a pure reducer function.
 
-**Input**: `readonly PersistedEvent[]`
-**Output**: `ReducedContext` (messages + LLM config)
+This is a true functional reducer in the FP sense:
+
+```typescript
+// Pure reducer signature
+type EventReducer = (accumulator: ReducedContext, event: PersistedEvent) => ReducedContext
+
+// Usage: fold over all events
+const reduce = (events: readonly PersistedEvent[]): ReducedContext =>
+  events.reduce(eventReducer, initialReducedContext)
+```
+
+**Input**: `(accumulator: ReducedContext, event: PersistedEvent)`
+**Output**: `ReducedContext` (new accumulator)
 
 **Key Capabilities**:
-- Accumulate messages from content events
-- Extract configuration from config events
-- Validate the resulting state
+- Apply each event to the accumulator state
+- Build up messages from content events
+- Update configuration from config events
+- Validate the final reduced state
 
 **Does NOT know about**:
 - Where events are stored
