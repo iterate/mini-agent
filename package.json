@@ -5,9 +5,9 @@
   "private": true,
   "scripts": {
     "prepare": "effect-language-service patch",
-    "mini-agent": "doppler run -- bun src/main.ts",
-    "start": "bun src/main.ts",
-    "dev": "bun --watch src/main.ts",
+    "mini-agent": "doppler run -- bun src/cli/main.ts",
+    "start": "bun src/cli/main.ts",
+    "dev": "bun --watch src/cli/main.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\"",
     "lint:fix": "eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix",

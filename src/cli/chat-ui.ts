@@ -12,7 +12,6 @@ import * as fs from "node:fs"
 import {
   AssistantMessageEvent,
   LLMRequestInterruptedEvent,
-  type PersistedEvent,
   TextDeltaEvent,
   UserMessageEvent
 } from "../context.model.ts"
@@ -20,9 +19,8 @@ import { ContextService } from "../context.service.ts"
 import type { ContextLoadError, ContextSaveError } from "../errors.ts"
 import type { CurrentLlmConfig } from "../llm-config.ts"
 import { streamLLMResponse } from "../llm.ts"
-import { type ChatController, type Message, runOpenTUIChat } from "./components/opentui-chat.tsx"
+import { type ChatController, runOpenTUIChat } from "./components/opentui-chat.tsx"
 
-// Debug logging to file (bypasses OpenTUI's terminal management)
 const DEBUG_LOG = "/tmp/chat-ui-debug.log"
 const debug = (msg: string) => {
   fs.appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] ${msg}\n`)
@@ -32,13 +30,11 @@ const debug = (msg: string) => {
 // Types
 // =============================================================================
 
-/** Signal from UI callbacks to Effect-land */
 type ChatSignal =
   | { readonly _tag: "Input"; readonly text: string }
   | { readonly _tag: "Escape" }
   | { readonly _tag: "Exit" }
 
-/** Sentinel value to signal exit */
 const EXIT_REQUESTED = Symbol("EXIT_REQUESTED")
 
 // =============================================================================
@@ -64,14 +60,11 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
 
       const runChat = Effect.fn("ChatUI.runChat")(function*(contextName: string) {
         const existingEvents = yield* contextService.load(contextName)
-        const initialMessages = eventsToMessages(existingEvents)
 
-        // Mailbox for callback-to-Effect communication
-        // unsafeOffer is designed for JS callbacks - properly wakes waiting fibers
         const mailbox = yield* Mailbox.make<ChatSignal>()
 
         const chat = yield* Effect.promise(() =>
-          runOpenTUIChat(contextName, initialMessages, {
+          runOpenTUIChat(contextName, existingEvents, {
             onSubmit: (text) => {
               debug(`onSubmit callback, text: ${text}`)
               mailbox.unsafeOffer({ _tag: "Input", text })
@@ -82,7 +75,6 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
             },
             onExit: () => {
               debug("onExit callback - offering Exit to mailbox")
-              // Signal exit and end the mailbox
               const offerResult = mailbox.unsafeOffer({ _tag: "Exit" })
               debug(`mailbox.unsafeOffer returned: ${offerResult}`)
               const doneResult = mailbox.unsafeDone(Exit.void)
@@ -155,7 +147,6 @@ const runChatTurn = (
   LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
 > =>
   Effect.fn("ChatUI.runChatTurn")(function*() {
-    // Wait for input or escape/exit (blocks on mailbox.take)
     debug("runChatTurn waiting on mailbox.take")
     const signal = yield* mailbox.take.pipe(
       Effect.tap((s) => Effect.sync(() => debug(`mailbox.take received: ${JSON.stringify(s)}`))),
@@ -171,13 +162,12 @@ const runChatTurn = (
     }
 
     const userMessage = signal.text
+    const userEvent = new UserMessageEvent({ content: userMessage })
 
-    // Persist and display user message
-    yield* contextService.persistEvent(contextName, new UserMessageEvent({ content: userMessage }))
-    chat.addMessage({ role: "user", content: userMessage })
+    yield* contextService.persistEvent(contextName, userEvent)
+    chat.addEvent(userEvent)
     chat.startStreaming()
 
-    // Stream LLM response
     const events = yield* contextService.load(contextName)
     let accumulatedText = ""
 
@@ -192,42 +182,40 @@ const runChatTurn = (
           })
         ),
         Stream.filter(is(AssistantMessageEvent)),
-        Stream.tap((event) => contextService.persistEvent(contextName, event)),
+        Stream.tap((event) =>
+          Effect.gen(function*() {
+            yield* contextService.persistEvent(contextName, event)
+            chat.addEvent(event)
+          })
+        ),
         Stream.runDrain
       )
     )
 
-    // Wait for completion or interruption
     const wasInterrupted = yield* awaitStreamCompletion(streamFiber, mailbox)
 
     if (wasInterrupted && accumulatedText.length > 0) {
-      yield* contextService.persistEvent(
-        contextName,
-        new LLMRequestInterruptedEvent({
-          requestId: crypto.randomUUID(),
-          reason: "user_cancel",
-          partialResponse: accumulatedText
-        })
-      )
-      chat.endStreaming(accumulatedText, true)
-    } else if (wasInterrupted) {
-      chat.endStreaming()
-    } else {
-      chat.endStreaming(accumulatedText)
+      const interruptedEvent = new LLMRequestInterruptedEvent({
+        requestId: crypto.randomUUID(),
+        reason: "user_cancel",
+        partialResponse: accumulatedText
+      })
+      yield* contextService.persistEvent(contextName, interruptedEvent)
+      chat.addEvent(interruptedEvent)
     }
+
+    chat.endStreaming()
   })()
 
 // =============================================================================
 // Helpers
 // =============================================================================
 
-/** Wait for stream fiber to complete or be interrupted by escape. Returns true if interrupted. */
 const awaitStreamCompletion = (
   fiber: Fiber.RuntimeFiber<void, AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError>,
   mailbox: Mailbox.Mailbox<ChatSignal>
 ): Effect.Effect<boolean, AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError> =>
   Effect.fn("ChatUI.awaitStreamCompletion")(function*() {
-    // Race: fiber completion vs escape signal
     const waitForFiber = Fiber.join(fiber).pipe(Effect.as(false))
     const waitForEscape = Effect.gen(function*() {
       while (true) {
@@ -238,26 +226,8 @@ const awaitStreamCompletion = (
           yield* Fiber.interrupt(fiber)
           return true
         }
-        // Input during streaming - ignored since UI handles interrupt-then-send
       }
     })
 
     return yield* Effect.race(waitForFiber, waitForEscape)
   })()
-
-/** Convert persisted events to UI messages */
-const eventsToMessages = (events: ReadonlyArray<PersistedEvent>): Array<Message> =>
-  events.flatMap((e): Array<Message> => {
-    switch (e._tag) {
-      case "UserMessage":
-        return [{ role: "user", content: e.content }]
-      case "AssistantMessage":
-        return [{ role: "assistant", content: e.content }]
-      case "LLMRequestInterrupted":
-        return [{ role: "assistant", content: e.partialResponse, interrupted: true }]
-      case "SystemPrompt":
-      case "FileAttachment":
-      case "SetLlmConfig":
-        return []
-    }
-  })

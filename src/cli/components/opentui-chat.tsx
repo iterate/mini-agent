@@ -2,19 +2,26 @@
  * OpenTUI Chat Component
  *
  * A chat interface with:
- * - Scrollable conversation history at top
+ * - Scrollable event log at top with pluggable renderers by _tag
  * - Input field at bottom
  * - Enter submits, Escape cancels streaming or exits
  *
- * Uses React state internally for proper reconciliation and performance.
- * External control is done via refs, not repeated root.render() calls.
+ * Streaming behavior: during LLM request, streaming text accumulates.
+ * Once complete, the streaming display is replaced by the final AssistantMessageEvent.
  */
 import { createCliRenderer, TextAttributes } from "@opentui/core"
+import { useKeyboard } from "@opentui/react"
 import { createRoot } from "@opentui/react/renderer"
 import * as fs from "node:fs"
-import { useCallback, useEffect, useRef, useState } from "react"
+import { memo, useCallback, useEffect, useRef, useState } from "react"
+import type {
+  AssistantMessageEvent,
+  FileAttachmentEvent,
+  LLMRequestInterruptedEvent,
+  PersistedEvent,
+  UserMessageEvent
+} from "../../context.model.ts"
 
-// Debug logging to file (bypasses OpenTUI's terminal management)
 const DEBUG_LOG = "/tmp/chat-ui-debug.log"
 const debug = (msg: string) => {
   fs.appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] [opentui] ${msg}\n`)
@@ -24,12 +31,6 @@ const debug = (msg: string) => {
 // Types
 // =============================================================================
 
-export interface Message {
-  role: "user" | "assistant" | "system"
-  content: string
-  interrupted?: boolean
-}
-
 export interface ChatCallbacks {
   onSubmit: (text: string) => void
   onEscape: () => void
@@ -37,98 +38,175 @@ export interface ChatCallbacks {
 }
 
 export interface ChatController {
-  addMessage: (msg: Message) => void
+  addEvent: (event: PersistedEvent) => void
   startStreaming: () => void
   appendStreamingText: (delta: string) => void
-  endStreaming: (finalContent?: string, interrupted?: boolean) => void
+  endStreaming: () => void
   cleanup: () => void
 }
 
 // =============================================================================
-// Colors - using hex strings for fg/bg props
+// Colors
 // =============================================================================
 
 const colors = {
-  // Bright colors for current session
   cyan: "#00FFFF",
   green: "#00FF00",
   white: "#FFFFFF",
   red: "#FF5555",
   yellow: "#FFFF00",
-
-  // Muted colors for history
   dimCyan: "#5F8787",
   dimGreen: "#5F875F",
   dim: "#666666",
   dimRed: "#8B4040",
-
-  // UI elements
   separator: "#444444",
   placeholder: "#555555"
 }
 
 // =============================================================================
-// Message Renderer Component
+// Event Renderer Registry
 // =============================================================================
 
-function MessageView({ msg, isHistory }: { msg: Message; isHistory: boolean }) {
-  const userColor = isHistory ? colors.dimCyan : colors.cyan
-  const assistantColor = isHistory ? colors.dimGreen : colors.green
-  const textColor = isHistory ? colors.dim : colors.white
-  const labelColor = msg.role === "user" ? userColor : assistantColor
+interface EventRendererProps<E extends PersistedEvent> {
+  event: E
+  isHistory: boolean
+}
 
-  if (msg.interrupted) {
-    // Interrupted messages: extra margin, red styling
+const UserMessageRenderer = memo<EventRendererProps<UserMessageEvent>>(({ event, isHistory }) => {
+  const labelColor = isHistory ? colors.dimCyan : colors.cyan
+  const textColor = isHistory ? colors.dim : colors.white
+
+  return (
+    <box flexDirection="column" marginBottom={1}>
+      <text fg={labelColor} attributes={isHistory ? TextAttributes.NONE : TextAttributes.BOLD}>
+        You:
+      </text>
+      <text fg={textColor}>{event.content}</text>
+    </box>
+  )
+})
+
+const AssistantMessageRenderer = memo<EventRendererProps<AssistantMessageEvent>>(({ event, isHistory }) => {
+  const labelColor = isHistory ? colors.dimGreen : colors.green
+  const textColor = isHistory ? colors.dim : colors.white
+
+  return (
+    <box flexDirection="column" marginBottom={1}>
+      <text fg={labelColor} attributes={isHistory ? TextAttributes.NONE : TextAttributes.BOLD}>
+        Assistant:
+      </text>
+      <text fg={textColor}>{event.content}</text>
+    </box>
+  )
+})
+
+const InterruptedMessageRenderer = memo<EventRendererProps<LLMRequestInterruptedEvent>>(({ event, isHistory }) => {
+  const labelColor = isHistory ? colors.dimGreen : colors.green
+  const textColor = isHistory ? colors.dim : colors.white
+  const interruptColor = isHistory ? colors.dimRed : colors.red
+
+  return (
+    <box flexDirection="column" marginTop={1} marginBottom={1}>
+      <text fg={labelColor} attributes={isHistory ? TextAttributes.NONE : TextAttributes.BOLD}>
+        Assistant:
+      </text>
+      <text fg={textColor}>{event.partialResponse}</text>
+      <text fg={interruptColor}>— interrupted —</text>
+    </box>
+  )
+})
+
+const FileAttachmentRenderer = memo<EventRendererProps<FileAttachmentEvent>>(({ event, isHistory }) => {
+  const textColor = isHistory ? colors.dim : colors.yellow
+  const name = event.fileName ?? (event.source.type === "file" ? event.source.path : event.source.url)
+
+  return (
+    <box marginBottom={1}>
+      <text fg={textColor}>📎 {name}</text>
+    </box>
+  )
+})
+
+const EventView = memo<{ event: PersistedEvent; isHistory: boolean }>(({ event, isHistory }) => {
+  switch (event._tag) {
+    case "UserMessage":
+      return <UserMessageRenderer event={event} isHistory={isHistory} />
+    case "AssistantMessage":
+      return <AssistantMessageRenderer event={event} isHistory={isHistory} />
+    case "LLMRequestInterrupted":
+      return <InterruptedMessageRenderer event={event} isHistory={isHistory} />
+    case "FileAttachment":
+      return <FileAttachmentRenderer event={event} isHistory={isHistory} />
+    case "SystemPrompt":
+    case "SetLlmConfig":
+      return null
+  }
+})
+
+// =============================================================================
+// Streaming Display
+// =============================================================================
+
+interface StreamingDisplayProps {
+  text: string
+}
+
+const StreamingDisplay = memo<StreamingDisplayProps>(({ text }) => {
+  if (!text) {
     return (
-      <box flexDirection="column" marginTop={1} marginBottom={1}>
-        <text fg={isHistory ? colors.dimGreen : colors.green} attributes={isHistory ? TextAttributes.NONE : TextAttributes.BOLD}>
-          Assistant:
-        </text>
-        <text fg={textColor}>{msg.content}</text>
-        <text fg={isHistory ? colors.dimRed : colors.red}>— interrupted —</text>
+      <box flexDirection="column" marginBottom={1}>
+        <text fg={colors.green} attributes={TextAttributes.BOLD}>Assistant:</text>
+        <text fg={colors.dim}>Thinking...</text>
       </box>
     )
   }
 
   return (
     <box flexDirection="column" marginBottom={1}>
-      <text fg={labelColor} attributes={isHistory ? TextAttributes.NONE : TextAttributes.BOLD}>
-        {msg.role === "user" ? "You:" : "Assistant:"}
-      </text>
-      <text fg={textColor}>{msg.content}</text>
+      <text fg={colors.green} attributes={TextAttributes.BOLD}>Assistant:</text>
+      <text fg={colors.white}>{text}<span fg={colors.cyan}>▌</span></text>
     </box>
   )
-}
+})
 
 // =============================================================================
-// Chat App Component (uses internal React state)
+// Chat App Component
 // =============================================================================
 
-interface ChatAppInternalProps {
+interface ChatAppProps {
   contextName: string
-  initialMessages: Message[]
+  initialEvents: PersistedEvent[]
   callbacks: ChatCallbacks
   controllerRef: React.MutableRefObject<ChatController | null>
 }
 
-function ChatApp({ contextName, initialMessages, callbacks, controllerRef }: ChatAppInternalProps) {
-  const [messages, setMessages] = useState<Message[]>(initialMessages)
-  const [initialMessageCount] = useState(initialMessages.length)
+function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatAppProps) {
+  const [events, setEvents] = useState<PersistedEvent[]>(initialEvents)
+  const [initialEventCount] = useState(initialEvents.length)
   const [streamingText, setStreamingText] = useState("")
   const [isStreaming, setIsStreaming] = useState(false)
   const [inputValue, setInputValue] = useState("")
   const isStreamingRef = useRef(isStreaming)
 
-  // Keep ref in sync with state for callbacks
   useEffect(() => {
     isStreamingRef.current = isStreaming
   }, [isStreaming])
 
-  // Expose controller methods via ref (no re-renders needed from outside)
+  useKeyboard((key) => {
+    if (key.name === "escape") {
+      debug("useKeyboard: Escape pressed")
+      if (isStreamingRef.current) {
+        callbacks.onEscape()
+      } else {
+        callbacks.onExit()
+      }
+    }
+  })
+
   useEffect(() => {
     controllerRef.current = {
-      addMessage(msg: Message) {
-        setMessages(prev => [...prev, msg])
+      addEvent(event: PersistedEvent) {
+        setEvents(prev => [...prev, event])
       },
       startStreaming() {
         setIsStreaming(true)
@@ -137,32 +215,20 @@ function ChatApp({ contextName, initialMessages, callbacks, controllerRef }: Cha
       appendStreamingText(delta: string) {
         setStreamingText(prev => prev + delta)
       },
-      endStreaming(finalContent?: string, interrupted = false) {
-        if (finalContent) {
-          setMessages(prev => [...prev, { role: "assistant", content: finalContent, interrupted }])
-        }
+      endStreaming() {
         setIsStreaming(false)
         setStreamingText("")
       },
       cleanup() {
-        // cleanup handled by runner
+        // handled by runner
       }
     }
   }, [controllerRef])
 
-  // Note: useKeyboard doesn't receive events when <input> is focused.
-  // Ctrl+C is handled via renderer.stop() interception in runOpenTUIChat.
-  // Escape during streaming must use Enter (empty) instead.
-
-  // Handle input change
   const handleInput = useCallback((value: string) => {
     setInputValue(value)
   }, [])
 
-  // Handle submit from input
-  // - Text: submit (interrupt first if streaming)
-  // - Empty during streaming: cancel streaming
-  // - Empty when idle: exit
   const handleSubmit = useCallback((value: string) => {
     if (value.trim()) {
       if (isStreamingRef.current) {
@@ -177,12 +243,13 @@ function ChatApp({ contextName, initialMessages, callbacks, controllerRef }: Cha
     }
   }, [callbacks])
 
-  const historyMessages = messages.slice(0, initialMessageCount)
-  const newMessages = messages.slice(initialMessageCount)
+  const historyEvents = events.slice(0, initialEventCount)
+  const newEvents = events.slice(initialEventCount)
+
+  const hasHistory = historyEvents.some(e => e._tag === "UserMessage" || e._tag === "AssistantMessage")
 
   return (
     <box width="100%" height="100%" flexDirection="column">
-      {/* Conversation history */}
       <scrollbox
         flexGrow={1}
         width="100%"
@@ -192,8 +259,7 @@ function ChatApp({ contextName, initialMessages, callbacks, controllerRef }: Cha
         stickyStart="bottom"
       >
         <box flexDirection="column" width="100%" padding={1}>
-          {/* History header */}
-          {historyMessages.length > 0 && (
+          {hasHistory && (
             <box flexDirection="column" marginBottom={1}>
               <text fg={colors.dim}>{"─".repeat(50)}</text>
               <text fg={colors.dim}>Previous conversation:</text>
@@ -201,42 +267,24 @@ function ChatApp({ contextName, initialMessages, callbacks, controllerRef }: Cha
             </box>
           )}
 
-          {/* Historical messages (muted) */}
-          {historyMessages.map((msg, idx) => (
-            <MessageView key={`hist-${idx}`} msg={msg} isHistory={true} />
+          {historyEvents.map((event, idx) => (
+            <EventView key={`hist-${idx}-${event._tag}`} event={event} isHistory={true} />
           ))}
 
-          {/* End of history separator */}
-          {historyMessages.length > 0 && (
+          {hasHistory && (
             <box marginBottom={1}>
               <text fg={colors.dim}>{"─".repeat(50)}</text>
             </box>
           )}
 
-          {/* New messages from this session (bright) */}
-          {newMessages.map((msg, idx) => (
-            <MessageView key={`new-${idx}`} msg={msg} isHistory={false} />
+          {newEvents.map((event, idx) => (
+            <EventView key={`new-${idx}-${event._tag}`} event={event} isHistory={false} />
           ))}
 
-          {/* Streaming indicator when no text yet */}
-          {isStreaming && !streamingText && (
-            <box flexDirection="column" marginBottom={1}>
-              <text fg={colors.green} attributes={TextAttributes.BOLD}>Assistant:</text>
-              <text fg={colors.dim}>Thinking...</text>
-            </box>
-          )}
-
-          {/* Streaming text with cursor */}
-          {isStreaming && streamingText && (
-            <box flexDirection="column" marginBottom={1}>
-              <text fg={colors.green} attributes={TextAttributes.BOLD}>Assistant:</text>
-              <text fg={colors.white}>{streamingText}<span fg={colors.cyan}>▌</span></text>
-            </box>
-          )}
+          {isStreaming && <StreamingDisplay text={streamingText} />}
         </box>
       </scrollbox>
 
-      {/* Input area */}
       <box height={1} width="100%" flexDirection="row">
         <text fg={colors.cyan} attributes={TextAttributes.BOLD}>{">"} </text>
         <input
@@ -249,7 +297,6 @@ function ChatApp({ contextName, initialMessages, callbacks, controllerRef }: Cha
         />
       </box>
 
-      {/* Footer with context label and instructions */}
       <box height={1} width="100%" flexDirection="row">
         <box flexGrow={1} />
         <text>
@@ -269,7 +316,7 @@ function ChatApp({ contextName, initialMessages, callbacks, controllerRef }: Cha
 
 export async function runOpenTUIChat(
   contextName: string,
-  initialMessages: Message[],
+  initialEvents: PersistedEvent[],
   callbacks: ChatCallbacks
 ): Promise<ChatController> {
   debug("runOpenTUIChat starting")
@@ -283,7 +330,6 @@ export async function runOpenTUIChat(
     }
   }
 
-  // Ensure we propagate Ctrl+C to the Effect-side even if OpenTUI swallows it.
   const onSigint = () => {
     debug("SIGINT received - signaling exit")
     signalExit()
@@ -302,7 +348,6 @@ export async function runOpenTUIChat(
   const root = createRoot(renderer)
   const controllerRef: { current: ChatController | null } = { current: null }
 
-  // Poll for OpenTUI exit: when it closes, stdin exits raw mode
   const pollInterval = setInterval(() => {
     if (!process.stdin.isRaw) {
       debug("stdin no longer in raw mode - OpenTUI exited")
@@ -311,11 +356,10 @@ export async function runOpenTUIChat(
     }
   }, 50)
 
-  // Single render - React handles all subsequent updates via state
   root.render(
     <ChatApp
       contextName={contextName}
-      initialMessages={initialMessages}
+      initialEvents={initialEvents}
       callbacks={callbacks}
       controllerRef={controllerRef}
     />
@@ -323,10 +367,9 @@ export async function runOpenTUIChat(
 
   renderer.start()
 
-  // Return proxy that delegates to the ref (once component mounts)
   return {
-    addMessage(msg: Message) {
-      controllerRef.current?.addMessage(msg)
+    addEvent(event: PersistedEvent) {
+      controllerRef.current?.addEvent(event)
     },
     startStreaming() {
       controllerRef.current?.startStreaming()
@@ -334,13 +377,12 @@ export async function runOpenTUIChat(
     appendStreamingText(delta: string) {
       controllerRef.current?.appendStreamingText(delta)
     },
-    endStreaming(finalContent?: string, interrupted = false) {
-      controllerRef.current?.endStreaming(finalContent, interrupted)
+    endStreaming() {
+      controllerRef.current?.endStreaming()
     },
     cleanup() {
       debug("cleanup() called")
       clearInterval(pollInterval)
-      // Remove signal listeners added above
       process.off("SIGINT", onSigint)
       process.off("SIGTERM", onSigterm)
       root.unmount()
