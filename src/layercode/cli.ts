@@ -30,21 +30,15 @@ const welcomeMessageOption = Options.text("welcome-message").pipe(
   Options.optional
 )
 
-const skipSignatureOption = Options.boolean("skip-signature").pipe(
-  Options.withDescription("Skip webhook signature verification (for local dev)"),
-  Options.withDefault(false)
-)
-
 /** LayerCode serve command - starts HTTP server with LayerCode webhook endpoint */
 const layercodeServeCommand = Command.make(
   "serve",
   {
     port: portOption,
     host: hostOption,
-    welcomeMessage: welcomeMessageOption,
-    skipSignature: skipSignatureOption
+    welcomeMessage: welcomeMessageOption
   },
-  ({ host, port, skipSignature, welcomeMessage }) =>
+  ({ host, port, welcomeMessage }) =>
     Effect.gen(function*() {
       const config = yield* AppConfig
       const actualPort = Option.getOrElse(port, () => config.port)
@@ -56,9 +50,8 @@ const layercodeServeCommand = Command.make(
       yield* Console.log("  POST /layercode/webhook")
       yield* Console.log("")
 
-      if (skipSignature) {
-        yield* Console.log("WARNING: Signature verification is DISABLED")
-        yield* Console.log("")
+      if (Option.isNone(config.layercodeWebhookSecret)) {
+        yield* Effect.logWarning("No LAYERCODE_WEBHOOK_SECRET configured - signature verification disabled")
       }
 
       if (Option.isSome(welcomeMessage)) {

@@ -45,6 +45,8 @@ const contextHandler = Effect.gen(function*() {
     return HttpServerResponse.text("Missing contextName", { status: 400 })
   }
 
+  yield* Effect.logDebug("POST /context/:contextName", { contextName })
+
   // Read body as text and parse JSONL
   const body = yield* request.text
   const events = yield* parseJsonlBody(body).pipe(
@@ -74,6 +76,7 @@ const contextHandler = Effect.gen(function*() {
 
 /** Health check endpoint */
 const healthHandler = Effect.gen(function*() {
+  yield* Effect.logDebug("GET /health")
   return yield* HttpServerResponse.json({ status: "ok" })
 })
 

@@ -46,10 +46,8 @@ export class AgentServer extends Context.Tag("@app/AgentServer")<
         contextName: string,
         events: ReadonlyArray<ScriptInputEvent>
       ) => {
-        // Filter to InputEvents (UserMessage only - SystemPrompt not supported as input)
-        const inputEvents = events.filter(Schema.is(UserMessageEvent)) as ReadonlyArray<InputEvent>
-
-        return contextService.addEvents(contextName, inputEvents)
+        // ScriptInputEvent is a subset of InputEvent, so cast is safe
+        return contextService.addEvents(contextName, events as ReadonlyArray<InputEvent>)
       }
 
       return AgentServer.of({ handleRequest })

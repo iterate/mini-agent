@@ -120,10 +120,12 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
     const fs = yield* FileSystem.FileSystem
     const llmConfig = yield* CurrentLlmConfig
 
+    yield* Effect.logDebug("POST /layercode/webhook")
+
     // Read body
     const body = yield* request.text
 
-    // Verify signature (fails silently if no secret configured)
+    // Verify signature if secret configured, otherwise skip
     const signatureHeader = request.headers["layercode-signature"]
     const signatureResult = yield* maybeVerifySignature(
       config.layercodeWebhookSecret,
