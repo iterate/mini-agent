@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "prepare": "effect-language-service patch",
+    "mini-agent": "doppler run -- bun src/main.ts",
     "start": "bun src/main.ts",
     "dev": "bun --watch src/main.ts",
     "typecheck": "tsc --noEmit",
@@ -12,8 +13,8 @@
     "lint:fix": "eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix",
     "check": "bun run typecheck && bun run lint",
     "check:fix": "bun run typecheck && bun run lint:fix",
-    "test": "vitest run",
-    "test:watch": "vitest"
+    "test": "doppler run -- vitest run",
+    "test:watch": "doppler run -- vitest"
   },
   "devDependencies": {
     "@effect/eslint-plugin": "^0.3.2",
@@ -38,6 +39,8 @@
   },
   "dependencies": {
     "@effect/ai": "^0.32.1",
+    "@effect/ai-anthropic": "^0.22.0",
+    "@effect/ai-google": "^0.11.0",
     "@effect/ai-openai": "^0.35.0",
     "@effect/cli": "^0.72.1",
     "@effect/opentelemetry": "^0.59.1",

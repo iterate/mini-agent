@@ -61,7 +61,7 @@ describe("ContextRepository", () => {
 
         expect(events).toHaveLength(1)
         expect(events[0]?._tag).toBe("SystemPrompt")
-        expect((events[0] as SystemPromptEvent).content).toBe("Custom prompt")
+        expect(events[0]?._tag === "SystemPrompt" && events[0].content).toBe("Custom prompt")
       }).pipe(Effect.provide(ContextRepository.testLayer)))
   })
 
@@ -100,8 +100,7 @@ describe("ContextRepository", () => {
 
         const loaded = yield* repo.load("overwrite-test")
         expect(loaded).toHaveLength(2)
-        expect(loaded[0]?._tag).toBe("SystemPrompt")
-        expect((loaded[0] as SystemPromptEvent).content).toBe("Second")
+        expect(loaded[0]?._tag === "SystemPrompt" && loaded[0].content).toBe("Second")
       }).pipe(Effect.provide(ContextRepository.testLayer)))
   })
 

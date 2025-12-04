@@ -5,6 +5,7 @@
  * Escape during streaming cancels; Escape at prompt exits.
  */
 import type { AiError, LanguageModel } from "@effect/ai"
+import { type Error as PlatformError, FileSystem } from "@effect/platform"
 import { Cause, Context, Effect, Exit, Fiber, Layer, Mailbox, Stream } from "effect"
 import * as fs from "node:fs"
 
@@ -23,6 +24,7 @@ import {
 } from "../context.model.ts"
 import { ContextService } from "../context.service.ts"
 import type { ContextLoadError, ContextSaveError } from "../errors.ts"
+import type { CurrentLlmConfig } from "../llm-config.ts"
 import { streamLLMResponse } from "../llm.ts"
 import { type ChatController, type Message, runOpenTUIChat } from "./components/opentui-chat.tsx"
 
@@ -50,8 +52,8 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
       contextName: string
     ) => Effect.Effect<
       void,
-      AiError.AiError | ContextLoadError | ContextSaveError,
-      LanguageModel.LanguageModel
+      AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
+      LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
     >
   }
 >() {
@@ -126,8 +128,8 @@ const runChatLoop = (
   mailbox: Mailbox.Mailbox<ChatSignal>
 ): Effect.Effect<
   void,
-  AiError.AiError | ContextLoadError | ContextSaveError,
-  LanguageModel.LanguageModel
+  AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
+  LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
 > =>
   Effect.fn("ChatUI.runChatLoop")(function*() {
     debug("runChatLoop starting")
@@ -149,8 +151,8 @@ const runChatTurn = (
   mailbox: Mailbox.Mailbox<ChatSignal>
 ): Effect.Effect<
   void | typeof EXIT_REQUESTED,
-  AiError.AiError | ContextLoadError | ContextSaveError,
-  LanguageModel.LanguageModel
+  AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
+  LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
 > =>
   Effect.fn("ChatUI.runChatTurn")(function*() {
     // Wait for input or escape/exit (blocks on mailbox.take)
@@ -221,9 +223,9 @@ const runChatTurn = (
 
 /** Wait for stream fiber to complete or be interrupted by escape. Returns true if interrupted. */
 const awaitStreamCompletion = (
-  fiber: Fiber.RuntimeFiber<void, AiError.AiError | ContextLoadError | ContextSaveError>,
+  fiber: Fiber.RuntimeFiber<void, AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError>,
   mailbox: Mailbox.Mailbox<ChatSignal>
-): Effect.Effect<boolean, AiError.AiError | ContextLoadError | ContextSaveError> =>
+): Effect.Effect<boolean, AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError> =>
   Effect.fn("ChatUI.awaitStreamCompletion")(function*() {
     // Race: fiber completion vs escape signal
     const waitForFiber = Fiber.join(fiber).pipe(Effect.as(false))
@@ -254,6 +256,8 @@ const eventsToMessages = (events: ReadonlyArray<PersistedEvent>): Array<Message>
       case "LLMRequestInterrupted":
         return [{ role: "assistant", content: e.partialResponse, interrupted: true }]
       case "SystemPrompt":
+      case "FileAttachment":
+      case "SetLlmConfig":
         return []
     }
   })

@@ -1,23 +1,13 @@
 /**
  * Configuration Module
  *
- * Provides configuration management with source precedence:
- * CLI arguments → Environment variables → YAML config file → Defaults
- *
- * Uses Effect's ConfigProvider composition to merge multiple sources.
+ * Precedence: CLI arguments → Environment variables → YAML config file → Defaults
  */
 import { FileSystem } from "@effect/platform"
-import { Config, ConfigProvider, Context, Effect, Layer, LogLevel, Option, Redacted } from "effect"
+import { Config, ConfigProvider, Context, Effect, Layer, LogLevel, Option } from "effect"
 import * as yaml from "yaml"
 
-// =============================================================================
-// YAML Config Provider
-// =============================================================================
-
-/**
- * Create a ConfigProvider from a YAML config file.
- * Returns an empty provider if the file doesn't exist.
- */
+/** Create a ConfigProvider from a YAML config file. Returns empty if file doesn't exist. */
 export const fromYamlFile = (path: string) =>
   Effect.gen(function*() {
     const fs = yield* FileSystem.FileSystem
@@ -28,15 +18,7 @@ export const fromYamlFile = (path: string) =>
     return ConfigProvider.fromJson(parsed)
   })
 
-// =============================================================================
-// CLI Args Config Provider
-// =============================================================================
-
-/**
- * Parse CLI arguments into a ConfigProvider.
- * Supports --key value and --key=value formats.
- * Keys are converted to SCREAMING_SNAKE_CASE.
- */
+/** Parse CLI arguments into a ConfigProvider. Supports --key value and --key=value. */
 export const fromCliArgs = (args: ReadonlyArray<string>): ConfigProvider.ConfigProvider => {
   const map = new Map<string, string>()
   for (let i = 0; i < args.length; i++) {
@@ -61,14 +43,7 @@ export const fromCliArgs = (args: ReadonlyArray<string>): ConfigProvider.ConfigP
   return ConfigProvider.fromMap(map)
 }
 
-// =============================================================================
-// Composed Config Provider
-// =============================================================================
-
-/**
- * Create a composed ConfigProvider with precedence:
- * CLI args → Environment variables → YAML config file → Defaults
- */
+/** Create composed ConfigProvider: CLI → env → YAML → defaults */
 export const makeConfigProvider = (configPath: string, args: ReadonlyArray<string>) =>
   Effect.gen(function*() {
     const yamlProvider = yield* fromYamlFile(configPath)
@@ -77,7 +52,7 @@ export const makeConfigProvider = (configPath: string, args: ReadonlyArray<strin
     const defaultsProvider = ConfigProvider.fromMap(
       new Map([
         ["DATA_STORAGE_DIR", ".mini-agent"],
-        ["STDOUT_LOG_LEVEL", "info"],
+        ["STDOUT_LOG_LEVEL", "warning"],
         ["FILE_LOG_LEVEL", "debug"]
       ])
     )
@@ -89,56 +64,43 @@ export const makeConfigProvider = (configPath: string, args: ReadonlyArray<strin
     )
   })
 
-// =============================================================================
-// Log Level Config Helper
-// =============================================================================
-
-/**
- * Parse a log level string into a LogLevel, supporting 'none' to disable logging.
- * Handles case-insensitive input (e.g., "info", "INFO", "Info" all work).
- */
 const logLevelConfig = (name: string) =>
   Config.string(name).pipe(
     Config.map((s): LogLevel.LogLevel => {
       const level = s.toLowerCase()
       if (level === "none" || level === "off") return LogLevel.None
-      // Capitalize first letter for LogLevel.fromLiteral (expects "Info" not "info")
-      const capitalized = level.charAt(0).toUpperCase() + level.slice(1)
-      return LogLevel.fromLiteral(capitalized as LogLevel.Literal)
+      // Map common aliases to Effect's expected literals
+      const literalMap: Record<string, LogLevel.Literal> = {
+        trace: "Trace",
+        debug: "Debug",
+        info: "Info",
+        warn: "Warning", // CLI uses "warn" but Effect uses "Warning"
+        warning: "Warning",
+        error: "Error",
+        fatal: "Fatal"
+      }
+      const literal = literalMap[level]
+      if (!literal) return LogLevel.Info // fallback
+      return LogLevel.fromLiteral(literal)
     })
   )
 
-// =============================================================================
-// MiniAgentConfig Schema
-// =============================================================================
-
-/**
- * Full application configuration schema.
- * All values are resolved at startup from the composed ConfigProvider.
- */
 export const MiniAgentConfig = Config.all({
-  // OpenAI API configuration
-  openaiApiKey: Config.redacted("OPENAI_API_KEY"),
-  openaiModel: Config.string("OPENAI_MODEL").pipe(
-    Config.withDefault("gpt-4o-mini")
-  ),
+  // LLM name from registry. See llm-config.ts
+  llm: Config.string("LLM").pipe(Config.withDefault("gpt-4.1-mini")),
 
-  // Data storage
   dataStorageDir: Config.string("DATA_STORAGE_DIR").pipe(
     Config.withDefault(".mini-agent")
   ),
 
-  // Config file path (stored for reference)
   configFile: Config.string("CONFIG_FILE").pipe(
     Config.withDefault("mini-agent.config.yaml")
   ),
 
-  // Working directory override
   cwd: Config.string("CWD").pipe(Config.option),
 
-  // Logging configuration (flat, not nested)
   stdoutLogLevel: logLevelConfig("STDOUT_LOG_LEVEL").pipe(
-    Config.withDefault(LogLevel.Info)
+    Config.withDefault(LogLevel.Warning)
   ),
   fileLogLevel: logLevelConfig("FILE_LOG_LEVEL").pipe(
     Config.withDefault(LogLevel.Debug)
@@ -147,28 +109,10 @@ export const MiniAgentConfig = Config.all({
 
 export type MiniAgentConfig = Config.Config.Success<typeof MiniAgentConfig>
 
-// =============================================================================
-// AppConfig Service
-// =============================================================================
-
-/**
- * Service providing validated application configuration.
- * Services should depend on this and extract only the config slices they need.
- *
- * Pattern from: https://www.effect.solutions/config
- *
- * Note: This layer reads from the active ConfigProvider, which should be
- * set up with the composed provider (CLI → env → YAML → defaults) before
- * this layer is provided.
- */
 export class AppConfig extends Context.Tag("@app/AppConfig")<
   AppConfig,
   MiniAgentConfig
 >() {
-  /**
-   * Layer that loads config from the active ConfigProvider.
-   * Make sure to set up ConfigProvider before providing this layer.
-   */
   static readonly layer = Layer.effect(
     AppConfig,
     Effect.gen(function*() {
@@ -177,23 +121,11 @@ export class AppConfig extends Context.Tag("@app/AppConfig")<
     })
   )
 
-  /**
-   * Create an AppConfig layer from pre-loaded configuration.
-   * Useful when config is loaded externally (e.g., in main.ts).
-   */
   static fromConfig(config: MiniAgentConfig): Layer.Layer<AppConfig> {
     return Layer.succeed(AppConfig, config)
   }
 }
 
-// =============================================================================
-// Config Utilities
-// =============================================================================
-
-/**
- * Extract --config value from CLI args.
- * Returns the default config path if not specified.
- */
 export const extractConfigPath = (args: ReadonlyArray<string>): string => {
   const configIdx = args.findIndex((a) => a === "--config" || a === "-c")
   const nextArg = configIdx >= 0 ? args[configIdx + 1] : undefined
@@ -203,17 +135,7 @@ export const extractConfigPath = (args: ReadonlyArray<string>): string => {
   return "mini-agent.config.yaml"
 }
 
-/**
- * Resolve the base directory for relative paths.
- * Combines cwd (if set) with dataStorageDir.
- */
 export const resolveBaseDir = (config: MiniAgentConfig): string => {
   const cwd = Option.getOrElse(config.cwd, () => process.cwd())
   return `${cwd}/${config.dataStorageDir}`
 }
-
-/**
- * Get OpenAI API key as string for use with clients.
- * @throws if key is not configured
- */
-export const getOpenAiApiKeyString = (config: MiniAgentConfig): string => Redacted.value(config.openaiApiKey)

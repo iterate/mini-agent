@@ -9,30 +9,20 @@
  * - UserMessage: Input from the user (persisted)
  * - AssistantMessage: Complete response from the AI (persisted)
  * - TextDelta: Streaming chunk (ephemeral, never persisted)
+ * - SetLlmConfig: LLM configuration for this context (persisted)
  */
 import { Schema } from "effect"
-
-// =============================================================================
-// Branded Types
-// =============================================================================
+import { LlmConfig } from "./llm-config.ts"
 
 /** Branded type for context names - prevents mixing with other strings */
 export const ContextName = Schema.String.pipe(Schema.brand("ContextName"))
 export type ContextName = typeof ContextName.Type
-
-// =============================================================================
-// LLM Message Type
-// =============================================================================
 
 /** Message format for LLM APIs and tracing */
 export interface LLMMessage {
   readonly role: "system" | "user" | "assistant"
   readonly content: string
 }
-
-// =============================================================================
-// Event Schemas (using TaggedClass for idiomatic tagged unions)
-// =============================================================================
 
 /** System prompt event - sets the AI's behavior */
 export class SystemPromptEvent extends Schema.TaggedClass<SystemPromptEvent>()("SystemPrompt", {
@@ -83,6 +73,29 @@ export class LLMRequestInterruptedEvent
   }
 }
 
+/** Attachment source - local file path or remote URL */
+export const AttachmentSource = Schema.Union(
+  Schema.Struct({ type: Schema.Literal("file"), path: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("url"), url: Schema.String })
+)
+export type AttachmentSource = typeof AttachmentSource.Type
+
+/** File attachment event - image or other file shared with AI */
+export class FileAttachmentEvent extends Schema.TaggedClass<FileAttachmentEvent>()(
+  "FileAttachment",
+  {
+    source: AttachmentSource,
+    mediaType: Schema.String,
+    fileName: Schema.optional(Schema.String)
+  }
+) {}
+
+/** Sets the LLM config for this context. Added when context is created. */
+export class SetLlmConfigEvent extends Schema.TaggedClass<SetLlmConfigEvent>()(
+  "SetLlmConfig",
+  { config: LlmConfig }
+) {}
+
 // =============================================================================
 // Union Types
 // =============================================================================
@@ -92,7 +105,9 @@ export const PersistedEvent = Schema.Union(
   SystemPromptEvent,
   UserMessageEvent,
   AssistantMessageEvent,
-  LLMRequestInterruptedEvent
+  LLMRequestInterruptedEvent,
+  FileAttachmentEvent,
+  SetLlmConfigEvent
 )
 export type PersistedEvent = typeof PersistedEvent.Type
 
@@ -101,14 +116,16 @@ export const ContextEvent = Schema.Union(
   SystemPromptEvent,
   UserMessageEvent,
   AssistantMessageEvent,
-  TextDeltaEvent,
-  LLMRequestInterruptedEvent
+  LLMRequestInterruptedEvent,
+  FileAttachmentEvent,
+  SetLlmConfigEvent,
+  TextDeltaEvent
 )
 export type ContextEvent = typeof ContextEvent.Type
 
-// =============================================================================
-// Configuration
-// =============================================================================
+/** Input events that can be added via addEvents */
+export const InputEvent = Schema.Union(UserMessageEvent, FileAttachmentEvent)
+export type InputEvent = typeof InputEvent.Type
 
 export const DEFAULT_SYSTEM_PROMPT = `You are a helpful, friendly assistant.
 Keep your responses concise but informative.
