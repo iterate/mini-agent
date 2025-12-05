@@ -16,16 +16,18 @@ import { Context, Effect, Layer, pipe, Schema, Stream } from "effect"
 import {
   AssistantMessageEvent,
   type ContextEvent,
+  DEFAULT_SYSTEM_PROMPT,
   type InputEvent,
   PersistedEvent,
   type PersistedEvent as PersistedEventType,
+  SetLlmConfigEvent,
   SystemPromptEvent,
   TextDeltaEvent,
   UserMessageEvent
 } from "./context.model.ts"
 import { ContextRepository } from "./context.repository.ts"
 import type { ContextLoadError, ContextSaveError } from "./errors.ts"
-import type { CurrentLlmConfig } from "./llm-config.ts"
+import { CurrentLlmConfig, LlmConfig } from "./llm-config.ts"
 import { streamLLMResponse } from "./llm.ts"
 
 // =============================================================================
@@ -92,15 +94,28 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         return pipe(
           // Load or create context, append input events
           Effect.fn("ContextService.addEvents.prepare")(function*() {
-            const existingEvents = yield* repo.loadOrCreate(contextName)
+            const llmConfig = yield* CurrentLlmConfig
+
+            // Check if context exists before loading/creating
+            const existingEvents = yield* repo.load(contextName)
+            const isNewContext = existingEvents.length === 0
+
+            // If new context, create with system prompt and LLM config
+            const baseEvents = isNewContext
+              ? [
+                new SystemPromptEvent({ content: DEFAULT_SYSTEM_PROMPT }),
+                new SetLlmConfigEvent({ config: llmConfig })
+              ]
+              : existingEvents
+
             const newPersistedInputs = inputEvents.filter(Schema.is(PersistedEvent)) as Array<PersistedEventType>
 
-            if (newPersistedInputs.length > 0) {
-              const allEvents = [...existingEvents, ...newPersistedInputs]
+            if (isNewContext || newPersistedInputs.length > 0) {
+              const allEvents = [...baseEvents, ...newPersistedInputs]
               yield* repo.save(contextName, allEvents)
               return allEvents
             }
-            return existingEvents
+            return baseEvents
           })(),
           // Only stream LLM response if there's a UserMessage
           Effect.andThen((events) => hasUserMessage ? streamLLMResponse(events) : Stream.empty),
@@ -153,6 +168,14 @@ export class ContextService extends Context.Tag("@app/ContextService")<
     // In-memory store for test contexts
     const store = new Map<string, Array<PersistedEventType>>()
 
+    // Mock LLM config for tests
+    const mockLlmConfig = new LlmConfig({
+      apiFormat: "openai-responses",
+      model: "test-model",
+      baseUrl: "https://api.test.com",
+      apiKeyEnvVar: "TEST_API_KEY"
+    })
+
     return ContextService.of({
       addEvents: (
         contextName: string,
@@ -161,7 +184,10 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         // Load or create context
         let events = store.get(contextName)
         if (!events) {
-          events = [new SystemPromptEvent({ content: "Test system prompt" })]
+          events = [
+            new SystemPromptEvent({ content: "Test system prompt" }),
+            new SetLlmConfigEvent({ config: mockLlmConfig })
+          ]
           store.set(contextName, events)
         }
 

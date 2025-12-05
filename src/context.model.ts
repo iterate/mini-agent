@@ -120,7 +120,7 @@ export const ContextEvent = Schema.Union(
 export type ContextEvent = typeof ContextEvent.Type
 
 /** Input events that can be added via addEvents */
-export const InputEvent = Schema.Union(UserMessageEvent, FileAttachmentEvent)
+export const InputEvent = Schema.Union(UserMessageEvent, FileAttachmentEvent, SystemPromptEvent)
 export type InputEvent = typeof InputEvent.Type
 
 export const DEFAULT_SYSTEM_PROMPT = `You are a helpful, friendly assistant.

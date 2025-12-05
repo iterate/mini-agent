@@ -5,9 +5,10 @@
  */
 import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
-import { type Error as PlatformError, Terminal } from "@effect/platform"
-import { BunStream } from "@effect/platform-bun"
+import { type Error as PlatformError, HttpServer, Terminal } from "@effect/platform"
+import { BunHttpServer, BunStream } from "@effect/platform-bun"
 import { Chunk, Console, Effect, Layer, Option, Schema, Stream } from "effect"
+import { AppConfig } from "../config.ts"
 import {
   AssistantMessageEvent,
   type ContextEvent,
@@ -18,6 +19,9 @@ import {
   UserMessageEvent
 } from "../context.model.ts"
 import { ContextService } from "../context.service.ts"
+import { makeRouter } from "../http.ts"
+import { layercodeCommand } from "../layercode/index.ts"
+import { AgentServer } from "../server.service.ts"
 import { printTraceLinks } from "../tracing.ts"
 
 export const configFileOption = Options.file("config").pipe(
@@ -40,6 +44,14 @@ export const stdoutLogLevelOption = Options.choice("stdout-log-level", [
   "none"
 ]).pipe(
   Options.withDescription("Stdout log level (overrides config)"),
+  Options.optional
+)
+
+export const llmOption = Options.text("llm").pipe(
+  Options.withDescription(
+    "LLM provider:model (e.g., openai:gpt-4.1-mini, anthropic:claude-sonnet-4-5-20250929). " +
+      "See README for full model list. Can also be set via LLM env var."
+  ),
   Options.optional
 )
 
@@ -442,15 +454,76 @@ const traceTestCommand = Command.make(
     }).pipe(Effect.withSpan("trace-test-command"))
 ).pipe(Command.withDescription("Simple command for testing tracing"))
 
+const portOption = Options.integer("port").pipe(
+  Options.withAlias("p"),
+  Options.withDescription("Port to listen on"),
+  Options.optional
+)
+
+const hostOption = Options.text("host").pipe(
+  Options.withDescription("Host to bind to"),
+  Options.optional
+)
+
+/** Generic serve command - starts HTTP server with /context/:name endpoint */
+export const serveCommand = Command.make(
+  "serve",
+  {
+    port: portOption,
+    host: hostOption
+  },
+  ({ host, port }) =>
+    Effect.gen(function*() {
+      const config = yield* AppConfig
+      const actualPort = Option.getOrElse(port, () => config.port)
+      const actualHost = Option.getOrElse(host, () => config.host)
+
+      yield* Console.log(`Starting HTTP server on http://${actualHost}:${actualPort}`)
+      yield* Console.log("")
+      yield* Console.log("Endpoints:")
+      yield* Console.log("  POST /context/:contextName")
+      yield* Console.log("       Send JSONL events, receive SSE stream")
+      yield* Console.log("       Content-Type: application/x-ndjson")
+      yield* Console.log("")
+      yield* Console.log("  GET  /health")
+      yield* Console.log("       Health check endpoint")
+      yield* Console.log("")
+      yield* Console.log("Example:")
+      yield* Console.log(`  curl -X POST http://${actualHost}:${actualPort}/context/test \\`)
+      yield* Console.log(`    -H "Content-Type: application/x-ndjson" \\`)
+      yield* Console.log(`    -d '{"_tag":"UserMessage","content":"hello"}'`)
+      yield* Console.log("")
+
+      // Create server layer with configured port/host
+      const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost })
+
+      // Create layers for the server
+      const layers = Layer.mergeAll(
+        serverLayer,
+        AgentServer.layer
+      )
+
+      // Use Layer.launch to keep the server running
+      return yield* Layer.launch(
+        HttpServer.serve(makeRouter).pipe(
+          Layer.provide(layers)
+        )
+      )
+    })
+).pipe(
+  Command.withDescription("Start generic HTTP server for agent requests")
+)
+
 const rootCommand = Command.make(
   "mini-agent",
   {
     configFile: configFileOption,
     cwd: cwdOption,
-    stdoutLogLevel: stdoutLogLevelOption
+    stdoutLogLevel: stdoutLogLevelOption,
+    llm: llmOption
   }
 ).pipe(
-  Command.withSubcommands([chatCommand, logTestCommand, traceTestCommand]),
+  Command.withSubcommands([chatCommand, serveCommand, layercodeCommand, logTestCommand, traceTestCommand]),
   Command.withDescription("AI assistant with persistent context and comprehensive configuration")
 )
 
