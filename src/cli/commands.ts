@@ -5,7 +5,18 @@
  */
 import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
-import { Console, Effect, Layer, Option } from "effect"
+import { type Error as PlatformError, Terminal } from "@effect/platform"
+import { BunStream } from "@effect/platform-bun"
+import { Chunk, Console, Effect, Layer, Option, Schema, Stream } from "effect"
+import {
+  AssistantMessageEvent,
+  type ContextEvent,
+  FileAttachmentEvent,
+  type InputEvent,
+  SystemPromptEvent,
+  TextDeltaEvent,
+  UserMessageEvent
+} from "../context.model.ts"
 import { ContextService } from "../context.service.ts"
 import { printTraceLinks } from "../tracing.ts"
 
@@ -38,9 +49,192 @@ const nameOption = Options.text("name").pipe(
   Options.optional
 )
 
+const messageOption = Options.text("message").pipe(
+  Options.withAlias("m"),
+  Options.withDescription("Message to send (non-interactive single-turn mode)"),
+  Options.optional
+)
+
+const rawOption = Options.boolean("raw").pipe(
+  Options.withAlias("r"),
+  Options.withDescription("Output events as JSON objects, one per line"),
+  Options.withDefault(false)
+)
+
+const showEphemeralOption = Options.boolean("show-ephemeral").pipe(
+  Options.withAlias("e"),
+  Options.withDescription("Include ephemeral events (streaming deltas) in output"),
+  Options.withDefault(false)
+)
+
+const scriptOption = Options.boolean("script").pipe(
+  Options.withAlias("s"),
+  Options.withDescription("Script mode: read JSONL events from stdin, output JSONL events"),
+  Options.withDefault(false)
+)
+
+const imageOption = Options.text("image").pipe(
+  Options.withAlias("i"),
+  Options.withDescription("Path to local image file or URL to share with the AI"),
+  Options.optional
+)
+
+const MIME_TYPES: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp"
+}
+
+const getMediaType = (filePath: string): string => {
+  const ext = filePath.toLowerCase().slice(filePath.lastIndexOf("."))
+  return MIME_TYPES[ext] ?? "application/octet-stream"
+}
+
+const getFileName = (filePath: string): string => {
+  const lastSlash = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"))
+  return lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath
+}
+
+const isUrl = (input: string): boolean => input.startsWith("http://") || input.startsWith("https://")
+
+interface OutputOptions {
+  raw: boolean
+  showEphemeral: boolean
+}
+
+/**
+ * Handle a single context event based on output options.
+ */
+const handleEvent = (
+  event: ContextEvent,
+  options: OutputOptions
+): Effect.Effect<void, PlatformError.PlatformError, Terminal.Terminal> =>
+  Effect.gen(function*() {
+    const terminal = yield* Terminal.Terminal
+
+    if (options.raw) {
+      if (Schema.is(TextDeltaEvent)(event) && !options.showEphemeral) {
+        return
+      }
+      yield* Console.log(JSON.stringify(event))
+      return
+    }
+
+    if (Schema.is(TextDeltaEvent)(event)) {
+      yield* terminal.display(event.delta)
+      return
+    }
+    if (Schema.is(AssistantMessageEvent)(event)) {
+      yield* Console.log("")
+      return
+    }
+  })
+
+/** Run the event stream, handling each event */
+const runEventStream = (
+  contextName: string,
+  userMessage: string,
+  options: OutputOptions,
+  imageInput?: string
+) =>
+  Effect.gen(function*() {
+    const contextService = yield* ContextService
+    const inputEvents: Array<InputEvent> = []
+
+    if (imageInput) {
+      const mediaType = getMediaType(imageInput)
+      const fileName = getFileName(imageInput)
+
+      if (isUrl(imageInput)) {
+        inputEvents.push(
+          new FileAttachmentEvent({
+            source: { type: "url", url: imageInput },
+            mediaType,
+            fileName
+          })
+        )
+      } else {
+        inputEvents.push(
+          new FileAttachmentEvent({
+            source: { type: "file", path: imageInput },
+            mediaType,
+            fileName
+          })
+        )
+      }
+    }
+
+    inputEvents.push(new UserMessageEvent({ content: userMessage }))
+
+    yield* contextService.addEvents(contextName, inputEvents).pipe(
+      Stream.runForEach((event) => handleEvent(event, options))
+    )
+  })
+
+/** CLI interaction mode - determines how input/output is handled */
+const InteractionMode = Schema.Literal("single-turn", "pipe", "script", "tty-interactive")
+type InteractionMode = typeof InteractionMode.Type
+
+const determineMode = (options: {
+  message: Option.Option<string>
+  script: boolean
+}): InteractionMode => {
+  const hasMessage = Option.isSome(options.message) &&
+    Option.getOrElse(options.message, () => "").trim() !== ""
+
+  if (hasMessage) return "single-turn"
+  if (options.script) return "script"
+  if (process.stdin.isTTY) return "tty-interactive"
+  return "pipe"
+}
+
+const utf8Decoder = new TextDecoder("utf-8")
+
+const readAllStdin: Effect.Effect<string> = BunStream.stdin.pipe(
+  Stream.mapChunks(Chunk.map((bytes) => utf8Decoder.decode(bytes))),
+  Stream.runCollect,
+  Effect.map((chunks) => Chunk.join(chunks, "").trim())
+)
+
+const ScriptInputEvent = Schema.Union(UserMessageEvent, SystemPromptEvent)
+
+const stdinEvents = BunStream.stdin.pipe(
+  Stream.mapChunks(Chunk.map((bytes) => utf8Decoder.decode(bytes))),
+  Stream.splitLines,
+  Stream.filter((line) => line.trim() !== ""),
+  Stream.mapEffect((line) =>
+    Effect.try(() => JSON.parse(line) as unknown).pipe(
+      Effect.flatMap((json) => Schema.decodeUnknown(ScriptInputEvent)(json))
+    )
+  )
+)
+
+const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
+  Effect.gen(function*() {
+    const contextService = yield* ContextService
+
+    yield* stdinEvents.pipe(
+      Stream.mapEffect((event) =>
+        Effect.gen(function*() {
+          yield* Console.log(JSON.stringify(event))
+
+          if (Schema.is(UserMessageEvent)(event)) {
+            yield* contextService.addEvents(contextName, [event]).pipe(
+              Stream.runForEach((outputEvent) => handleEvent(outputEvent, options))
+            )
+          } else if (Schema.is(SystemPromptEvent)(event)) {
+            yield* Effect.logDebug("SystemPrompt events in script mode are echoed but not persisted")
+          }
+        })
+      ),
+      Stream.runDrain
+    )
+  })
+
 const NEW_CONTEXT_VALUE = "__new__"
 
-/** Prompt user to select an existing context or create a new one */
 const selectOrCreateContext = Effect.gen(function*() {
   const contextService = yield* ContextService
   const contexts = yield* contextService.list()
@@ -75,7 +269,82 @@ const selectOrCreateContext = Effect.gen(function*() {
   return selected
 })
 
-/** Extract text from Prompt content parts */
+const generateRandomContextName = (): string => {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
+  const suffix = Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join("")
+  return `chat-${suffix}`
+}
+
+const makeChatUILayer = () =>
+  Layer.unwrapEffect(
+    Effect.gen(function*() {
+      const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))
+      return ChatUI.layer
+    })
+  )
+
+const runChat = (options: {
+  name: Option.Option<string>
+  message: Option.Option<string>
+  image: Option.Option<string>
+  raw: boolean
+  script: boolean
+  showEphemeral: boolean
+}) =>
+  Effect.gen(function*() {
+    yield* Effect.logDebug("Starting chat session")
+    const mode = determineMode(options)
+    const contextName = Option.getOrElse(options.name, generateRandomContextName)
+    const imagePath = Option.getOrNull(options.image) ?? undefined
+
+    const outputOptions: OutputOptions = {
+      raw: mode === "script" || options.raw,
+      showEphemeral: mode === "script" || options.showEphemeral
+    }
+
+    switch (mode) {
+      case "single-turn": {
+        const message = Option.getOrElse(options.message, () => "")
+        yield* runEventStream(contextName, message, outputOptions, imagePath)
+        if (!outputOptions.raw) {
+          yield* printTraceLinks
+        }
+        break
+      }
+
+      case "pipe": {
+        const input = yield* readAllStdin
+        if (input !== "") {
+          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false }, imagePath)
+        }
+        break
+      }
+
+      case "script": {
+        yield* scriptInteractiveLoop(contextName, outputOptions)
+        break
+      }
+
+      case "tty-interactive": {
+        const resolvedName = Option.isSome(options.name)
+          ? contextName
+          : yield* selectOrCreateContext
+
+        const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))
+        const chatUI = yield* ChatUI
+
+        yield* chatUI.runChat(resolvedName).pipe(
+          Effect.catchAllCause(() => Effect.void),
+          Effect.ensuring(printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!"))))
+        )
+        break
+      }
+    }
+  }).pipe(
+    Effect.provide(makeChatUILayer()),
+    Effect.withSpan("chat-session")
+  )
+
 const collectText = (parts: ReadonlyArray<{ type: string; text?: string }>) =>
   parts
     .filter((p): p is typeof p & { text: string } => p.type === "text" && !!p.text)
@@ -87,7 +356,6 @@ interface CleanMessage {
   content: string
 }
 
-/** Convert prompt to clean messages, merging consecutive same-role messages */
 const promptToCleanMessages = (prompt: Prompt.Prompt): Array<CleanMessage> => {
   const raw: Array<CleanMessage> = []
   for (const msg of prompt.content) {
@@ -117,7 +385,6 @@ const promptToCleanMessages = (prompt: Prompt.Prompt): Array<CleanMessage> => {
   return result
 }
 
-/** Extract text from Response parts */
 const extractResponseText = (parts: ReadonlyArray<{ type: string; text?: string; delta?: string }>): string =>
   parts
     .filter((p): p is typeof p & { text: string } | typeof p & { delta: string } =>
@@ -138,40 +405,20 @@ export const GenAISpanTransformerLayer = Layer.succeed(
   }
 )
 
-const makeChatUILayer = () =>
-  Layer.unwrapEffect(
-    Effect.gen(function*() {
-      const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))
-      return ChatUI.layer
-    })
-  )
-
 const chatCommand = Command.make(
   "chat",
-  { name: nameOption },
-  ({ name }) =>
-    Effect.gen(function*() {
-      const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))
-      const chatUI = yield* ChatUI
+  {
+    name: nameOption,
+    message: messageOption,
+    image: imageOption,
+    raw: rawOption,
+    script: scriptOption,
+    showEphemeral: showEphemeralOption
+  },
+  ({ image, message, name, raw, script, showEphemeral }) =>
+    runChat({ image, message, name, raw, script, showEphemeral })
+).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
-      const contextName = Option.isSome(name)
-        ? Option.getOrElse(name, () => "")
-        : yield* selectOrCreateContext
-
-      yield* chatUI.runChat(contextName).pipe(
-        Effect.catchAllCause(() => Effect.void),
-        Effect.ensuring(printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!"))))
-      )
-    }).pipe(
-      Effect.provide(makeChatUILayer()),
-      Effect.withSpan("chat-session")
-    )
-).pipe(Command.withDescription("Interactive chat with AI assistant"))
-
-/**
- * Log-test command that emits log messages at all levels.
- * Used for testing logging configuration.
- */
 const logTestCommand = Command.make(
   "log-test",
   {},
@@ -186,9 +433,6 @@ const logTestCommand = Command.make(
     })
 ).pipe(Command.withDescription("Emit test log messages at all levels (for testing logging config)"))
 
-/**
- * Trace-test command for testing tracing. Produces a span and exits.
- */
 const traceTestCommand = Command.make(
   "trace-test",
   {},
@@ -198,7 +442,6 @@ const traceTestCommand = Command.make(
     }).pipe(Effect.withSpan("trace-test-command"))
 ).pipe(Command.withDescription("Simple command for testing tracing"))
 
-// Root command with global options
 const rootCommand = Command.make(
   "mini-agent",
   {
