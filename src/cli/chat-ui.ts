@@ -161,49 +161,65 @@ const runChatTurn = (
     const result = yield* awaitStreamCompletion(streamFiber, mailbox)
     chat.endStreaming()
 
-    if (result.interrupted && accumulatedText.length > 0) {
+    if (result._tag === "completed") {
+      return { _tag: "continue" } as const
+    }
+
+    if (result._tag === "exit") {
+      // Save partial response before exiting
+      if (accumulatedText.length > 0) {
+        const interruptedEvent = new LLMRequestInterruptedEvent({
+          requestId: crypto.randomUUID(),
+          reason: "user_cancel",
+          partialResponse: accumulatedText
+        })
+        yield* contextService.persistEvent(contextName, interruptedEvent)
+        chat.addEvent(interruptedEvent)
+      }
+      return { _tag: "exit" } as const
+    }
+
+    // result._tag === "interrupted" - user hit return during streaming
+    if (accumulatedText.length > 0) {
       const interruptedEvent = new LLMRequestInterruptedEvent({
         requestId: crypto.randomUUID(),
-        reason: result.pendingInput ? "user_new_message" : "user_cancel",
+        reason: result.newMessage ? "user_new_message" : "user_cancel",
         partialResponse: accumulatedText
       })
       yield* contextService.persistEvent(contextName, interruptedEvent)
       chat.addEvent(interruptedEvent)
     }
 
-    // If interrupted with a new message, immediately process it
-    if (result.interrupted && result.pendingInput) {
-      return yield* runChatTurn(contextName, contextService, chat, mailbox, result.pendingInput)
+    // If there's a new message to process, do it now
+    if (result.newMessage) {
+      return yield* runChatTurn(contextName, contextService, chat, mailbox, result.newMessage)
     }
 
-    // If interrupted with exit signal, exit
-    if (result.interrupted && result.pendingInput === null) {
-      return { _tag: "exit" } as const
-    }
-
+    // Just an interrupt (empty return), continue waiting for input
     return { _tag: "continue" } as const
   })()
 
 type StreamResult =
-  | { readonly interrupted: false }
-  | { readonly interrupted: true; readonly pendingInput: string | null }
+  | { readonly _tag: "completed" }
+  | { readonly _tag: "exit" }
+  | { readonly _tag: "interrupted"; readonly newMessage: string | null }
 
 const awaitStreamCompletion = (
   fiber: Fiber.RuntimeFiber<void, AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError>,
   mailbox: Mailbox.Mailbox<ChatSignal>
 ): Effect.Effect<StreamResult, AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError> =>
   Effect.fn("ChatUI.awaitStreamCompletion")(function*() {
-    const waitForFiber = Fiber.join(fiber).pipe(Effect.as({ interrupted: false } as StreamResult))
+    const waitForFiber = Fiber.join(fiber).pipe(Effect.as({ _tag: "completed" } as StreamResult))
     const waitForInterrupt = Effect.gen(function*() {
       const signal = yield* mailbox.take.pipe(
         Effect.catchTag("NoSuchElementException", () => Effect.succeed({ _tag: "Exit" } as const))
       )
       yield* Fiber.interrupt(fiber)
       if (signal._tag === "Exit") {
-        return { interrupted: true, pendingInput: null } as StreamResult
+        return { _tag: "exit" } as StreamResult
       }
-      // Input signal - return the text (empty string = just interrupt, non-empty = new message)
-      return { interrupted: true, pendingInput: signal.text || null } as StreamResult
+      // Input signal - empty string = just cancel, non-empty = new message to process
+      return { _tag: "interrupted", newMessage: signal.text || null } as StreamResult
     })
 
     return yield* Effect.race(waitForFiber, waitForInterrupt)
