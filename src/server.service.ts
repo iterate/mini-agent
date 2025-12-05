@@ -13,7 +13,7 @@ import { ContextService } from "./context.service.ts"
 import type { ContextLoadError, ContextSaveError } from "./errors.ts"
 import type { CurrentLlmConfig } from "./llm-config.ts"
 
-/** Script mode input events - same as CLI script mode */
+/** Script mode input events - schema for HTTP parsing */
 export const ScriptInputEvent = Schema.Union(UserMessageEvent, SystemPromptEvent)
 export type ScriptInputEvent = typeof ScriptInputEvent.Type
 
@@ -21,7 +21,7 @@ export class AgentServer extends Context.Tag("@app/AgentServer")<
   AgentServer,
   {
     /**
-     * Handle a request with JSONL events, streaming back ContextEvents.
+     * Handle a request with input events, streaming back ContextEvents.
      * Same semantics as CLI script mode.
      *
      * Note: The returned stream requires LanguageModel, FileSystem, and CurrentLlmConfig
@@ -29,7 +29,7 @@ export class AgentServer extends Context.Tag("@app/AgentServer")<
      */
     readonly handleRequest: (
       contextName: string,
-      events: ReadonlyArray<ScriptInputEvent>
+      events: ReadonlyArray<InputEvent>
     ) => Stream.Stream<
       ContextEvent,
       AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
@@ -44,11 +44,8 @@ export class AgentServer extends Context.Tag("@app/AgentServer")<
 
       const handleRequest = (
         contextName: string,
-        events: ReadonlyArray<ScriptInputEvent>
-      ) => {
-        // ScriptInputEvent is a subset of InputEvent, so cast is safe
-        return contextService.addEvents(contextName, events as ReadonlyArray<InputEvent>)
-      }
+        events: ReadonlyArray<InputEvent>
+      ) => contextService.addEvents(contextName, events)
 
       return AgentServer.of({ handleRequest })
     })

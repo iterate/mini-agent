@@ -14,14 +14,27 @@ import { AgentServer, ScriptInputEvent } from "./server.service.ts"
 /** Encode a ContextEvent as an SSE data line */
 const encodeSSE = (event: ContextEvent): Uint8Array => new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`)
 
+/** Error for JSONL parsing failures */
+class JsonParseError extends Error {
+  readonly _tag = "JsonParseError"
+  constructor(readonly line: number, readonly rawLine: string, readonly originalError: unknown) {
+    super(
+      `Invalid JSON at line ${line}: ${originalError instanceof Error ? originalError.message : String(originalError)}`
+    )
+  }
+}
+
 /** Parse JSONL body into ScriptInputEvents */
 const parseJsonlBody = (body: string) =>
   Effect.gen(function*() {
     const lines = body.split("\n").filter((line) => line.trim() !== "")
     const events: Array<ScriptInputEvent> = []
 
-    for (const line of lines) {
-      const json = JSON.parse(line) as unknown
+    for (const [i, line] of lines.entries()) {
+      const json = yield* Effect.try({
+        try: () => JSON.parse(line) as unknown,
+        catch: (e) => new JsonParseError(i + 1, line, e)
+      })
       const event = yield* Schema.decodeUnknown(ScriptInputEvent)(json)
       events.push(event)
     }
@@ -49,10 +62,22 @@ const contextHandler = Effect.gen(function*() {
 
   // Read body as text and parse JSONL
   const body = yield* request.text
-  const events = yield* parseJsonlBody(body).pipe(
-    Effect.catchAll(() => Effect.succeed([] as Array<ScriptInputEvent>))
-  )
 
+  if (body.trim() === "") {
+    return HttpServerResponse.text("Empty request body", { status: 400 })
+  }
+
+  const parseResult = yield* parseJsonlBody(body).pipe(Effect.either)
+
+  if (parseResult._tag === "Left") {
+    const error = parseResult.left
+    const message = error instanceof JsonParseError
+      ? error.message
+      : `Invalid event format: ${error instanceof Error ? error.message : String(error)}`
+    return HttpServerResponse.text(message, { status: 400 })
+  }
+
+  const events = parseResult.right
   if (events.length === 0) {
     return HttpServerResponse.text("No valid events in body", { status: 400 })
   }

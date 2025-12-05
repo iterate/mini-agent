@@ -8,15 +8,15 @@
  */
 import { Command } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
+import { type ChildProcess, spawn } from "child_process"
 import { Effect } from "effect"
-import { type ChildProcess, spawn } from "node:child_process"
-import * as path from "node:path"
 import { describe } from "vitest"
 import { expect, test } from "./fixtures.js"
 
-const CLI_PATH = path.resolve(__dirname, "../src/main.ts")
+// Resolve CLI path relative to this file
+const CLI_PATH = new URL("../src/main.ts", import.meta.url).pathname
 
-/** Start the server in background using child_process.spawn */
+/** Start the server in background */
 const startServer = async (
   cwd: string,
   port: number,
@@ -24,7 +24,7 @@ const startServer = async (
 ): Promise<ChildProcess> => {
   const args = subcommand === "serve"
     ? [CLI_PATH, "--cwd", cwd, "serve", "--port", String(port)]
-    : [CLI_PATH, "--cwd", cwd, "layercode", "serve", "--port", String(port)]
+    : [CLI_PATH, "--cwd", cwd, "layercode", "serve", "--port", String(port), "--no-tunnel"]
 
   const proc = spawn("bun", args, {
     cwd,
@@ -32,7 +32,7 @@ const startServer = async (
       ...process.env,
       OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "test-api-key"
     },
-    stdio: ["ignore", "pipe", "pipe"]
+    stdio: "ignore"
   })
 
   // Wait for server to be ready by polling health endpoint

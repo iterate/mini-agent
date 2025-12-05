@@ -138,8 +138,16 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
     }
 
     // Parse webhook event
-    const json = JSON.parse(body) as unknown
-    const parseResult = yield* Schema.decodeUnknown(LayerCodeWebhookEvent)(json).pipe(
+    const jsonResult = yield* Effect.try({
+      try: () => JSON.parse(body) as unknown,
+      catch: (e) => new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
+    }).pipe(Effect.either)
+
+    if (jsonResult._tag === "Left") {
+      return HttpServerResponse.text(jsonResult.left.message, { status: 400 })
+    }
+
+    const parseResult = yield* Schema.decodeUnknown(LayerCodeWebhookEvent)(jsonResult.right).pipe(
       Effect.either
     )
 
