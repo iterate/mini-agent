@@ -7,10 +7,6 @@
 import { Schema } from "effect"
 import { ContextName } from "./context.model.ts"
 
-// =============================================================================
-// Context Errors
-// =============================================================================
-
 /** Error when a context is not found */
 export class ContextNotFound extends Schema.TaggedError<ContextNotFound>()(
   "ContextNotFound",
@@ -43,10 +39,6 @@ export const ContextError = Schema.Union(
 )
 export type ContextError = typeof ContextError.Type
 
-// =============================================================================
-// Configuration Errors
-// =============================================================================
-
 /** Error when configuration is invalid or missing */
 export class ConfigurationError extends Schema.TaggedError<ConfigurationError>()(
   "ConfigurationError",
@@ -56,10 +48,6 @@ export class ConfigurationError extends Schema.TaggedError<ConfigurationError>()
   }
 ) {}
 
-// =============================================================================
-// LLM Errors
-// =============================================================================
-
 /** Error when LLM request fails */
 export class LLMError extends Schema.TaggedError<LLMError>()(
   "LLMError",
@@ -68,10 +56,6 @@ export class LLMError extends Schema.TaggedError<LLMError>()(
     cause: Schema.optional(Schema.Defect)
   }
 ) {}
-
-// =============================================================================
-// Codemode Errors
-// =============================================================================
 
 /** Error when TypeScript typechecking fails */
 export class TypecheckError extends Schema.TaggedError<TypecheckError>()(

@@ -168,6 +168,8 @@ const handleCodemodeStreamEvent = (
           yield* Console.log(red(`  Exit: ${event.exitCode}`))
         }
         break
+      default:
+        break
     }
   })
 

@@ -24,22 +24,24 @@ describe("Codemode E2E", () => {
   // Also expose BunContext services for tests that need FileSystem/Path directly
   const fullLayer = Layer.merge(serviceLayer, BunContext.layer)
 
+  const TEST_CONTEXT = "test-context"
+
   test("processes valid code block and executes it", async () => {
     const program = Effect.gen(function*() {
       const service = yield* CodemodeService
 
       // Simulate an assistant response with a valid codemode block
-      const response = `Here's some code that prints a message:
+      const response = `Here's some code that sends a message:
 
 <codemode>
-export default async function(t: Tools) {
-  await t.log("Hello from codemode!")
+export default async function(t: Tools): Promise<void> {
+  await t.sendMessage("Hello from codemode!")
 }
 </codemode>
 
 This code will greet you!`
 
-      const streamOpt = yield* service.processResponse(response)
+      const streamOpt = yield* service.processResponse(TEST_CONTEXT, response)
       expect(streamOpt._tag).toBe("Some")
 
       if (streamOpt._tag === "Some") {
@@ -73,13 +75,13 @@ This code will greet you!`
 
       // Code with a type error
       const response = `<codemode>
-export default async function(t: Tools) {
+export default async function(t: Tools): Promise<void> {
   // This will cause a type error - nonExistentMethod doesn't exist
   await t.nonExistentMethod()
 }
 </codemode>`
 
-      const streamOpt = yield* service.processResponse(response)
+      const streamOpt = yield* service.processResponse(TEST_CONTEXT, response)
       expect(streamOpt._tag).toBe("Some")
 
       if (streamOpt._tag === "Some") {
@@ -117,7 +119,7 @@ export default async function(t: Tools) {
       const service = yield* CodemodeService
 
       const response = "Just a regular response without any code blocks."
-      const streamOpt = yield* service.processResponse(response)
+      const streamOpt = yield* service.processResponse(TEST_CONTEXT, response)
 
       expect(streamOpt._tag).toBe("None")
     }).pipe(
@@ -127,7 +129,7 @@ export default async function(t: Tools) {
     await Effect.runPromise(program)
   })
 
-  test("creates files in .mini-agent/codemode directory", async ({ testDir }) => {
+  test("creates files in context directory structure", async ({ testDir }) => {
     // Change to test directory so files are created there
     const originalCwd = process.cwd()
     process.chdir(testDir)
@@ -138,13 +140,14 @@ export default async function(t: Tools) {
         const fs = yield* FileSystem.FileSystem
         const path = yield* Path.Path
 
+        const contextName = "file-test-context"
         const response = `<codemode>
-export default async function(t: Tools) {
-  await t.log("test")
+export default async function(t: Tools): Promise<void> {
+  await t.sendMessage("test")
 }
 </codemode>`
 
-        const streamOpt = yield* service.processResponse(response)
+        const streamOpt = yield* service.processResponse(contextName, response)
         expect(streamOpt._tag).toBe("Some")
 
         if (streamOpt._tag === "Some") {
@@ -154,20 +157,25 @@ export default async function(t: Tools) {
             Effect.scoped
           )
 
-          // Check that codemode directory was created
-          const codemodeDir = path.join(testDir, ".mini-agent", "codemode")
-          const exists = yield* fs.exists(codemodeDir)
+          // Check that context directory was created
+          const contextDir = path.join(testDir, ".mini-agent", "contexts", contextName)
+          const exists = yield* fs.exists(contextDir)
           expect(exists).toBe(true)
 
-          // Check that there's at least one response directory
-          const entries = yield* fs.readDirectory(codemodeDir)
-          expect(entries.length).toBeGreaterThan(0)
+          // Check that there's at least one request directory
+          const requestDirs = yield* fs.readDirectory(contextDir)
+          expect(requestDirs.length).toBeGreaterThan(0)
 
-          // Check that the response directory has the expected files
-          const responseDir = path.join(codemodeDir, entries[0]!)
-          const indexExists = yield* fs.exists(path.join(responseDir, "index.ts"))
-          const typesExists = yield* fs.exists(path.join(responseDir, "types.ts"))
-          const tsconfigExists = yield* fs.exists(path.join(responseDir, "tsconfig.json"))
+          // Check that the request directory has a codeblock directory
+          const requestDir = path.join(contextDir, requestDirs[0]!)
+          const codeblockDirs = yield* fs.readDirectory(requestDir)
+          expect(codeblockDirs.length).toBeGreaterThan(0)
+
+          // Check that the codeblock directory has the expected files
+          const codeblockDir = path.join(requestDir, codeblockDirs[0]!)
+          const indexExists = yield* fs.exists(path.join(codeblockDir, "index.ts"))
+          const typesExists = yield* fs.exists(path.join(codeblockDir, "types.ts"))
+          const tsconfigExists = yield* fs.exists(path.join(codeblockDir, "tsconfig.json"))
 
           expect(indexExists).toBe(true)
           expect(typesExists).toBe(true)
@@ -191,22 +199,23 @@ export default async function(t: Tools) {
       const program = Effect.gen(function*() {
         const service = yield* CodemodeService
 
+        // console.log goes to stdout (agent sees), sendMessage goes to stderr (user sees)
         const response = `<codemode>
-export default async function(t: Tools) {
-  await t.log("First message")
-  await t.log("Second message")
-  return { endTurn: true }
+export default async function(t: Tools): Promise<void> {
+  await t.sendMessage("First message")
+  await t.sendMessage("Second message")
 }
 </codemode>`
 
-        const streamOpt = yield* service.processResponse(response)
+        const streamOpt = yield* service.processResponse(TEST_CONTEXT, response)
         expect(streamOpt._tag).toBe("Some")
 
         if (streamOpt._tag === "Some") {
           const outputs: Array<string> = []
           yield* streamOpt.value.pipe(
             Stream.runForEach((event) => {
-              if (event._tag === "ExecutionOutput" && (event as { stream: string }).stream === "stdout") {
+              // sendMessage goes to stderr, so check stderr
+              if (event._tag === "ExecutionOutput" && (event as { stream: string }).stream === "stderr") {
                 outputs.push((event as { data: string }).data)
               }
               return Effect.void
@@ -237,15 +246,15 @@ export default async function(t: Tools) {
         const service = yield* CodemodeService
 
         // Code that uses getSecret - LLM can't see the implementation
+        // Use console.log so agent sees it (stdout), or sendMessage for user (stderr)
         const response = `<codemode>
-export default async function(t: Tools) {
+export default async function(t: Tools): Promise<void> {
   const secret = await t.getSecret("demo-secret")
-  await t.log("Got secret: " + secret)
-  return { endTurn: true, data: { secret } }
+  console.log("Got secret: " + secret)
 }
 </codemode>`
 
-        const streamOpt = yield* service.processResponse(response)
+        const streamOpt = yield* service.processResponse(TEST_CONTEXT, response)
         expect(streamOpt._tag).toBe("Some")
 
         if (streamOpt._tag === "Some") {
@@ -274,7 +283,7 @@ export default async function(t: Tools) {
     }
   })
 
-  test("returns CodemodeResult with endTurn and data fields", async ({ testDir }) => {
+  test("output determines agent loop continuation", async ({ testDir }) => {
     const originalCwd = process.cwd()
     process.chdir(testDir)
 
@@ -282,15 +291,14 @@ export default async function(t: Tools) {
       const program = Effect.gen(function*() {
         const service = yield* CodemodeService
 
-        // Code that returns structured data
+        // console.log produces stdout which triggers another agent turn
         const response = `<codemode>
-export default async function(t: Tools) {
-  await t.log("Processing...")
-  return { endTurn: false, data: { step: 1, result: "intermediate" } }
+export default async function(t: Tools): Promise<void> {
+  console.log("Processing...")
 }
 </codemode>`
 
-        const streamOpt = yield* service.processResponse(response)
+        const streamOpt = yield* service.processResponse(TEST_CONTEXT, response)
         expect(streamOpt._tag).toBe("Some")
 
         if (streamOpt._tag === "Some") {
@@ -306,10 +314,8 @@ export default async function(t: Tools) {
           )
 
           const fullOutput = outputs.join("")
-          // The result marker should be in stdout
-          expect(fullOutput).toContain("__CODEMODE_RESULT__")
-          expect(fullOutput).toContain("\"endTurn\":false")
-          expect(fullOutput).toContain("\"step\":1")
+          // console.log output goes to stdout
+          expect(fullOutput).toContain("Processing...")
         }
       }).pipe(
         Effect.provide(fullLayer)

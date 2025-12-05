@@ -18,6 +18,10 @@ import { LlmConfig } from "./llm-config.ts"
 export const ContextName = Schema.String.pipe(Schema.brand("ContextName"))
 export type ContextName = typeof ContextName.Type
 
+/** Controls whether an event triggers an agent turn after it's processed */
+export const TriggerAgentTurn = Schema.Literal("after-current-turn", "never")
+export type TriggerAgentTurn = typeof TriggerAgentTurn.Type
+
 /** Message format for LLM APIs and tracing */
 export interface LLMMessage {
   readonly role: "system" | "user" | "assistant"
@@ -26,7 +30,8 @@ export interface LLMMessage {
 
 /** System prompt event - sets the AI's behavior */
 export class SystemPromptEvent extends Schema.TaggedClass<SystemPromptEvent>()("SystemPrompt", {
-  content: Schema.String
+  content: Schema.String,
+  triggerAgentTurn: Schema.optionalWith(TriggerAgentTurn, { default: () => "never" as const })
 }) {
   toLLMMessage(): LLMMessage {
     return { role: "system", content: this.content }
@@ -35,7 +40,8 @@ export class SystemPromptEvent extends Schema.TaggedClass<SystemPromptEvent>()("
 
 /** User message event - input from the user */
 export class UserMessageEvent extends Schema.TaggedClass<UserMessageEvent>()("UserMessage", {
-  content: Schema.String
+  content: Schema.String,
+  triggerAgentTurn: Schema.optionalWith(TriggerAgentTurn, { default: () => "after-current-turn" as const })
 }) {
   toLLMMessage(): LLMMessage {
     return { role: "user", content: this.content }
@@ -44,7 +50,8 @@ export class UserMessageEvent extends Schema.TaggedClass<UserMessageEvent>()("Us
 
 /** Assistant message event - complete response from the AI */
 export class AssistantMessageEvent extends Schema.TaggedClass<AssistantMessageEvent>()("AssistantMessage", {
-  content: Schema.String
+  content: Schema.String,
+  triggerAgentTurn: Schema.optionalWith(TriggerAgentTurn, { default: () => "never" as const })
 }) {
   toLLMMessage(): LLMMessage {
     return { role: "assistant", content: this.content }
@@ -86,14 +93,18 @@ export class FileAttachmentEvent extends Schema.TaggedClass<FileAttachmentEvent>
   {
     source: AttachmentSource,
     mediaType: Schema.String,
-    fileName: Schema.optional(Schema.String)
+    fileName: Schema.optional(Schema.String),
+    triggerAgentTurn: Schema.optionalWith(TriggerAgentTurn, { default: () => "never" as const })
   }
 ) {}
 
 /** Sets the LLM config for this context. Added when context is created. */
 export class SetLlmConfigEvent extends Schema.TaggedClass<SetLlmConfigEvent>()(
   "SetLlmConfig",
-  { config: LlmConfig }
+  {
+    config: LlmConfig,
+    triggerAgentTurn: Schema.optionalWith(TriggerAgentTurn, { default: () => "never" as const })
+  }
 ) {}
 
 /** Codemode execution result - persisted, included in next LLM request as user message */
@@ -103,8 +114,7 @@ export class CodemodeResultEvent extends Schema.TaggedClass<CodemodeResultEvent>
     stdout: Schema.String,
     stderr: Schema.String,
     exitCode: Schema.Number,
-    endTurn: Schema.Boolean,
-    data: Schema.optional(Schema.Unknown)
+    triggerAgentTurn: TriggerAgentTurn
   }
 ) {
   toLLMMessage(): LLMMessage {
@@ -112,7 +122,6 @@ export class CodemodeResultEvent extends Schema.TaggedClass<CodemodeResultEvent>
     if (this.stdout) parts.push(this.stdout)
     if (this.stderr) parts.push(`stderr:\n${this.stderr}`)
     if (this.exitCode !== 0) parts.push(`(exit code: ${this.exitCode})`)
-    if (this.data !== undefined) parts.push(`data: ${JSON.stringify(this.data)}`)
     const output = parts.join("\n") || "(no output)"
     return {
       role: "user",
@@ -159,26 +168,16 @@ export const CODEMODE_SYSTEM_PROMPT = `You are a coding assistant that executes 
 ## How Codemode Works
 
 When you need to perform an action, you MUST write TypeScript code wrapped in codemode tags.
-Your code will be:
-1. Typechecked with strict TypeScript
-2. Executed in a Bun subprocess
-3. The result returned to you for the next step
+Your code will be typechecked and executed in a Bun subprocess.
 
 ## Available Tools
 
-Your code receives a \`tools\` object with these methods:
+Your code receives a \`t\` object with these methods:
 
 \`\`\`typescript
-interface CodemodeResult {
-  /** If true, stop the agent loop. If false, you'll see the result and can continue. */
-  endTurn: boolean
-  /** Optional data to pass back */
-  data?: unknown
-}
-
 interface Tools {
-  /** Log a message (visible in output) */
-  readonly log: (message: string) => Promise<void>
+  /** Send a message to the USER. They see this. Does NOT trigger another turn. */
+  readonly sendMessage: (message: string) => Promise<void>
 
   /** Read a file from the filesystem */
   readonly readFile: (path: string) => Promise<string>
@@ -189,51 +188,55 @@ interface Tools {
   /** Execute a shell command */
   readonly exec: (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>
 
+  /** Fetch a URL and return its content */
+  readonly fetch: (url: string) => Promise<string>
+
   /** Get a secret value by name */
   readonly getSecret: (name: string) => Promise<string | undefined>
 }
 \`\`\`
 
+## What the User Sees vs What You See
+
+- **User sees**: Only what you pass to \`t.sendMessage()\`
+- **You see**: Only what you \`console.log()\` — this triggers another turn
+
+Most tasks complete in ONE turn: do the work, call \`t.sendMessage()\` with the result, done.
+
 ## Code Format
 
 Your code MUST:
 - Be wrapped in \`<codemode>\` and \`</codemode>\` tags
-- Export a default async function with EXPLICIT type annotations: \`(t: Tools): Promise<CodemodeResult>\`
-- Use \`t.log()\` for output the user should see
-- Do NOT add import statements — \`Tools\` and \`CodemodeResult\` are automatically available
+- Export a default async function with EXPLICIT type annotations: \`(t: Tools): Promise<void>\`
+- Do NOT add import statements — \`Tools\` is automatically available
 
 CRITICAL: Always include the type annotations. The code is typechecked with strict mode (\`noImplicitAny\`).
 
-Example:
+## Examples
+
+### Single-turn (most common)
+User asks: "What is 2+2?"
 <codemode>
-export default async function(t: Tools): Promise<CodemodeResult> {
-  await t.log("Hello!")
-  return { endTurn: true }
+export default async function(t: Tools): Promise<void> {
+  await t.sendMessage("2+2 = 4")
 }
 </codemode>
 
-## Agent Loop
-
-The \`endTurn\` field controls continuation:
-- \`endTurn: true\` — Stop and wait for user input
-- \`endTurn: false\` — You'll see the execution result and can respond again
-
-Use \`endTurn: false\` when you need multiple steps:
+### Multi-turn (when you need to see data first)
+User asks: "Summarize today's news"
 <codemode>
-export default async function(t: Tools): Promise<CodemodeResult> {
-  const files = await t.exec("ls -la")
-  await t.log("Found files:")
-  await t.log(files.stdout)
-  return { endTurn: false, data: { fileCount: files.stdout.split("\\n").length } }
+export default async function(t: Tools): Promise<void> {
+  await t.sendMessage("Stand by - fetching news...")
+  const html = await t.fetch("https://news.ycombinator.com")
+  console.log(html) // You'll see this and can summarize in next turn
 }
 </codemode>
 
-Then in your next response, you can use that data to continue.
+Then in your next turn, you see the fetched content and can respond with a summary.
 
 ## Rules
 
 1. ALWAYS output executable code — never ask clarifying questions instead of acting
-2. Use \`tools.log()\` for any output the user should see
-3. Return \`{ endTurn: true }\` when the task is complete
-4. Return \`{ endTurn: false }\` when you need to see results and continue
-5. Do NOT wrap code in markdown fences inside the codemode tags`
+2. Use \`t.sendMessage()\` for messages the USER should see
+3. Use \`console.log()\` only when YOU need to see data for a follow-up turn
+4. Do NOT wrap code in markdown fences inside the codemode tags`

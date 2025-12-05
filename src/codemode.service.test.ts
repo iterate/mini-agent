@@ -9,7 +9,7 @@ describe("CodemodeService", () => {
   it.effect("returns none for content without code block", () =>
     Effect.gen(function*() {
       const service = yield* CodemodeService
-      const result = yield* service.processResponse("Just some regular text")
+      const result = yield* service.processResponse("test-context", "Just some regular text")
       expect(Option.isNone(result)).toBe(true)
     }).pipe(Effect.provide(testLayer)))
 
@@ -23,7 +23,7 @@ export default async function(t) {
 }
 </codemode>`
 
-      const result = yield* service.processResponse(content)
+      const result = yield* service.processResponse("test-context", content)
       expect(Option.isSome(result)).toBe(true)
 
       if (Option.isSome(result)) {

@@ -1,8 +1,10 @@
 /**
  * Codemode Repository
  *
- * Manages storage of generated code files in timestamped directories.
- * Each response gets its own directory with:
+ * Manages storage of generated code files in context-scoped directories.
+ * Structure: .mini-agent/contexts/<context-name>/<request-id>/<codeblock-id>/
+ *
+ * Each codeblock directory contains:
  * - index.ts: The generated code
  * - types.ts: Type definitions for available tools
  * - tsconfig.json: TypeScript compiler config
@@ -10,7 +12,7 @@
  */
 import { FileSystem, Path } from "@effect/platform"
 import { Context, Effect, Layer } from "effect"
-import type { ResponseId } from "./codemode.model.ts"
+import type { CodeblockId, RequestId } from "./codemode.model.ts"
 import { CodeStorageError } from "./errors.ts"
 
 /** Default tsconfig for generated code */
@@ -33,22 +35,12 @@ const DEFAULT_TSCONFIG = JSON.stringify(
 
 /** Default types.ts defining available tools */
 const DEFAULT_TYPES = `/**
- * Result type that signals whether to continue the agent loop.
- */
-export interface CodemodeResult {
-  /** If true, the agent loop ends. If false, the LLM is called again with this result. */
-  endTurn: boolean
-  /** Optional data to pass back to the LLM */
-  data?: unknown
-}
-
-/**
  * Tools available to generated code.
- * The default function receives this interface and must return CodemodeResult.
+ * The default function receives this interface and returns Promise<void>.
  */
 export interface Tools {
-  /** Log a message to the console */
-  readonly log: (message: string) => Promise<void>
+  /** Send a message to the USER. They see this. Does NOT trigger another turn. */
+  readonly sendMessage: (message: string) => Promise<void>
 
   /** Read a file from the filesystem */
   readonly readFile: (path: string) => Promise<string>
@@ -59,34 +51,41 @@ export interface Tools {
   /** Execute a shell command */
   readonly exec: (command: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>
 
+  /** Fetch a URL and return its content */
+  readonly fetch: (url: string) => Promise<string>
+
   /** Get a secret value. The implementation is hidden from the LLM. */
   readonly getSecret: (name: string) => Promise<string | undefined>
 }
 `
 
-/** CodemodeRepository interface - service methods don't expose internal deps */
+/** Location of a codeblock within the context structure */
+export interface CodeblockLocation {
+  readonly contextName: string
+  readonly requestId: RequestId
+  readonly codeblockId: CodeblockId
+}
+
+/** CodemodeRepository interface */
 interface CodemodeRepositoryService {
-  /** Get the base directory for codemode responses */
-  readonly getBaseDir: () => Effect.Effect<string>
+  /** Get the codeblock directory path */
+  readonly getCodeblockDir: (loc: CodeblockLocation) => Effect.Effect<string>
 
-  /** Get the response directory for a given responseId */
-  readonly getResponseDir: (responseId: ResponseId) => Effect.Effect<string>
-
-  /** Create the response directory with all necessary files */
-  readonly createResponseDir: (responseId: ResponseId) => Effect.Effect<string, CodeStorageError>
+  /** Create the codeblock directory with all necessary files */
+  readonly createCodeblockDir: (loc: CodeblockLocation) => Effect.Effect<string, CodeStorageError>
 
   /** Write the generated code to index.ts */
   readonly writeCode: (
-    responseId: ResponseId,
+    loc: CodeblockLocation,
     code: string,
     attempt: number
   ) => Effect.Effect<string, CodeStorageError>
 
   /** Append to response.md log */
-  readonly appendLog: (responseId: ResponseId, content: string) => Effect.Effect<void, CodeStorageError>
+  readonly appendLog: (loc: CodeblockLocation, content: string) => Effect.Effect<void, CodeStorageError>
 
-  /** Get the index.ts path for a responseId */
-  readonly getCodePath: (responseId: ResponseId) => Effect.Effect<string>
+  /** Get the index.ts path for a codeblock */
+  readonly getCodePath: (loc: CodeblockLocation) => Effect.Effect<string>
 }
 
 export class CodemodeRepository extends Context.Tag("@app/CodemodeRepository")<
@@ -99,15 +98,17 @@ export class CodemodeRepository extends Context.Tag("@app/CodemodeRepository")<
       const fs = yield* FileSystem.FileSystem
       const pathService = yield* Path.Path
       const cwd = process.cwd()
-      const baseDir = pathService.join(cwd, ".mini-agent", "codemode")
+      const contextsDir = pathService.join(cwd, ".mini-agent", "contexts")
 
-      const getBaseDir = () => Effect.succeed(baseDir)
+      /** Build path to codeblock directory */
+      const buildCodeblockPath = (loc: CodeblockLocation) =>
+        pathService.join(contextsDir, loc.contextName, loc.requestId, loc.codeblockId)
 
-      const getResponseDir = (responseId: ResponseId) => Effect.succeed(pathService.join(baseDir, responseId))
+      const getCodeblockDir = (loc: CodeblockLocation) => Effect.succeed(buildCodeblockPath(loc))
 
-      const createResponseDir = (responseId: ResponseId) =>
+      const createCodeblockDir = (loc: CodeblockLocation) =>
         Effect.gen(function*() {
-          const dir = pathService.join(baseDir, responseId)
+          const dir = buildCodeblockPath(loc)
 
           yield* fs.makeDirectory(dir, { recursive: true }).pipe(
             Effect.mapError(
@@ -155,12 +156,12 @@ export class CodemodeRepository extends Context.Tag("@app/CodemodeRepository")<
           return dir
         })
 
-      const writeCode = (responseId: ResponseId, code: string, attempt: number) =>
+      const writeCode = (loc: CodeblockLocation, code: string, attempt: number) =>
         Effect.gen(function*() {
-          const dir = pathService.join(baseDir, responseId)
+          const dir = buildCodeblockPath(loc)
 
           // Prepend import statement
-          const fullCode = `import type { Tools, CodemodeResult } from "./types.ts"\n\n${code}`
+          const fullCode = `import type { Tools } from "./types.ts"\n\n${code}`
 
           // For attempt > 1, save previous attempts
           const filename = attempt > 1 ? `index.attempt-${attempt}.ts` : "index.ts"
@@ -192,9 +193,9 @@ export class CodemodeRepository extends Context.Tag("@app/CodemodeRepository")<
           return filePath
         })
 
-      const appendLog = (responseId: ResponseId, content: string) =>
+      const appendLog = (loc: CodeblockLocation, content: string) =>
         Effect.gen(function*() {
-          const dir = pathService.join(baseDir, responseId)
+          const dir = buildCodeblockPath(loc)
           const logPath = pathService.join(dir, "response.md")
 
           const existing = yield* fs.readFileString(logPath).pipe(Effect.orElse(() => Effect.succeed("")))
@@ -209,13 +210,12 @@ export class CodemodeRepository extends Context.Tag("@app/CodemodeRepository")<
           )
         })
 
-      const getCodePath = (responseId: ResponseId) =>
-        Effect.succeed(pathService.join(pathService.join(baseDir, responseId), "index.ts"))
+      const getCodePath = (loc: CodeblockLocation) =>
+        Effect.succeed(pathService.join(buildCodeblockPath(loc), "index.ts"))
 
       return CodemodeRepository.of({
-        getBaseDir,
-        getResponseDir,
-        createResponseDir,
+        getCodeblockDir,
+        createCodeblockDir,
         writeCode,
         appendLog,
         getCodePath
@@ -226,32 +226,34 @@ export class CodemodeRepository extends Context.Tag("@app/CodemodeRepository")<
   static readonly testLayer = Layer.sync(CodemodeRepository, () => {
     const store = new Map<string, Map<string, string>>()
 
-    const getOrCreateDir = (responseId: string) => {
-      if (!store.has(responseId)) {
-        store.set(responseId, new Map())
+    const getKey = (loc: CodeblockLocation) => `${loc.contextName}/${loc.requestId}/${loc.codeblockId}`
+
+    const getOrCreateDir = (loc: CodeblockLocation) => {
+      const key = getKey(loc)
+      if (!store.has(key)) {
+        store.set(key, new Map())
       }
-      return store.get(responseId)!
+      return store.get(key)!
     }
 
     return CodemodeRepository.of({
-      getBaseDir: () => Effect.succeed("/tmp/.mini-agent/codemode"),
-      getResponseDir: (responseId) => Effect.succeed(`/tmp/.mini-agent/codemode/${responseId}`),
-      createResponseDir: (responseId) => {
-        getOrCreateDir(responseId)
-        return Effect.succeed(`/tmp/.mini-agent/codemode/${responseId}`)
+      getCodeblockDir: (loc) => Effect.succeed(`/tmp/.mini-agent/contexts/${getKey(loc)}`),
+      createCodeblockDir: (loc) => {
+        getOrCreateDir(loc)
+        return Effect.succeed(`/tmp/.mini-agent/contexts/${getKey(loc)}`)
       },
-      writeCode: (responseId, code, _attempt) => {
-        const dir = getOrCreateDir(responseId)
+      writeCode: (loc, code, _attempt) => {
+        const dir = getOrCreateDir(loc)
         dir.set("index.ts", code)
-        return Effect.succeed(`/tmp/.mini-agent/codemode/${responseId}/index.ts`)
+        return Effect.succeed(`/tmp/.mini-agent/contexts/${getKey(loc)}/index.ts`)
       },
-      appendLog: (responseId, content) => {
-        const dir = getOrCreateDir(responseId)
+      appendLog: (loc, content) => {
+        const dir = getOrCreateDir(loc)
         const existing = dir.get("response.md") ?? ""
         dir.set("response.md", existing + content)
         return Effect.succeed(undefined)
       },
-      getCodePath: (responseId) => Effect.succeed(`/tmp/.mini-agent/codemode/${responseId}/index.ts`)
+      getCodePath: (loc) => Effect.succeed(`/tmp/.mini-agent/contexts/${getKey(loc)}/index.ts`)
     })
   })
 }

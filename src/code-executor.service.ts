@@ -8,7 +8,13 @@ import { Command, CommandExecutor } from "@effect/platform"
 import type { Error as PlatformError } from "@effect/platform"
 import type { Scope } from "effect"
 import { Context, Effect, Layer, pipe, Stream } from "effect"
-import { ExecutionCompleteEvent, ExecutionOutputEvent, ExecutionStartEvent, type ResponseId } from "./codemode.model.ts"
+import {
+  type CodeblockId,
+  ExecutionCompleteEvent,
+  ExecutionOutputEvent,
+  ExecutionStartEvent,
+  type RequestId
+} from "./codemode.model.ts"
 
 /** Union of execution events for streaming */
 export type ExecutionEvent = ExecutionStartEvent | ExecutionOutputEvent | ExecutionCompleteEvent
@@ -21,7 +27,8 @@ interface CodeExecutorInterface {
    */
   readonly execute: (
     indexPath: string,
-    responseId: ResponseId
+    requestId: RequestId,
+    codeblockId: CodeblockId
   ) => Stream.Stream<ExecutionEvent, PlatformError.PlatformError, Scope.Scope>
 }
 
@@ -36,10 +43,11 @@ export class CodeExecutor extends Context.Tag("@app/CodeExecutor")<
 
       const execute = (
         indexPath: string,
-        responseId: ResponseId
+        requestId: RequestId,
+        codeblockId: CodeblockId
       ): Stream.Stream<ExecutionEvent, PlatformError.PlatformError, Scope.Scope> =>
         pipe(
-          Stream.make(new ExecutionStartEvent({ responseId })),
+          Stream.make(new ExecutionStartEvent({ requestId, codeblockId })),
           Stream.concat(
             Stream.unwrap(
               Effect.gen(function*() {
@@ -61,8 +69,10 @@ const SECRETS = {
 };
 
 // Tools implementation
+// - sendMessage: writes to stderr (user sees, agent doesn't, no turn trigger)
+// - console.log: writes to stdout (agent sees, triggers another turn)
 const tools = {
-  log: async (message) => console.log(message),
+  sendMessage: async (message) => console.error(message),
   readFile: async (path) => await Bun.file(path).text(),
   writeFile: async (path, content) => await Bun.write(path, content),
   exec: async (command) => {
@@ -75,14 +85,15 @@ const tools = {
     const exitCode = await proc.exited;
     return { stdout, stderr, exitCode };
   },
+  fetch: async (url) => {
+    const response = await globalThis.fetch(url);
+    return await response.text();
+  },
   getSecret: async (name) => SECRETS[name]
 };
 
-// Execute and capture result
-const result = await main(tools);
-
-// Output the result as JSON on a special marker line for parsing
-console.log("__CODEMODE_RESULT__" + JSON.stringify(result ?? { endTurn: true }));
+// Execute - no return value expected
+await main(tools);
 `
 
                 const cmd = Command.make("bun", "-e", runnerCode)
@@ -95,7 +106,8 @@ console.log("__CODEMODE_RESULT__" + JSON.stringify(result ?? { endTurn: true }))
                   Stream.map(
                     (data) =>
                       new ExecutionOutputEvent({
-                        responseId,
+                        requestId,
+                        codeblockId,
                         stream: "stdout",
                         data
                       })
@@ -108,7 +120,8 @@ console.log("__CODEMODE_RESULT__" + JSON.stringify(result ?? { endTurn: true }))
                   Stream.map(
                     (data) =>
                       new ExecutionOutputEvent({
-                        responseId,
+                        requestId,
+                        codeblockId,
                         stream: "stderr",
                         data
                       })
@@ -122,7 +135,7 @@ console.log("__CODEMODE_RESULT__" + JSON.stringify(result ?? { endTurn: true }))
                     Stream.fromEffect(
                       Effect.gen(function*() {
                         const exitCode = yield* process.exitCode
-                        return new ExecutionCompleteEvent({ responseId, exitCode })
+                        return new ExecutionCompleteEvent({ requestId, codeblockId, exitCode })
                       })
                     )
                   )
@@ -139,15 +152,16 @@ console.log("__CODEMODE_RESULT__" + JSON.stringify(result ?? { endTurn: true }))
   static readonly testLayer = Layer.succeed(
     CodeExecutor,
     CodeExecutor.of({
-      execute: (_indexPath, responseId) =>
+      execute: (_indexPath, requestId, codeblockId) =>
         Stream.make(
-          new ExecutionStartEvent({ responseId }),
+          new ExecutionStartEvent({ requestId, codeblockId }),
           new ExecutionOutputEvent({
-            responseId,
+            requestId,
+            codeblockId,
             stream: "stdout",
             data: "mock execution output\n"
           }),
-          new ExecutionCompleteEvent({ responseId, exitCode: 0 })
+          new ExecutionCompleteEvent({ requestId, codeblockId, exitCode: 0 })
         )
     })
   )

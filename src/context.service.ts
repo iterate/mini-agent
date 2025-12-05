@@ -28,8 +28,7 @@ import {
   type PersistedEvent as PersistedEventType,
   SetLlmConfigEvent,
   SystemPromptEvent,
-  TextDeltaEvent,
-  UserMessageEvent
+  TextDeltaEvent
 } from "./context.model.ts"
 import { ContextRepository } from "./context.repository.ts"
 import type { CodeStorageError, ContextLoadError, ContextSaveError } from "./errors.ts"
@@ -44,9 +43,8 @@ export interface AddEventsOptions {
 /** Union of context events and codemode streaming events */
 export type ContextOrCodemodeEvent = ContextEvent | CodemodeStreamEvent
 
-// =============================================================================
-// Context Service
-// =============================================================================
+/** Maximum number of agent loop iterations before forcing endTurn */
+const MAX_AGENT_LOOP_ITERATIONS = 3
 
 export class ContextService extends Context.Tag("@app/ContextService")<
   ContextService,
@@ -106,8 +104,10 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
         LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig | Scope.Scope
       > => {
-        // Check if any UserMessage is present (triggers LLM)
-        const hasUserMessage = inputEvents.some(Schema.is(UserMessageEvent))
+        // Check if any event should trigger an agent turn
+        const shouldTriggerAgent = inputEvents.some(
+          (e) => "triggerAgentTurn" in e && e.triggerAgentTurn === "after-current-turn"
+        )
         const codemodeEnabled = options?.codemode ?? false
 
         /** Persist a single event to the context */
@@ -117,32 +117,8 @@ export class ContextService extends Context.Tag("@app/ContextService")<
             yield* repo.save(contextName, [...current, event])
           })
 
-        /** Marker used by code executor to signal the result */
-        const CODEMODE_RESULT_MARKER = "__CODEMODE_RESULT__"
-
-        /** Parse the codemode result from stdout */
-        const parseCodemodeResult = (stdout: string): { endTurn: boolean; data?: unknown } => {
-          const lines = stdout.split("\n")
-          for (const line of lines) {
-            const markerIdx = line.indexOf(CODEMODE_RESULT_MARKER)
-            if (markerIdx !== -1) {
-              try {
-                const json = line.slice(markerIdx + CODEMODE_RESULT_MARKER.length)
-                return JSON.parse(json) as { endTurn: boolean; data?: unknown }
-              } catch {
-                return { endTurn: true }
-              }
-            }
-          }
-          return { endTurn: true }
-        }
-
-        /** Strip the codemode result marker line from stdout for display */
-        const stripResultMarker = (stdout: string): string =>
-          stdout
-            .split("\n")
-            .filter((line) => !line.includes(CODEMODE_RESULT_MARKER))
-            .join("\n")
+        /** Check if stdout has non-whitespace output (determines agent loop continuation) */
+        const hasNonWhitespaceOutput = (stdout: string): boolean => stdout.trim().length > 0
 
         /** Process codemode if enabled and assistant has code blocks */
         const processCodemodeIfNeeded = (
@@ -165,7 +141,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
               }
 
               // Get the codemode stream
-              const streamOpt = yield* codemodeService.processResponse(assistantContent)
+              const streamOpt = yield* codemodeService.processResponse(contextName, assistantContent)
               if (Option.isNone(streamOpt)) {
                 return Stream.empty
               }
@@ -182,18 +158,21 @@ export class ContextService extends Context.Tag("@app/ContextService")<
                 streamOpt.value,
                 Stream.tap((event) =>
                   Effect.sync(() => {
-                    if (event._tag === "ExecutionOutput") {
-                      const e = event as { stream: string; data: string }
-                      if (e.stream === "stdout") {
-                        stdout += e.data
-                      } else {
-                        stderr += e.data
-                      }
-                    } else if (event._tag === "ExecutionComplete") {
-                      exitCode = (event as { exitCode: number }).exitCode
-                    } else if (event._tag === "TypecheckFail") {
-                      typecheckFailed = true
-                      typecheckErrors = (event as { errors: string }).errors
+                    switch (event._tag) {
+                      case "ExecutionOutput":
+                        if (event.stream === "stdout") {
+                          stdout += event.data
+                        } else {
+                          stderr += event.data
+                        }
+                        break
+                      case "ExecutionComplete":
+                        exitCode = event.exitCode
+                        break
+                      case "TypecheckFail":
+                        typecheckFailed = true
+                        typecheckErrors = event.errors
+                        break
                     }
                   })
                 ),
@@ -207,23 +186,17 @@ export class ContextService extends Context.Tag("@app/ContextService")<
                           stdout: "",
                           stderr: `TypeScript errors:\n${typecheckErrors}`,
                           exitCode: 1,
-                          endTurn: false, // Continue loop so LLM can fix
-                          data: { typecheckFailed: true }
+                          triggerAgentTurn: "after-current-turn" // Continue loop so LLM can fix
                         })
                         yield* persistEvent(result)
                         return result as ContextOrCodemodeEvent
                       }
 
-                      // Parse the result from stdout
-                      const parsed = parseCodemodeResult(stdout)
-                      const displayStdout = stripResultMarker(stdout)
-
                       const result = new CodemodeResultEvent({
-                        stdout: displayStdout,
+                        stdout,
                         stderr,
                         exitCode,
-                        endTurn: parsed.endTurn,
-                        data: parsed.data
+                        triggerAgentTurn: hasNonWhitespaceOutput(stdout) ? "after-current-turn" : "never"
                       })
                       yield* persistEvent(result)
                       return result as ContextOrCodemodeEvent
@@ -237,7 +210,8 @@ export class ContextService extends Context.Tag("@app/ContextService")<
 
         /** Agent loop: process LLM response, execute codemode, and loop if endTurn=false */
         const agentLoopStream = (
-          currentEvents: ReadonlyArray<PersistedEventType>
+          currentEvents: ReadonlyArray<PersistedEventType>,
+          iteration: number = 1
         ): Stream.Stream<
           ContextOrCodemodeEvent,
           AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
@@ -257,18 +231,43 @@ export class ContextService extends Context.Tag("@app/ContextService")<
                 )
                 : Stream.make(event as ContextOrCodemodeEvent)
             ),
-            // Check if we need to continue the loop (endTurn=false)
+            // Check if we need to continue the loop (triggerAgentTurn=after-current-turn)
             Stream.flatMap((event) => {
-              if (Schema.is(CodemodeResultEvent)(event) && !event.endTurn) {
+              if (Schema.is(CodemodeResultEvent)(event) && event.triggerAgentTurn === "after-current-turn") {
+                // Check max iterations
+                if (iteration >= MAX_AGENT_LOOP_ITERATIONS) {
+                  return pipe(
+                    Stream.make(event as ContextOrCodemodeEvent),
+                    Stream.concat(
+                      Stream.fromEffect(
+                        Effect.gen(function*() {
+                          yield* Effect.logWarning(
+                            `Agent loop reached max iterations (${MAX_AGENT_LOOP_ITERATIONS}), forcing end`
+                          )
+                          // Persist a final result indicating forced stop
+                          const forcedResult = new CodemodeResultEvent({
+                            stdout: event.stdout,
+                            stderr: event.stderr + "\n[Agent loop reached maximum iterations]",
+                            exitCode: event.exitCode,
+                            triggerAgentTurn: "never"
+                          })
+                          yield* persistEvent(forcedResult)
+                          return forcedResult as ContextOrCodemodeEvent
+                        })
+                      )
+                    )
+                  )
+                }
+
                 // Continue agent loop: reload context and stream new LLM response
                 return pipe(
                   Stream.make(event as ContextOrCodemodeEvent),
                   Stream.concat(
                     Stream.unwrap(
                       Effect.gen(function*() {
-                        yield* Effect.logDebug("Agent loop continuing (endTurn=false)")
+                        yield* Effect.logDebug(`Agent loop continuing (iteration ${iteration + 1})`)
                         const reloadedEvents = yield* repo.load(contextName)
-                        return agentLoopStream(reloadedEvents)
+                        return agentLoopStream(reloadedEvents, iteration + 1)
                       })
                     )
                   )
@@ -323,8 +322,8 @@ export class ContextService extends Context.Tag("@app/ContextService")<
             }
             return eventsWithPrompt
           })(),
-          // Only stream LLM response if there's a UserMessage
-          Effect.andThen((events) => hasUserMessage ? agentLoopStream(events) : Stream.empty),
+          // Only stream LLM response if an event triggers agent turn
+          Effect.andThen((events) => shouldTriggerAgent ? agentLoopStream(events) : Stream.empty),
           Stream.unwrap
         )
       }
@@ -396,11 +395,13 @@ export class ContextService extends Context.Tag("@app/ContextService")<
           store.set(contextName, events)
         }
 
-        // Check if any UserMessage is present
-        const hasUserMessage = inputEvents.some(Schema.is(UserMessageEvent))
+        // Check if any event should trigger an agent turn
+        const shouldTriggerAgent = inputEvents.some(
+          (e) => "triggerAgentTurn" in e && e.triggerAgentTurn === "after-current-turn"
+        )
 
-        // Only generate mock LLM response if there's a UserMessage
-        if (!hasUserMessage) {
+        // Only generate mock LLM response if an event triggers agent turn
+        if (!shouldTriggerAgent) {
           return Stream.empty
         }
 

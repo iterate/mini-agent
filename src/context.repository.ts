@@ -51,6 +51,7 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
     ) => Effect.Effect<void, ContextLoadError | ContextSaveError>
     readonly list: () => Effect.Effect<Array<string>, ContextLoadError>
     readonly getContextsDir: () => string
+    readonly getContextDir: (contextName: string) => string
   }
 >() {
   /**
@@ -67,7 +68,11 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
       const cwd = Option.getOrElse(config.cwd, () => process.cwd())
       const contextsDir = path.join(cwd, config.dataStorageDir, "contexts")
 
-      const getContextPath = (contextName: string) => path.join(contextsDir, `${contextName}.yaml`)
+      /** Get directory for a context (each context gets its own folder) */
+      const getContextDir = (contextName: string) => path.join(contextsDir, contextName)
+
+      /** Get path to events.yaml for a context */
+      const getContextPath = (contextName: string) => path.join(getContextDir(contextName), "events.yaml")
 
       // Service methods wrapped with Effect.fn for call-site tracing
       // See: https://www.effect.solutions/services-and-layers
@@ -77,10 +82,11 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
        */
       const save = Effect.fn("ContextRepository.save")(
         function*(contextName: string, events: ReadonlyArray<PersistedEventType>) {
+          const contextDir = getContextDir(contextName)
           const filePath = getContextPath(contextName)
 
-          // Ensure directory exists
-          yield* fs.makeDirectory(contextsDir, { recursive: true }).pipe(
+          // Ensure context directory exists (each context gets its own folder)
+          yield* fs.makeDirectory(contextDir, { recursive: true }).pipe(
             Effect.catchAll(() => Effect.void)
           )
 
@@ -184,6 +190,7 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
 
       /**
        * List all existing context names, sorted by most recently modified first.
+       * Looks for directories containing events.yaml.
        */
       const list = Effect.fn("ContextRepository.list")(
         function*() {
@@ -198,7 +205,6 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
           if (!exists) return [] as Array<string>
 
           const entries = yield* fs.readDirectory(contextsDir).pipe(
-            Effect.map((names) => names.filter((name) => name.endsWith(".yaml"))),
             Effect.catchAll((error) =>
               new ContextLoadError({
                 name: ContextName.make(""),
@@ -207,21 +213,22 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
             )
           )
 
-          // Get modification times for each file
-          const entriesWithTimes = yield* Effect.all(
-            entries.map((name) =>
-              fs.stat(path.join(contextsDir, name)).pipe(
-                Effect.map((stat) => ({
-                  name: name.replace(/\.yaml$/, ""),
-                  mtime: Option.getOrElse(stat.mtime, () => new Date(0))
-                })),
-                Effect.catchAll(() => Effect.succeed({ name: name.replace(/\.yaml$/, ""), mtime: new Date(0) }))
+          // Filter to only directories that have events.yaml, and get mod times
+          const contextsWithTimes: Array<{ name: string; mtime: Date }> = []
+          for (const entry of entries) {
+            const eventsPath = path.join(contextsDir, entry, "events.yaml")
+            const hasEvents = yield* fs.exists(eventsPath).pipe(Effect.catchAll(() => Effect.succeed(false)))
+            if (hasEvents) {
+              const stat = yield* fs.stat(eventsPath).pipe(
+                Effect.map((s) => Option.getOrElse(s.mtime, () => new Date(0))),
+                Effect.catchAll(() => Effect.succeed(new Date(0)))
               )
-            )
-          )
+              contextsWithTimes.push({ name: entry, mtime: stat })
+            }
+          }
 
           // Sort by modification time, most recent first
-          return entriesWithTimes
+          return contextsWithTimes
             .sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
             .map((entry) => entry.name)
         }
@@ -233,7 +240,8 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
         save,
         append,
         list,
-        getContextsDir: () => contextsDir
+        getContextsDir: () => contextsDir,
+        getContextDir
       })
     })
   )
@@ -263,7 +271,8 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
           store.set(contextName, [...existing, ...newEvents])
         }),
       list: () => Effect.sync(() => Array.from(store.keys()).sort()),
-      getContextsDir: () => "/test/contexts"
+      getContextsDir: () => "/test/contexts",
+      getContextDir: (contextName: string) => `/test/contexts/${contextName}`
     })
   })
 }
