@@ -11,8 +11,9 @@
  * - response.md: LLM conversation log
  */
 import { FileSystem, Path } from "@effect/platform"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Option } from "effect"
 import type { CodeblockId, RequestId } from "./codemode.model.ts"
+import { AppConfig } from "./config.ts"
 import { CodeStorageError } from "./errors.ts"
 
 /** Default tsconfig for generated code */
@@ -37,6 +38,10 @@ const DEFAULT_TSCONFIG = JSON.stringify(
 const DEFAULT_TYPES = `/**
  * Tools available to generated code.
  * The default function receives this interface and returns Promise<void>.
+ *
+ * Output channels:
+ * - t.sendMessage(): writes to stderr -> user sees, agent does NOT
+ * - console.log(): writes to stdout -> agent sees, may trigger continuation
  */
 export interface Tools {
   /** Send a message to the USER. They see this. Does NOT trigger another turn. */
@@ -56,6 +61,15 @@ export interface Tools {
 
   /** Get a secret value. The implementation is hidden from the LLM. */
   readonly getSecret: (name: string) => Promise<string | undefined>
+
+  /** Evaluate a mathematical expression */
+  readonly calculate: (expression: string) => Promise<{ result: number; steps: Array<string> }>
+
+  /** Get current timestamp as ISO string */
+  readonly now: () => Promise<string>
+
+  /** Sleep for specified milliseconds */
+  readonly sleep: (ms: number) => Promise<void>
 }
 `
 
@@ -97,8 +111,9 @@ export class CodemodeRepository extends Context.Tag("@app/CodemodeRepository")<
     Effect.gen(function*() {
       const fs = yield* FileSystem.FileSystem
       const pathService = yield* Path.Path
-      const cwd = process.cwd()
-      const contextsDir = pathService.join(cwd, ".mini-agent", "contexts")
+      const config = yield* AppConfig
+      const cwd = Option.getOrElse(config.cwd, () => process.cwd())
+      const contextsDir = pathService.join(cwd, config.dataStorageDir, "contexts")
 
       /** Build path to codeblock directory */
       const buildCodeblockPath = (loc: CodeblockLocation) =>

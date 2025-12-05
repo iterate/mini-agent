@@ -4,11 +4,14 @@
  * The main domain service for working with Contexts.
  *
  * A Context is a named, ordered list of events representing a conversation.
- * The only supported operation is `addEvents`:
+ * The `addEvents` operation handles a single turn:
  * 1. Appends input events (typically UserMessage) to the context
  * 2. Triggers an LLM request with the full event history
  * 3. Streams back new events (TextDelta ephemeral, AssistantMessage persisted)
- * 4. Persists the new events to the context file
+ * 4. If codemode enabled, executes code blocks and streams codemode events
+ * 5. Persists new events as they complete
+ *
+ * The agent loop (iteration based on triggerAgentTurn) is handled by CLI.
  */
 import type { AiError, LanguageModel } from "@effect/ai"
 import type { Error as PlatformError, FileSystem } from "@effect/platform"
@@ -42,22 +45,21 @@ export interface AddEventsOptions {
 /** Union of context events and codemode streaming events */
 export type ContextOrCodemodeEvent = ContextEvent | CodemodeStreamEvent
 
-/** Maximum number of agent loop iterations before forcing endTurn */
-const MAX_AGENT_LOOP_ITERATIONS = 3
-
 export class ContextService extends Context.Tag("@app/ContextService")<
   ContextService,
   {
     /**
-     * Add events to a context, triggering LLM processing if UserMessage present.
+     * Add events to a context, triggering LLM processing for a single turn.
      *
-     * This is the core operation on a Context:
+     * This handles one turn of the conversation:
      * 1. Loads existing events (or creates context with system prompt)
-     * 2. Appends the input events (UserMessage and/or FileAttachment)
-     * 3. Runs LLM with full history (only if UserMessage present)
+     * 2. Appends the input events (UserMessage, FileAttachment, CodemodeResult)
+     * 3. Runs LLM with full history (only if an event has triggerAgentTurn)
      * 4. Streams back TextDelta (ephemeral) and AssistantMessage (persisted)
      * 5. If codemode enabled, executes code blocks and streams codemode events
      * 6. Persists new events as they complete (including CodemodeResult)
+     *
+     * The caller (CLI) is responsible for iterating based on CodemodeResult.triggerAgentTurn.
      */
     readonly addEvents: (
       contextName: string,
@@ -80,6 +82,12 @@ export class ContextService extends Context.Tag("@app/ContextService")<
       contextName: string,
       event: PersistedEventType
     ) => Effect.Effect<void, ContextLoadError | ContextSaveError>
+
+    /** Save events to a context (used by CLI for persisting CodemodeResult) */
+    readonly save: (
+      contextName: string,
+      events: ReadonlyArray<PersistedEventType>
+    ) => Effect.Effect<void, ContextSaveError>
   }
 >() {
   /**
@@ -91,9 +99,6 @@ export class ContextService extends Context.Tag("@app/ContextService")<
       const repo = yield* ContextRepository
       const codemodeService = yield* CodemodeService
 
-      // Service methods wrapped with Effect.fn for call-site tracing
-      // See: https://www.effect.solutions/services-and-layers
-
       const addEvents = (
         contextName: string,
         inputEvents: ReadonlyArray<InputEvent>,
@@ -103,11 +108,20 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
         LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
       > => {
-        // Check if any event should trigger an agent turn
-        const shouldTriggerAgent = inputEvents.some(
+        // Check if any input event should trigger an agent turn
+        const inputTriggers = inputEvents.some(
           (e) => "triggerAgentTurn" in e && e.triggerAgentTurn === "after-current-turn"
         )
         const codemodeEnabled = options?.codemode ?? false
+
+        /** Check if the last event in context triggers a turn (for agent loop continuation) */
+        const contextTriggers = (events: ReadonlyArray<PersistedEventType>): boolean => {
+          if (events.length === 0) return false
+          const lastEvent = events[events.length - 1]
+          return lastEvent !== undefined &&
+            "triggerAgentTurn" in lastEvent &&
+            lastEvent.triggerAgentTurn === "after-current-turn"
+        }
 
         /** Persist a single event to the context */
         const persistEvent = (event: PersistedEventType) =>
@@ -207,10 +221,9 @@ export class ContextService extends Context.Tag("@app/ContextService")<
           )
         }
 
-        /** Agent loop: process LLM response, execute codemode, and loop if endTurn=false */
-        const agentLoopStream = (
-          currentEvents: ReadonlyArray<PersistedEventType>,
-          iteration: number = 1
+        /** Single turn: LLM response + codemode processing (no iteration) */
+        const singleTurnStream = (
+          currentEvents: ReadonlyArray<PersistedEventType>
         ): Stream.Stream<
           ContextOrCodemodeEvent,
           AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
@@ -229,51 +242,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
                   Stream.concat(processCodemodeIfNeeded(event.content))
                 )
                 : Stream.make(event as ContextOrCodemodeEvent)
-            ),
-            // Check if we need to continue the loop (triggerAgentTurn=after-current-turn)
-            Stream.flatMap((event) => {
-              if (Schema.is(CodemodeResultEvent)(event) && event.triggerAgentTurn === "after-current-turn") {
-                // Check max iterations
-                if (iteration >= MAX_AGENT_LOOP_ITERATIONS) {
-                  return pipe(
-                    Stream.make(event as ContextOrCodemodeEvent),
-                    Stream.concat(
-                      Stream.fromEffect(
-                        Effect.gen(function*() {
-                          yield* Effect.logWarning(
-                            `Agent loop reached max iterations (${MAX_AGENT_LOOP_ITERATIONS}), forcing end`
-                          )
-                          // Persist a final result indicating forced stop
-                          const forcedResult = new CodemodeResultEvent({
-                            stdout: event.stdout,
-                            stderr: event.stderr + "\n[Agent loop reached maximum iterations]",
-                            exitCode: event.exitCode,
-                            triggerAgentTurn: "never"
-                          })
-                          yield* persistEvent(forcedResult)
-                          return forcedResult as ContextOrCodemodeEvent
-                        })
-                      )
-                    )
-                  )
-                }
-
-                // Continue agent loop: reload context and stream new LLM response
-                return pipe(
-                  Stream.make(event as ContextOrCodemodeEvent),
-                  Stream.concat(
-                    Stream.unwrap(
-                      Effect.gen(function*() {
-                        yield* Effect.logDebug(`Agent loop continuing (iteration ${iteration + 1})`)
-                        const reloadedEvents = yield* repo.load(contextName)
-                        return agentLoopStream(reloadedEvents, iteration + 1)
-                      })
-                    )
-                  )
-                )
-              }
-              return Stream.make(event)
-            })
+            )
           )
 
         /** Replace the system prompt with codemode prompt if codemode is enabled */
@@ -322,7 +291,11 @@ export class ContextService extends Context.Tag("@app/ContextService")<
             return eventsWithPrompt
           })(),
           // Only stream LLM response if an event triggers agent turn
-          Effect.andThen((events) => shouldTriggerAgent ? agentLoopStream(events) : Stream.empty),
+          // This can be from input events OR from the last event in context (for agent loop continuation)
+          Effect.andThen((events) => {
+            const shouldTrigger = inputTriggers || contextTriggers(events)
+            return shouldTrigger ? singleTurnStream(events) : Stream.empty
+          }),
           Stream.unwrap
         )
       }
@@ -346,18 +319,24 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         }
       )
 
+      const save = Effect.fn("ContextService.save")(
+        function*(contextName: string, events: ReadonlyArray<PersistedEventType>) {
+          yield* repo.save(contextName, [...events])
+        }
+      )
+
       return ContextService.of({
         addEvents,
         load,
         list,
-        persistEvent
+        persistEvent,
+        save
       })
     })
   )
 
   /**
    * Test layer with mock LLM responses for unit tests.
-   * See: https://www.effect.solutions/testing
    */
   static readonly testLayer = Layer.sync(ContextService, () => {
     // In-memory store for test contexts
@@ -432,6 +411,11 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         Effect.sync(() => {
           const current = store.get(contextName) ?? []
           store.set(contextName, [...current, event])
+        }),
+
+      save: (contextName: string, events: ReadonlyArray<PersistedEventType>) =>
+        Effect.sync(() => {
+          store.set(contextName, [...events])
         })
     })
   })

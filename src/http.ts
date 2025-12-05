@@ -85,12 +85,8 @@ const contextHandler = Effect.gen(function*() {
   }
 
   // Filter to InputEvent only (exclude SystemPromptEvent which isn't an InputEvent)
-  const events: Array<InputEvent> = []
-  for (const e of parsedEvents) {
-    if (Schema.is(UserMessageEvent)(e)) {
-      events.push(e)
-    }
-  }
+  const isUserMessage = (e: ScriptInputEvent): e is UserMessageEvent => Schema.is(UserMessageEvent)(e)
+  const events: Array<InputEvent> = parsedEvents.filter(isUserMessage)
   if (events.length === 0) {
     return HttpServerResponse.text("No valid input events in body (SystemPrompt alone is not supported)", {
       status: 400

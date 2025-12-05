@@ -1,12 +1,18 @@
 /**
  * Code Executor Service
  *
- * Executes generated TypeScript code via bun subprocess.
+ * Executes generated TypeScript code via the `mini-agent codemode run` CLI command.
  * Streams stdout/stderr as events for real-time feedback.
+ *
+ * The CLI command handles:
+ * - Loading and executing the generated module
+ * - Providing tools (sendMessage, readFile, writeFile, exec, fetch, etc.)
+ * - Outputting __CODEMODE_RESULT__ marker on completion
  */
-import { Command, CommandExecutor } from "@effect/platform"
+import { Command, CommandExecutor, Path } from "@effect/platform"
 import type { Error as PlatformError } from "@effect/platform"
 import { Context, Effect, Layer, pipe, Stream } from "effect"
+import { CODEMODE_RESULT_MARKER } from "./codemode-run.ts"
 import {
   type CodeblockId,
   ExecutionCompleteEvent,
@@ -15,13 +21,21 @@ import {
   type RequestId
 } from "./codemode.model.ts"
 
+// Compute absolute path to main.ts from this module's location
+// This allows calling the CLI without relying on package.json scripts
+const MAIN_PATH = (() => {
+  const thisFile = new URL(import.meta.url).pathname
+  const srcDir = thisFile.substring(0, thisFile.lastIndexOf("/"))
+  return `${srcDir}/main.ts`
+})()
+
 /** Union of execution events for streaming */
 export type ExecutionEvent = ExecutionStartEvent | ExecutionOutputEvent | ExecutionCompleteEvent
 
 /** Interface for code executor */
 interface CodeExecutorInterface {
   /**
-   * Execute a TypeScript file via bun subprocess.
+   * Execute a TypeScript file via the codemode run CLI command.
    * Streams execution events: start, output chunks, complete.
    * Note: Scope is managed internally - stream is self-scoped.
    */
@@ -40,6 +54,7 @@ export class CodeExecutor extends Context.Tag("@app/CodeExecutor")<
     CodeExecutor,
     Effect.gen(function*() {
       const executor = yield* CommandExecutor.CommandExecutor
+      const pathService = yield* Path.Path
 
       const execute = (
         indexPath: string,
@@ -52,67 +67,31 @@ export class CodeExecutor extends Context.Tag("@app/CodeExecutor")<
             // Use unwrapScoped to manage subprocess lifecycle internally
             Stream.unwrapScoped(
               Effect.gen(function*() {
-                // Create runner code that imports and executes the generated module
-                const runnerCode = `
-const indexPath = ${JSON.stringify(indexPath)};
-const mod = await import(indexPath);
-const main = mod.default;
+                // Get the directory containing index.ts
+                const blockDir = pathService.dirname(indexPath)
 
-if (typeof main !== "function") {
-  console.error("Generated code must export a default function");
-  process.exit(1);
-}
-
-// Secret store - implementation hidden from LLM
-const SECRETS = {
-  "demo-secret": "The secret value is: SUPERSECRET42",
-  "api-key": "sk-test-1234567890abcdef"
-};
-
-// Tools implementation
-// - sendMessage: writes to stderr (user sees, agent doesn't, no turn trigger)
-// - console.log: writes to stdout (agent sees, triggers another turn)
-const tools = {
-  sendMessage: async (message) => console.error(message),
-  readFile: async (path) => await Bun.file(path).text(),
-  writeFile: async (path, content) => await Bun.write(path, content),
-  exec: async (command) => {
-    const proc = Bun.spawn(["sh", "-c", command], {
-      stdout: "pipe",
-      stderr: "pipe"
-    });
-    const stdout = await new Response(proc.stdout).text();
-    const stderr = await new Response(proc.stderr).text();
-    const exitCode = await proc.exited;
-    return { stdout, stderr, exitCode };
-  },
-  fetch: async (url) => {
-    const response = await globalThis.fetch(url);
-    return await response.text();
-  },
-  getSecret: async (name) => SECRETS[name]
-};
-
-// Execute - no return value expected
-await main(tools);
-`
-
-                const cmd = Command.make("bun", "-e", runnerCode)
+                // Call the CLI command: bun <main.ts> codemode run <dir>
+                // Using absolute path to main.ts to avoid relying on package.json scripts
+                const cmd = Command.make("bun", MAIN_PATH, "codemode", "run", blockDir)
                 const process = yield* executor.start(cmd)
 
                 // Stream stdout and stderr
+                // Note: stdout may contain __CODEMODE_RESULT__ marker - we filter it out
                 const stdoutStream = pipe(
                   process.stdout,
                   Stream.decodeText(),
-                  Stream.map(
-                    (data) =>
-                      new ExecutionOutputEvent({
-                        requestId,
-                        codeblockId,
-                        stream: "stdout",
-                        data
-                      })
-                  )
+                  Stream.map((data) => {
+                    // Remove the result marker from output
+                    const cleaned = data.replace(new RegExp(`\\n?${CODEMODE_RESULT_MARKER}\\n?`, "g"), "")
+                    return new ExecutionOutputEvent({
+                      requestId,
+                      codeblockId,
+                      stream: "stdout",
+                      data: cleaned
+                    })
+                  }),
+                  // Filter out empty chunks after marker removal
+                  Stream.filter((event) => event.data.length > 0)
                 )
 
                 const stderrStream = pipe(

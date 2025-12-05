@@ -124,6 +124,9 @@ const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`
 const red = (s: string) => `\x1b[31m${s}\x1b[0m`
 const dim = (s: string) => `\x1b[90m${s}\x1b[0m`
 
+/** Maximum agent loop iterations to prevent infinite loops */
+const MAX_AGENT_LOOP_ITERATIONS = 15
+
 /** Handle codemode streaming events with colored output */
 const handleCodemodeStreamEvent = (
   event: CodemodeStreamEvent,
@@ -236,7 +239,15 @@ const handleEvent = (
     }
   })
 
-/** Run the event stream, handling each event */
+/**
+ * Run the event stream with agent loop.
+ *
+ * The agent loop handles codemode execution flow:
+ * 1. Initial user message triggers LLM response
+ * 2. If LLM outputs codemode, code is executed
+ * 3. If CodemodeResult has triggerAgentTurn="after-current-turn", loop continues
+ * 4. Loop continues until max iterations or no continuation needed
+ */
 const runEventStream = (
   contextName: string,
   userMessage: string,
@@ -272,10 +283,59 @@ const runEventStream = (
 
     inputEvents.push(new UserMessageEvent({ content: userMessage }))
 
-    // Codemode is always enabled - ContextService handles execution internally
+    // Track last CodemodeResult for agent loop decision
+    let lastCodemodeResult: CodemodeResultEvent | undefined
+
+    // Initial turn
     yield* contextService.addEvents(contextName, inputEvents, { codemode: true }).pipe(
-      Stream.runForEach((event) => handleEvent(event, options))
+      Stream.runForEach((event) =>
+        Effect.gen(function*() {
+          yield* handleEvent(event, options)
+          if (Schema.is(CodemodeResultEvent)(event)) {
+            lastCodemodeResult = event
+          }
+        })
+      )
     )
+
+    // Agent loop: continue if CodemodeResult requests another turn
+    let iteration = 1
+    while (
+      lastCodemodeResult &&
+      lastCodemodeResult.triggerAgentTurn === "after-current-turn" &&
+      iteration < MAX_AGENT_LOOP_ITERATIONS
+    ) {
+      iteration++
+      yield* Effect.logDebug(`Agent loop continuing (iteration ${iteration})`)
+
+      if (!options.raw) {
+        yield* Console.log(dim(`\n[Agent continuing... (iteration ${iteration})]`))
+        yield* Console.log(`\n${assistantLabel}`)
+      }
+
+      // Reset for next turn - the persisted CodemodeResult will trigger LLM
+      lastCodemodeResult = undefined
+
+      // Empty input events - the persisted CodemodeResult already triggers the turn
+      yield* contextService.addEvents(contextName, [], { codemode: true }).pipe(
+        Stream.runForEach((event) =>
+          Effect.gen(function*() {
+            yield* handleEvent(event, options)
+            if (Schema.is(CodemodeResultEvent)(event)) {
+              lastCodemodeResult = event
+            }
+          })
+        )
+      )
+    }
+
+    // Warn if max iterations reached
+    if (iteration >= MAX_AGENT_LOOP_ITERATIONS && lastCodemodeResult?.triggerAgentTurn === "after-current-turn") {
+      yield* Effect.logWarning(`Agent loop reached max iterations (${MAX_AGENT_LOOP_ITERATIONS}), stopping`)
+      if (!options.raw) {
+        yield* Console.log(yellow(`\n[Agent loop stopped: max iterations (${MAX_AGENT_LOOP_ITERATIONS}) reached]`))
+      }
+    }
   })
 
 /** CLI interaction mode - determines how input/output is handled */
@@ -644,6 +704,7 @@ const rootCommand = Command.make(
   Command.withSubcommands([
     chatCommand,
     serveCommand,
+    codemodeCommand,
     layercodeCommand,
     logTestCommand,
     traceTestCommand,

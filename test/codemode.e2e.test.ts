@@ -5,20 +5,35 @@
  */
 import { FileSystem, Path } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer, Option, Stream } from "effect"
 import { describe, expect } from "vitest"
 import { CodeExecutor } from "../src/code-executor.service.ts"
 import { CodemodeRepository } from "../src/codemode.repository.ts"
 import { CodemodeService } from "../src/codemode.service.ts"
+import { AppConfig } from "../src/config.ts"
 import { TypecheckService } from "../src/typechecker.service.ts"
 import { test } from "./fixtures.ts"
 
 describe("Codemode E2E", () => {
+  // Test config layer - uses defaults appropriate for tests
+  const testConfigLayer = Layer.succeed(AppConfig, {
+    llm: "openai:gpt-4.1-mini",
+    dataStorageDir: ".mini-agent",
+    configFile: "mini-agent.config.yaml",
+    cwd: Option.none(),
+    stdoutLogLevel: { _tag: "Warning", label: "WARN", ordinal: 3, syslog: 4 } as never,
+    fileLogLevel: { _tag: "Debug", label: "DEBUG", ordinal: 1, syslog: 7 } as never,
+    port: 3000,
+    host: "0.0.0.0",
+    layercodeWebhookSecret: Option.none()
+  })
+
   // Full layer stack for real codemode processing with BunContext providing FileSystem, Path, CommandExecutor
   const serviceLayer = CodemodeService.layer.pipe(
     Layer.provide(CodemodeRepository.layer),
     Layer.provide(TypecheckService.layer),
     Layer.provide(CodeExecutor.layer),
+    Layer.provide(testConfigLayer),
     Layer.provide(BunContext.layer)
   )
   // Also expose BunContext services for tests that need FileSystem/Path directly
@@ -235,16 +250,19 @@ export default async function(t: Tools): Promise<void> {
     }
   })
 
-  test("getSecret tool retrieves secrets hidden from LLM", async ({ testDir }) => {
+  test("getSecret tool retrieves secrets from environment", async ({ testDir }) => {
     const originalCwd = process.cwd()
     process.chdir(testDir)
+
+    // Set test secret via environment variable (format: CODEMODE_SECRET_<NAME>)
+    const originalEnv = process.env.CODEMODE_SECRET_DEMO_SECRET
+    process.env.CODEMODE_SECRET_DEMO_SECRET = "The secret value is: SUPERSECRET42"
 
     try {
       const program = Effect.gen(function*() {
         const service = yield* CodemodeService
 
-        // Code that uses getSecret - LLM can't see the implementation
-        // Use console.log so agent sees it (stdout), or sendMessage for user (stderr)
+        // Code that uses getSecret - reads from CODEMODE_SECRET_DEMO_SECRET env var
         const response = `<codemode>
 export default async function(t: Tools): Promise<void> {
   const secret = await t.getSecret("demo-secret")
@@ -278,6 +296,12 @@ export default async function(t: Tools): Promise<void> {
       await Effect.runPromise(program)
     } finally {
       process.chdir(originalCwd)
+      // Restore original env
+      if (originalEnv === undefined) {
+        delete process.env.CODEMODE_SECRET_DEMO_SECRET
+      } else {
+        process.env.CODEMODE_SECRET_DEMO_SECRET = originalEnv
+      }
     }
   })
 
