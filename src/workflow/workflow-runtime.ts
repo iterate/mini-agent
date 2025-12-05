@@ -4,24 +4,13 @@
  * Parses and executes TypeScript Effect code from LLM responses.
  * The LLM emits code using `W.*` primitives which are journaled.
  *
- * Example LLM output:
- * ```typescript
- * Effect.gen(function*() {
- *   const response = yield* W.fetch("https://api.example.com/data")
- *   const body = yield* Effect.tryPromise(() => response.json())
- *
- *   if (body.requiresApproval) {
- *     yield* W.approval("Deploy to production?", { data: body })
- *   }
- *
- *   yield* W.writeFile("output.json", JSON.stringify(body, null, 2))
- *   return body
- * })
- * ```
+ * Supports suspend/resume via deterministic replay:
+ * - When suspended at an approval gate, workflow state is persisted
+ * - On resume, workflow replays from the beginning using cached step results
+ * - Steps before the approval return cached values; steps after execute normally
  */
 import { Context, Effect, Layer, Schema } from "effect"
-import type { WorkflowEvent } from "./workflow-events.ts"
-import type { WorkflowCtx } from "./workflow-primitives.ts"
+import type { WorkflowCtx, WorkflowExecutionResult, WorkflowState } from "./workflow-primitives.ts"
 import { W, WorkflowRunner } from "./workflow-primitives.ts"
 
 /** Pattern to extract TypeScript Effect code from LLM responses */
@@ -79,7 +68,7 @@ export class WorkflowCodeExecutionError extends Schema.TaggedError<WorkflowCodeE
  * - Validate code structure before execution
  * - Limit available APIs
  */
-const buildWorkflowEffect = (
+export const buildWorkflowEffect = (
   code: string
 ): Effect.Effect<
   Effect.Effect<unknown, Error, WorkflowCtx>,
@@ -113,18 +102,11 @@ const buildWorkflowEffect = (
       })
   })
 
-export interface WorkflowExecutionResult {
-  readonly result: unknown
-  readonly events: Array<WorkflowEvent>
-  readonly suspended: boolean
-  readonly error?: unknown
-}
-
 /**
  * Workflow Runtime Service
  *
  * Parses TypeScript Effect code from LLM responses and executes it
- * with journaling.
+ * with journaling. Supports suspend/resume for approval gates.
  */
 export class WorkflowRuntime extends Context.Tag("@app/WorkflowRuntime")<
   WorkflowRuntime,
@@ -143,6 +125,7 @@ export class WorkflowRuntime extends Context.Tag("@app/WorkflowRuntime")<
 
     /**
      * Execute workflow code and return journaled events.
+     * Returns WorkflowState which can be persisted for resume.
      */
     readonly execute: (
       name: string,
@@ -159,6 +142,18 @@ export class WorkflowRuntime extends Context.Tag("@app/WorkflowRuntime")<
     readonly executeFromResponse: (
       name: string,
       response: string
+    ) => Effect.Effect<
+      WorkflowExecutionResult,
+      WorkflowCodeParseError | WorkflowCodeExecutionError
+    >
+
+    /**
+     * Resume a suspended workflow.
+     * Re-parses the code from saved state and replays with cached results.
+     */
+    readonly resume: (
+      state: WorkflowState,
+      approvedBy: string
     ) => Effect.Effect<
       WorkflowExecutionResult,
       WorkflowCodeParseError | WorkflowCodeExecutionError
@@ -202,11 +197,8 @@ export class WorkflowRuntime extends Context.Tag("@app/WorkflowRuntime")<
 
         execute: (name, code) =>
           Effect.gen(function*() {
-            // Build the Effect from code
             const workflow = yield* buildWorkflowEffect(code)
-
-            // Run with journaling
-            const result = yield* runner.run(name, workflow).pipe(
+            return yield* runner.run(name, code, workflow).pipe(
               Effect.catchAll((e) =>
                 Effect.fail(
                   new WorkflowCodeExecutionError({
@@ -217,13 +209,10 @@ export class WorkflowRuntime extends Context.Tag("@app/WorkflowRuntime")<
                 )
               )
             )
-
-            return result
           }),
 
         executeFromResponse: (name, response) =>
           Effect.gen(function*() {
-            // Extract code
             const blocks = extractCodeBlocks(response)
             if (blocks.length === 0) {
               return yield* new WorkflowCodeParseError({
@@ -232,14 +221,32 @@ export class WorkflowRuntime extends Context.Tag("@app/WorkflowRuntime")<
             }
             const code = blocks[0]!
 
-            // Build and run
             const workflow = yield* buildWorkflowEffect(code)
-            return yield* runner.run(name, workflow).pipe(
+            return yield* runner.run(name, code, workflow).pipe(
               Effect.catchAll((e) =>
                 Effect.fail(
                   new WorkflowCodeExecutionError({
                     message: `Workflow execution failed: ${e}`,
                     code: code.slice(0, 200),
+                    cause: e
+                  })
+                )
+              )
+            )
+          }),
+
+        resume: (state, approvedBy) =>
+          Effect.gen(function*() {
+            // Re-parse the workflow code from saved state
+            const workflow = yield* buildWorkflowEffect(state.workflowCode)
+
+            // Resume with the runner (replays from beginning with cached results)
+            return yield* runner.resume(state, workflow, approvedBy).pipe(
+              Effect.catchAll((e) =>
+                Effect.fail(
+                  new WorkflowCodeExecutionError({
+                    message: `Workflow resume failed: ${e}`,
+                    code: state.workflowCode.slice(0, 200),
                     cause: e
                   })
                 )
@@ -255,40 +262,26 @@ export class WorkflowRuntime extends Context.Tag("@app/WorkflowRuntime")<
 }
 
 /**
- * Example LLM Response:
- *
- * ---
- * I'll create a workflow to fetch data and save it:
+ * Resume Flow Example:
  *
  * ```typescript
- * Effect.gen(function*() {
- *   yield* W.log("Starting data fetch workflow")
+ * // 1. First execution hits approval gate and suspends
+ * const result1 = yield* runtime.executeFromResponse("deploy", llmResponse)
+ * // result1.suspended === true
+ * // result1.pendingApproval === { stepId: "approval-3", message: "Deploy to prod?" }
+ * // result1.state contains the full workflow state for persistence
  *
- *   const response = yield* W.fetch("https://api.example.com/data")
- *   const data = yield* Effect.tryPromise(() => response.json())
+ * // 2. Save state (e.g., to context events or database)
+ * yield* saveWorkflowState(result1.state)
  *
- *   yield* W.log("Data fetched", { count: data.items.length })
+ * // 3. Later, user approves...
+ * const savedState = yield* loadWorkflowState(executionId)
  *
- *   if (data.items.length > 100) {
- *     yield* W.approval("Large dataset detected. Continue with processing?", {
- *       itemCount: data.items.length
- *     })
- *   }
- *
- *   const processed = yield* W.transform("processItems", data, (d) => ({
- *     ...d,
- *     processedAt: new Date().toISOString()
- *   }))
- *
- *   yield* W.writeFile("output.json", JSON.stringify(processed, null, 2))
- *
- *   return { success: true, itemCount: data.items.length }
- * })
+ * // 4. Resume - replays from beginning with cached results
+ * const result2 = yield* runtime.resume(savedState, "user@example.com")
+ * // Steps before approval return cached values instantly
+ * // Approval step passes (now approved)
+ * // Steps after approval execute normally
+ * // result2.suspended === false (or true if another approval)
  * ```
- *
- * This workflow will:
- * 1. Fetch data from the API
- * 2. Request approval if there are more than 100 items
- * 3. Process and save the results
- * ---
  */

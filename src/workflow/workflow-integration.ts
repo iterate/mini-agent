@@ -4,8 +4,14 @@
  * Integrates TypeScript Effect workflow execution with the context event system.
  * When an LLM response contains workflow code, it's parsed and executed,
  * with all workflow events persisted as context events.
+ *
+ * Suspend/Resume Flow:
+ * 1. Workflow hits W.approval() → suspends, WorkflowState saved
+ * 2. User approves via approveWorkflow()
+ * 3. Workflow replays from beginning with cached results
+ * 4. Approval step passes, execution continues
  */
-import { Context, Effect, Layer, Option, pipe, Schema, Stream } from "effect"
+import { Context, Effect, Layer, Option, pipe, Stream } from "effect"
 import {
   AssistantMessageEvent,
   type ContextEvent,
@@ -13,7 +19,8 @@ import {
 } from "../context.model.ts"
 import { ContextRepository } from "../context.repository.ts"
 import type { ContextLoadError, ContextSaveError } from "../errors.ts"
-import { type WorkflowEvent, WorkflowSuspendedEvent } from "./workflow-events.ts"
+import type { WorkflowEvent } from "./workflow-events.ts"
+import type { WorkflowExecutionResult, WorkflowState } from "./workflow-primitives.ts"
 import { WorkflowRunner } from "./workflow-primitives.ts"
 import type { WorkflowCodeExecutionError, WorkflowCodeParseError } from "./workflow-runtime.ts"
 import { WorkflowRuntime } from "./workflow-runtime.ts"
@@ -28,7 +35,7 @@ type WorkflowIntegrationError =
  * Workflow-Aware Context Service
  *
  * Processes LLM responses, detects TypeScript Effect workflow code,
- * executes it with journaling, and persists events.
+ * executes it with journaling, and persists events and state.
  */
 export class WorkflowContextService extends Context.Tag("@app/WorkflowContextService")<
   WorkflowContextService,
@@ -36,6 +43,7 @@ export class WorkflowContextService extends Context.Tag("@app/WorkflowContextSer
     /**
      * Process an LLM response, detecting and executing any workflows.
      * Returns a stream of context events (including workflow events).
+     * If workflow suspends, state is persisted for later resume.
      */
     readonly processResponse: (
       contextName: string,
@@ -44,20 +52,21 @@ export class WorkflowContextService extends Context.Tag("@app/WorkflowContextSer
 
     /**
      * Resume a suspended workflow in a context.
-     * Called when user approves a pending workflow step.
+     * Re-executes workflow from beginning with cached results.
+     * Returns new events from the resumed execution.
      */
     readonly approveWorkflow: (
       contextName: string,
       executionId: string,
-      approvedBy?: string
-    ) => Effect.Effect<Array<WorkflowEvent>, WorkflowIntegrationError>
+      approvedBy: string
+    ) => Effect.Effect<WorkflowExecutionResult, WorkflowIntegrationError>
 
     /**
-     * Get pending approvals for a context.
+     * Get pending workflow states for a context.
      */
-    readonly getPendingApprovals: (
+    readonly getPendingWorkflows: (
       contextName: string
-    ) => Effect.Effect<Array<WorkflowSuspendedEvent>>
+    ) => Effect.Effect<Array<WorkflowState>>
   }
 >() {
   static readonly layer = Layer.effect(
@@ -66,14 +75,15 @@ export class WorkflowContextService extends Context.Tag("@app/WorkflowContextSer
       const repo = yield* ContextRepository
       const runtime = yield* WorkflowRuntime
 
-      // Track pending approvals by context -> executionId -> event
-      const pendingApprovals = new Map<string, Map<string, WorkflowSuspendedEvent>>()
+      // In-memory store for suspended workflow states
+      // In production, this would be persisted to disk/database
+      const suspendedWorkflows = new Map<string, Map<string, WorkflowState>>()
 
-      const ensurePendingMap = (contextName: string) => {
-        let map = pendingApprovals.get(contextName)
+      const getSuspendedMap = (contextName: string) => {
+        let map = suspendedWorkflows.get(contextName)
         if (!map) {
           map = new Map()
-          pendingApprovals.set(contextName, map)
+          suspendedWorkflows.set(contextName, map)
         }
         return map
       }
@@ -108,33 +118,31 @@ export class WorkflowContextService extends Context.Tag("@app/WorkflowContextSer
                 return Stream.make(assistantEvent as ContextEvent | WorkflowEvent)
               }
 
-              const { events } = workflowResult.value
+              const result = workflowResult.value
+              const { events, state, suspended } = result
 
-              // Persist workflow events
+              // Persist workflow events to context
               yield* Effect.gen(function*() {
                 const current = yield* repo.load(contextName)
-                // Cast workflow events to persisted events
                 yield* repo.save(contextName, [
                   ...current,
                   ...events as unknown as Array<PersistedEventType>
                 ])
-
-                // Track suspended events for approval
-                for (const event of events) {
-                  if (Schema.is(WorkflowSuspendedEvent)(event)) {
-                    const map = ensurePendingMap(contextName)
-                    map.set(event.executionId, event)
-                  }
-                }
-
-                // Remove from pending on completion/failure
-                for (const event of events) {
-                  if (event._tag === "WorkflowCompleted" || event._tag === "WorkflowFailed") {
-                    const map = pendingApprovals.get(contextName)
-                    map?.delete(event.executionId)
-                  }
-                }
               })
+
+              // If suspended, save state for later resume
+              if (suspended) {
+                const map = getSuspendedMap(contextName)
+                map.set(state.executionId, state)
+                yield* Effect.logInfo("Workflow suspended, awaiting approval", {
+                  executionId: state.executionId,
+                  pendingApproval: state.pendingApproval
+                })
+              } else {
+                // Completed or failed - remove from suspended if present
+                const map = suspendedWorkflows.get(contextName)
+                map?.delete(state.executionId)
+              }
 
               // Emit all events
               return pipe(
@@ -144,29 +152,56 @@ export class WorkflowContextService extends Context.Tag("@app/WorkflowContextSer
             })
           ),
 
-        approveWorkflow: (contextName, executionId, _approvedBy) =>
+        approveWorkflow: (contextName, executionId, approvedBy) =>
           Effect.gen(function*() {
-            // In production, this would resume a suspended workflow
-            // For now, just mark as approved and log
-            const map = pendingApprovals.get(contextName)
-            const pending = map?.get(executionId)
+            const map = suspendedWorkflows.get(contextName)
+            const state = map?.get(executionId)
 
-            if (!pending) {
-              yield* Effect.logWarning("No pending approval found", { executionId })
-              return []
+            if (!state) {
+              return yield* Effect.fail(
+                new Error(`No suspended workflow found: ${executionId}`) as unknown as WorkflowIntegrationError
+              )
             }
 
-            // Remove from pending
-            map?.delete(executionId)
+            if (state.status !== "suspended" || !state.pendingApproval) {
+              return yield* Effect.fail(
+                new Error(`Workflow is not suspended: ${executionId}`) as unknown as WorkflowIntegrationError
+              )
+            }
 
-            // In full implementation: resume workflow execution from the approval step
-            yield* Effect.logInfo("Workflow approved", { executionId })
-            return []
+            yield* Effect.logInfo("Resuming workflow", {
+              executionId,
+              approvedBy,
+              stepId: state.pendingApproval.stepId
+            })
+
+            // Resume the workflow (replays from beginning with cached results)
+            const result = yield* runtime.resume(state, approvedBy)
+
+            // Persist new events
+            yield* Effect.gen(function*() {
+              const current = yield* repo.load(contextName)
+              yield* repo.save(contextName, [
+                ...current,
+                ...result.events as unknown as Array<PersistedEventType>
+              ])
+            })
+
+            // Update state
+            if (result.suspended) {
+              // Hit another approval gate
+              map?.set(executionId, result.state)
+            } else {
+              // Completed or failed
+              map?.delete(executionId)
+            }
+
+            return result
           }),
 
-        getPendingApprovals: (contextName) =>
+        getPendingWorkflows: (contextName) =>
           Effect.sync(() => {
-            const map = pendingApprovals.get(contextName)
+            const map = suspendedWorkflows.get(contextName)
             return map ? Array.from(map.values()) : []
           })
       })
@@ -180,63 +215,61 @@ export class WorkflowContextService extends Context.Tag("@app/WorkflowContextSer
 }
 
 /**
- * Example: Full conversation with TypeScript workflow
+ * Complete Example: Workflow with Approval
  *
  * ```typescript
  * const program = Effect.gen(function*() {
- *   const contextService = yield* WorkflowContextService
+ *   const service = yield* WorkflowContextService
  *
- *   // 1. LLM responds with TypeScript Effect workflow
+ *   // 1. LLM emits workflow code
  *   const llmResponse = `
- * I'll create a workflow to deploy your application:
+ * I'll deploy your application:
  *
  * \`\`\`typescript
  * Effect.gen(function*() {
- *   yield* W.log("Starting deployment")
- *
- *   // Build
+ *   // Build (result cached for replay)
  *   const build = yield* W.exec("npm run build")
- *   if (build.exitCode !== 0) {
- *     throw new Error("Build failed: " + build.stderr)
- *   }
+ *   yield* W.log("Build complete", { exitCode: build.exitCode })
  *
- *   // Test
- *   const test = yield* W.exec("npm test")
- *   yield* W.log("Tests passed", { exitCode: test.exitCode })
- *
- *   // Request approval before production deploy
- *   yield* W.approval("Build and tests passed. Deploy to production?", {
+ *   // Human approval gate
+ *   yield* W.approval("Deploy to production?", {
  *     buildOutput: build.stdout.slice(-200)
  *   })
  *
- *   // Deploy
- *   yield* W.exec("kubectl apply -f k8s/production/")
- *
+ *   // Deploy (only runs after approval)
+ *   yield* W.exec("kubectl apply -f k8s/")
  *   return { status: "deployed" }
  * })
  * \`\`\`
- *
- * This will build, test, get your approval, then deploy.
  *   `
  *
- *   // 2. Process response - executes workflow, journals events
- *   const events = yield* contextService.processResponse("deployment", llmResponse).pipe(
- *     Stream.runCollect
+ *   // 2. Process response - executes until approval, then suspends
+ *   yield* service.processResponse("deploy-ctx", llmResponse).pipe(
+ *     Stream.tap((event) => Effect.log("Event:", event._tag)),
+ *     Stream.runDrain
  *   )
+ *   // Events: AssistantMessage, WorkflowStarted, StepCompleted(build),
+ *   //         StepCompleted(log), WorkflowSuspended
  *
- *   // 3. Events include:
- *   // - AssistantMessageEvent (the LLM response text)
- *   // - WorkflowStartedEvent
- *   // - WorkflowStepCompletedEvent (build)
- *   // - WorkflowStepCompletedEvent (test)
- *   // - WorkflowSuspendedEvent (waiting for approval)
+ *   // 3. Check pending workflows
+ *   const pending = yield* service.getPendingWorkflows("deploy-ctx")
+ *   // pending[0].pendingApproval.message === "Deploy to production?"
  *
- *   // 4. Get pending approvals
- *   const pending = yield* contextService.getPendingApprovals("deployment")
- *   console.log(pending[0]?.message) // "Build and tests passed. Deploy to production?"
+ *   // 4. User approves...
+ *   const result = yield* service.approveWorkflow(
+ *     "deploy-ctx",
+ *     pending[0].executionId,
+ *     "user@example.com"
+ *   )
+ *   // Workflow replays:
+ *   // - build step returns cached result (instant)
+ *   // - log step returns cached result (instant)
+ *   // - approval step sees it's approved, continues
+ *   // - deploy step executes (new)
+ *   // - workflow completes
  *
- *   // 5. User approves
- *   yield* contextService.approveWorkflow("deployment", pending[0].executionId, "user@example.com")
+ *   // result.events: [WorkflowResumed, StepCompleted(deploy), WorkflowCompleted]
+ *   // result.suspended === false
  * })
  * ```
  */
