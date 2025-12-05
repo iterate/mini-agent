@@ -4,15 +4,14 @@
  * A chat interface with:
  * - Scrollable event log at top with pluggable renderers by _tag
  * - Input field at bottom
- * - Enter submits (or interrupts streaming if empty), Escape exits
+ * - Enter submits (or interrupts streaming if empty); empty return exits when not streaming
  *
  * Streaming behavior: during LLM request, streaming text accumulates.
  * Once complete, the streaming display is replaced by the final AssistantMessageEvent.
  */
 import { createCliRenderer, TextAttributes } from "@opentui/core"
-import { useKeyboard } from "@opentui/react"
 import { createRoot } from "@opentui/react/renderer"
-import { memo, useCallback, useEffect, useRef, useState } from "react"
+import { memo, useCallback, useRef, useState } from "react"
 import type {
   AssistantMessageEvent,
   FileAttachmentEvent,
@@ -161,46 +160,50 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
   const [inputValue, setInputValue] = useState("")
   const isStreamingRef = useRef(false)
 
-  useKeyboard((key) => {
-    if (key.name === "escape") {
-      callbacks.onExit()
-    }
-  })
+  // Store state setters in refs so they can be called from outside React
+  const setEventsRef = useRef(setEvents)
+  const setIsStreamingRef = useRef(setIsStreaming)
+  const setStreamingTextRef = useRef(setStreamingText)
+  setEventsRef.current = setEvents
+  setIsStreamingRef.current = setIsStreaming
+  setStreamingTextRef.current = setStreamingText
 
-  useEffect(() => {
+  // Set up controller synchronously during first render (not in useEffect)
+  // to avoid race condition where controller methods are called before effect runs
+  if (!controllerRef.current) {
     controllerRef.current = {
       addEvent(event: PersistedEvent) {
-        setEvents(prev => [...prev, event])
+        setEventsRef.current(prev => [...prev, event])
       },
       startStreaming() {
         isStreamingRef.current = true
-        setIsStreaming(true)
-        setStreamingText("")
+        setIsStreamingRef.current(true)
+        setStreamingTextRef.current("")
       },
       appendStreamingText(delta: string) {
-        setStreamingText(prev => prev + delta)
+        setStreamingTextRef.current(prev => prev + delta)
       },
       endStreaming() {
         isStreamingRef.current = false
-        setIsStreaming(false)
-        setStreamingText("")
+        setIsStreamingRef.current(false)
+        setStreamingTextRef.current("")
       },
       cleanup() {
         // handled by runner
       }
     }
-  }, [controllerRef])
+  }
 
   const handleInput = useCallback((value: string) => {
     setInputValue(value)
   }, [])
 
   const handleSubmit = useCallback((value: string) => {
-    if (value.trim()) {
+    const trimmed = value.trim()
+    if (trimmed) {
       setInputValue("")
-      callbacks.onSubmit(value.trim())
+      callbacks.onSubmit(trimmed)
     } else if (isStreamingRef.current) {
-      // Empty return during streaming = interrupt
       callbacks.onSubmit("")
     } else {
       callbacks.onExit()
@@ -267,7 +270,7 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
           <span fg={colors.yellow}>context: </span>
           <span fg={colors.dim}>{contextName}</span>
           <span fg={colors.dim}> · </span>
-          <span fg={colors.yellow}>{isStreaming ? "Return to interrupt" : "Esc to exit"}</span>
+          <span fg={colors.yellow}>{isStreaming ? "Return to interrupt" : "Return to exit"}</span>
         </text>
       </box>
     </box>

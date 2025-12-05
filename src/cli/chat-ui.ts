@@ -166,7 +166,6 @@ const runChatTurn = (
     }
 
     if (result._tag === "exit") {
-      // Save partial response before exiting
       if (accumulatedText.length > 0) {
         const interruptedEvent = new LLMRequestInterruptedEvent({
           requestId: crypto.randomUUID(),
@@ -190,12 +189,10 @@ const runChatTurn = (
       chat.addEvent(interruptedEvent)
     }
 
-    // If there's a new message to process, do it now
     if (result.newMessage) {
       return yield* runChatTurn(contextName, contextService, chat, mailbox, result.newMessage)
     }
 
-    // Just an interrupt (empty return), continue waiting for input
     return { _tag: "continue" } as const
   })()
 
@@ -218,7 +215,6 @@ const awaitStreamCompletion = (
       if (signal._tag === "Exit") {
         return { _tag: "exit" } as StreamResult
       }
-      // Input signal - empty string = just cancel, non-empty = new message to process
       return { _tag: "interrupted", newMessage: signal.text || null } as StreamResult
     })
 
