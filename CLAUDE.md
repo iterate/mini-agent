@@ -368,3 +368,64 @@ export const ProductionDb = createDbLayer(process.env.DB_URL!)
 **Effect.fn for tracing**: Wrap service methods with `Effect.fn("ServiceName.methodName")` for automatic span creation.
 
 ---
+
+## ast-grep
+
+AST-based code search and refactoring. More precise than regex since it understands code structure.
+
+**Quick pattern search:**
+```bash
+# Find all Effect.gen calls
+ast-grep run -p 'Effect.gen(function*() { $$$ })' -l typescript src/
+
+# Find function calls with metavariables
+ast-grep run -p 'Effect.succeed($VAL)' -l typescript src/
+
+# JSON output for structured parsing
+ast-grep run -p 'yield* $SERVICE' -l typescript --json=compact src/
+```
+
+**Metavariables:**
+- `$NAME` — matches single AST node (identifier, expression, etc)
+- `$$ARGS` — matches zero or more nodes (function args, etc)
+- `$$$` — matches everything inside a block/body
+
+**YAML rules with `--inline-rules`:**
+```bash
+ast-grep scan --inline-rules '
+id: find-layer-effect
+language: typescript
+rule:
+  pattern: Layer.effect($TAG, $IMPL)
+' src/ --json=compact
+```
+
+**YAML rule format:**
+```yaml
+id: rule-id
+language: typescript
+rule:
+  pattern: SomePattern($ARG)    # What to match
+  # Combine with: all, any, not, inside, has, follows, precedes
+fix: ReplacementPattern($ARG)   # Optional rewrite
+```
+
+**Common rule combinators:**
+```yaml
+rule:
+  all:
+    - pattern: Effect.gen($FN)
+    - inside:
+        kind: variable_declarator
+```
+
+**Apply rewrites:**
+```bash
+# Interactive mode (confirm each change)
+ast-grep run -p 'oldFunc($X)' -r 'newFunc($X)' -l typescript -i src/
+
+# Apply all without confirmation
+ast-grep run -p 'oldFunc($X)' -r 'newFunc($X)' -l typescript -U src/
+```
+
+Docs: https://ast-grep.github.io

@@ -17,6 +17,8 @@
     "test:watch": "doppler run -- vitest"
   },
   "devDependencies": {
+    "@ast-grep/cli": "^0.40.0",
+    "@ast-grep/napi": "^0.40.0",
     "@effect/eslint-plugin": "^0.3.2",
     "@effect/language-service": "^0.57.1",
     "@effect/vitest": "^0.25.1",
