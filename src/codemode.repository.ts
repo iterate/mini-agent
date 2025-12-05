@@ -8,7 +8,6 @@
  * - index.ts: The generated code
  * - types.ts: Type definitions for available tools
  * - tsconfig.json: TypeScript compiler config
- * - response.md: LLM conversation log
  */
 import { FileSystem, Path } from "@effect/platform"
 import { Context, Effect, Layer, Option } from "effect"
@@ -95,9 +94,6 @@ interface CodemodeRepositoryService {
     attempt: number
   ) => Effect.Effect<string, CodeStorageError>
 
-  /** Append to response.md log */
-  readonly appendLog: (loc: CodeblockLocation, content: string) => Effect.Effect<void, CodeStorageError>
-
   /** Get the index.ts path for a codeblock */
   readonly getCodePath: (loc: CodeblockLocation) => Effect.Effect<string>
 }
@@ -157,17 +153,6 @@ export class CodemodeRepository extends Context.Tag("@app/CodemodeRepository")<
             )
           )
 
-          // Create empty response.md
-          yield* fs.writeFileString(pathService.join(dir, "response.md"), "# LLM Response Log\n\n").pipe(
-            Effect.mapError(
-              (e) =>
-                new CodeStorageError({
-                  message: "Failed to write response.md",
-                  cause: e
-                })
-            )
-          )
-
           return dir
         })
 
@@ -208,23 +193,6 @@ export class CodemodeRepository extends Context.Tag("@app/CodemodeRepository")<
           return filePath
         })
 
-      const appendLog = (loc: CodeblockLocation, content: string) =>
-        Effect.gen(function*() {
-          const dir = buildCodeblockPath(loc)
-          const logPath = pathService.join(dir, "response.md")
-
-          const existing = yield* fs.readFileString(logPath).pipe(Effect.orElse(() => Effect.succeed("")))
-          yield* fs.writeFileString(logPath, existing + content).pipe(
-            Effect.mapError(
-              (e) =>
-                new CodeStorageError({
-                  message: "Failed to append to response.md",
-                  cause: e
-                })
-            )
-          )
-        })
-
       const getCodePath = (loc: CodeblockLocation) =>
         Effect.succeed(pathService.join(buildCodeblockPath(loc), "index.ts"))
 
@@ -232,7 +200,6 @@ export class CodemodeRepository extends Context.Tag("@app/CodemodeRepository")<
         getCodeblockDir,
         createCodeblockDir,
         writeCode,
-        appendLog,
         getCodePath
       })
     })
@@ -261,12 +228,6 @@ export class CodemodeRepository extends Context.Tag("@app/CodemodeRepository")<
         const dir = getOrCreateDir(loc)
         dir.set("index.ts", code)
         return Effect.succeed(`/tmp/.mini-agent/contexts/${getKey(loc)}/index.ts`)
-      },
-      appendLog: (loc, content) => {
-        const dir = getOrCreateDir(loc)
-        const existing = dir.get("response.md") ?? ""
-        dir.set("response.md", existing + content)
-        return Effect.succeed(undefined)
       },
       getCodePath: (loc) => Effect.succeed(`/tmp/.mini-agent/contexts/${getKey(loc)}/index.ts`)
     })
