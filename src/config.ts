@@ -86,8 +86,8 @@ const logLevelConfig = (name: string) =>
   )
 
 export const MiniAgentConfig = Config.all({
-  // LLM name from registry. See llm-config.ts
-  llm: Config.string("LLM").pipe(Config.withDefault("gpt-4.1-mini")),
+  // LLM provider:model. See llm-config.ts
+  llm: Config.string("LLM").pipe(Config.withDefault("openai:gpt-4.1-mini")),
 
   dataStorageDir: Config.string("DATA_STORAGE_DIR").pipe(
     Config.withDefault(".mini-agent")
