@@ -417,6 +417,55 @@ describe("CLI option aliases", () => {
   })
 })
 
+describe("Interrupted response context", () => {
+  test(
+    "LLM receives context about interrupted response when continuing conversation",
+    { timeout: 60000 },
+    async ({ testDir }) => {
+      const contextName = "interrupt-context-test"
+      const testNumber = "87654321"
+
+      // Create a context file with an interrupted response containing a specific number
+      // This simulates what happens when a user interrupts the LLM mid-response
+      const contextsDir = path.join(testDir, ".mini-agent", "contexts")
+      fs.mkdirSync(contextsDir, { recursive: true })
+
+      const contextContent = `events:
+  - _tag: SystemPrompt
+    content: You are a helpful assistant.
+  - _tag: UserMessage
+    content: Tell me a random 8-digit number followed by a long story.
+  - _tag: LLMRequestInterrupted
+    requestId: test-request-123
+    reason: user_cancel
+    partialResponse: "${testNumber}! Once upon a time in a faraway land, there lived a wise old wizard who..."
+`
+      fs.writeFileSync(path.join(contextsDir, `${contextName}.yaml`), contextContent)
+
+      // Now make a follow-up request asking about the number.
+      // The LLM should know the number because:
+      // 1. The LLMRequestInterruptedEvent's partialResponse is included as an assistant message
+      // 2. A user message explains the interruption happened
+      const result = await Effect.runPromise(
+        runCli(
+          [
+            "chat",
+            "-n",
+            contextName,
+            "-m",
+            "What number did you just tell me before I interrupted you? Respond with ONLY the 8-digit number, nothing else."
+          ],
+          { cwd: testDir }
+        )
+      )
+
+      // The response should contain the same number from the interrupted response
+      const responseNumber = result.stdout.trim().replace(/\D/g, "")
+      expect(responseNumber).toContain(testNumber)
+    }
+  )
+})
+
 describe("Logging", () => {
   describe("stdout log level filtering", () => {
     test("info and debug messages hidden at warn level (default)", async ({ testDir }) => {
