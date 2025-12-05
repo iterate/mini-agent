@@ -14,7 +14,7 @@ import { describe } from "vitest"
 import { expect, test } from "./fixtures.js"
 
 // Resolve CLI path relative to this file
-const CLI_PATH = new URL("../src/main.ts", import.meta.url).pathname
+const CLI_PATH = new URL("../src/cli/main.ts", import.meta.url).pathname
 
 /** Start the server in background */
 const startServer = async (
@@ -38,14 +38,16 @@ const startServer = async (
   // Wait for server to be ready by polling health endpoint
   for (let i = 0; i < 50; i++) {
     try {
-      await fetch(`http://localhost:${port}/health`)
-      return proc
+      const res = await fetch(`http://localhost:${port}/health`)
+      if (res.ok) return proc
     } catch {
-      await new Promise((resolve) => setTimeout(resolve, 200))
+      // Server not ready yet
     }
+    await new Promise((resolve) => setTimeout(resolve, 200))
   }
 
-  return proc
+  proc.kill()
+  throw new Error(`Server failed to start on port ${port} after 10 seconds`)
 }
 
 /** Parse SSE stream from response */
