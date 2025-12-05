@@ -10,6 +10,7 @@ import { Cause, Context, Effect, Fiber, Layer, Mailbox, Stream } from "effect"
 import { is } from "effect/Schema"
 import {
   AssistantMessageEvent,
+  type ContextEvent,
   LLMRequestInterruptedEvent,
   TextDeltaEvent,
   UserMessageEvent
@@ -131,18 +132,17 @@ const runChatTurn = (
 
     yield* contextService.persistEvent(contextName, userEvent)
     chat.addEvent(userEvent)
-    chat.startStreaming()
 
     const events = yield* contextService.load(contextName)
     let accumulatedText = ""
 
     const streamFiber = yield* Effect.fork(
       streamLLMResponse(events).pipe(
-        Stream.tap((event) =>
+        Stream.tap((event: ContextEvent) =>
           Effect.sync(() => {
             if (is(TextDeltaEvent)(event)) {
               accumulatedText += event.delta
-              chat.appendStreamingText(event.delta)
+              chat.addEvent(event)
             }
           })
         ),
@@ -158,7 +158,6 @@ const runChatTurn = (
     )
 
     const result = yield* awaitStreamCompletion(streamFiber, mailbox)
-    chat.endStreaming()
 
     if (result._tag === "completed") {
       return { _tag: "continue" } as const

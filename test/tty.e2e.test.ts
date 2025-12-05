@@ -250,9 +250,9 @@ describe("TTY Interactive Mode", () => {
     try {
       await session.waitForText("Starting new conversation", { timeout: 10000 })
 
-      // Before sending, should show "Return to exit"
-      const beforeText = await session.waitForText("Return to exit", { timeout: 5000 })
-      expect(beforeText).toContain("Return to exit")
+      // Before sending, should show "Ctrl+C to exit"
+      const beforeText = await session.waitForText("Ctrl+C to exit", { timeout: 5000 })
+      expect(beforeText).toContain("Ctrl+C to exit")
 
       await session.type("Tell me a story")
       await session.press("enter")
@@ -329,6 +329,38 @@ describe("TTY Interactive Mode", () => {
       // Selector should still be visible (we're navigating, not selecting yet)
       const text = await session.waitForText("New context", { timeout: 5000 })
       expect(text).toContain("New context")
+    } finally {
+      await session.press(["ctrl", "c"])
+      session.close()
+    }
+  })
+
+  test("empty return when idle does nothing", { timeout: 30000 }, async ({ testDir }) => {
+    const session = await launchTerminal({
+      command: "bun",
+      args: [CLI_PATH, "--cwd", testDir, "chat", "-n", "empty-idle-test"],
+      cols: 100,
+      rows: 30,
+      env: {
+        ...process.env,
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "test-key",
+        TERM: "xterm-256color"
+      }
+    })
+
+    try {
+      // Wait for chat UI to be ready
+      await session.waitForText("Type your message", { timeout: 10000 })
+
+      // Hit return with empty input - should do nothing (not exit)
+      await session.press("enter")
+
+      // Give a moment for any potential exit to happen
+      await new Promise((resolve) => setTimeout(resolve, 500))
+
+      // UI should still be visible - the footer with context name should still be there
+      const text = await session.waitForText("empty-idle-test", { timeout: 5000 })
+      expect(text).toContain("context: empty-idle-test")
     } finally {
       await session.press(["ctrl", "c"])
       session.close()
