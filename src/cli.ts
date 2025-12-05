@@ -48,6 +48,14 @@ export const stdoutLogLevelOption = Options.choice("stdout-log-level", [
   Options.optional
 )
 
+export const llmOption = Options.text("llm").pipe(
+  Options.withDescription(
+    "LLM provider:model (e.g., openai:gpt-4.1-mini, anthropic:claude-sonnet-4-5-20250929). " +
+      "See README for full model list. Can also be set via LLM env var."
+  ),
+  Options.optional
+)
+
 const nameOption = Options.text("name").pipe(
   Options.withAlias("n"),
   Options.withDescription("Context name (slug identifier for the conversation)"),
@@ -625,7 +633,8 @@ const rootCommand = Command.make(
   {
     configFile: configFileOption,
     cwd: cwdOption,
-    stdoutLogLevel: stdoutLogLevelOption
+    stdoutLogLevel: stdoutLogLevelOption,
+    llm: llmOption
   }
 ).pipe(
   Command.withSubcommands([chatCommand, serveCommand, layercodeCommand, logTestCommand, traceTestCommand]),
