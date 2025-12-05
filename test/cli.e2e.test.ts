@@ -15,9 +15,9 @@ import { describe } from "vitest"
 import { expect, runCli, runCliWithEnv, test } from "./fixtures.js"
 
 const llms = [
-  { llm: "gpt-4.1-mini" },
-  { llm: "claude-haiku-4-5" },
-  { llm: "gemini-2.5-flash" }
+  { llm: "openai:gpt-4.1-mini" },
+  { llm: "anthropic:claude-haiku-4-5" },
+  { llm: "gemini:gemini-2.5-flash" }
 ] as const
 
 /** Context name used in tests - safe to reuse since each test has isolated testDir */

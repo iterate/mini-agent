@@ -1,5 +1,9 @@
 /**
  * LLM Configuration
+ *
+ * Supports two ways to specify an LLM:
+ * 1. Provider prefix: "openai:gpt-4.1-mini", "groq:llama-3.3-70b-versatile"
+ * 2. JSON config: '{"apiFormat":"openai-responses","model":"...","baseUrl":"...","apiKeyEnvVar":"..."}'
  */
 import { Config, Context, Effect, Layer, Redacted, Schema } from "effect"
 
@@ -12,40 +16,103 @@ export class LlmConfig extends Schema.Class<LlmConfig>("LlmConfig")({
   apiKeyEnvVar: Schema.String
 }) {}
 
-const openai = {
+/** Provider presets define common provider configurations */
+interface ProviderPreset {
+  readonly apiFormat: ApiFormat
+  readonly baseUrl: string
+  readonly apiKeyEnvVar: string
+}
+
+const openai: ProviderPreset = {
   apiFormat: "openai-responses",
   baseUrl: "https://api.openai.com/v1",
   apiKeyEnvVar: "OPENAI_API_KEY"
-} as const
+}
 
-const anthropic = {
+const anthropic: ProviderPreset = {
   apiFormat: "anthropic",
   baseUrl: "https://api.anthropic.com",
   apiKeyEnvVar: "ANTHROPIC_API_KEY"
-} as const
+}
 
-const gemini = {
+const gemini: ProviderPreset = {
   apiFormat: "gemini",
   baseUrl: "https://generativelanguage.googleapis.com",
   apiKeyEnvVar: "GEMINI_API_KEY"
-} as const
-
-const LLMS: Record<string, LlmConfig> = {
-  "gpt-4.1-mini": new LlmConfig({ ...openai, model: "gpt-4.1-mini" }),
-  "claude-haiku-4-5": new LlmConfig({ ...anthropic, model: "claude-haiku-4-5" }),
-  "gemini-2.5-flash": new LlmConfig({ ...gemini, model: "gemini-2.5-flash" })
 }
 
-export const DEFAULT_LLM = "gpt-4.1-mini"
+const openrouter: ProviderPreset = {
+  apiFormat: "openai-responses",
+  baseUrl: "https://openrouter.ai/api/v1",
+  apiKeyEnvVar: "OPENROUTER_API_KEY"
+}
 
-/** Get LlmConfig by name. Throws if not found. */
+const cerebras: ProviderPreset = {
+  apiFormat: "openai-responses",
+  baseUrl: "https://api.cerebras.ai/v1",
+  apiKeyEnvVar: "CEREBRAS_API_KEY"
+}
+
+const groq: ProviderPreset = {
+  apiFormat: "openai-responses",
+  baseUrl: "https://api.groq.com/openai/v1",
+  apiKeyEnvVar: "GROQ_API_KEY"
+}
+
+/** Provider prefix mapping for dynamic model resolution */
+const PROVIDER_PREFIXES: Record<string, ProviderPreset> = {
+  openai,
+  anthropic,
+  gemini,
+  openrouter,
+  cerebras,
+  groq
+}
+
+export const DEFAULT_LLM = "openai:gpt-4.1-mini"
+
+/**
+ * Get LlmConfig by prefix or JSON.
+ *
+ * Supports:
+ * - Provider prefix: "openai:gpt-4.1-mini", "openrouter:anthropic/claude-3.5-sonnet"
+ * - JSON config: '{"apiFormat":"openai-responses",...}'
+ */
 export const getLlmConfig = (name: string): LlmConfig => {
-  const config = LLMS[name]
-  if (!config) {
-    const validLlms = Object.keys(LLMS).join(", ")
-    throw new Error(`Unknown LLM: ${name}. Valid: ${validLlms}`)
+  // Check for provider prefix (e.g., "openrouter:model-name")
+  const colonIndex = name.indexOf(":")
+  if (colonIndex > 0) {
+    const prefix = name.slice(0, colonIndex)
+    const modelName = name.slice(colonIndex + 1)
+
+    // Check if it's a JSON config (starts with "{")
+    if (prefix !== "" && !modelName.startsWith("{")) {
+      const provider = PROVIDER_PREFIXES[prefix]
+      if (provider) {
+        if (!modelName) {
+          throw new Error(`Missing model name for provider '${prefix}'. Use: ${prefix}:<model-name>`)
+        }
+        return new LlmConfig({ ...provider, model: modelName })
+      }
+    }
   }
-  return config
+
+  // Try parsing as JSON config
+  if (name.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(name)
+      return new LlmConfig(parsed)
+    } catch {
+      throw new Error(`Invalid JSON LLM config: ${name}`)
+    }
+  }
+
+  const validPrefixes = Object.keys(PROVIDER_PREFIXES).join(", ")
+  throw new Error(
+    `Invalid LLM: ${name}\n` +
+      `Use prefix syntax: ${validPrefixes}:<model-name>\n` +
+      `Example: openai:gpt-4.1-mini, anthropic:claude-sonnet-4-20250514`
+  )
 }
 
 /** Get API key for an LlmConfig from environment */
