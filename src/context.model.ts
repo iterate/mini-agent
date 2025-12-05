@@ -96,10 +96,6 @@ export class SetLlmConfigEvent extends Schema.TaggedClass<SetLlmConfigEvent>()(
   { config: LlmConfig }
 ) {}
 
-// =============================================================================
-// Union Types
-// =============================================================================
-
 /** Events that get persisted to the context file */
 export const PersistedEvent = Schema.Union(
   SystemPromptEvent,

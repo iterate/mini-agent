@@ -10,6 +10,7 @@ import {
   AssistantMessageEvent,
   type ContextEvent,
   FileAttachmentEvent,
+  LLMRequestInterruptedEvent,
   type PersistedEvent,
   SystemPromptEvent,
   TextDeltaEvent,
@@ -25,12 +26,14 @@ const isSystem = Schema.is(SystemPromptEvent)
 const isAssistant = Schema.is(AssistantMessageEvent)
 const isUser = Schema.is(UserMessageEvent)
 const isFile = Schema.is(FileAttachmentEvent)
+const isInterrupted = Schema.is(LLMRequestInterruptedEvent)
 
 /**
  * Groups consecutive user events (messages + attachments) into single multi-part messages.
  * File attachments are read at call time, not persisted as base64.
+ * @internal Exported for testing
  */
-const eventsToPrompt = (
+export const eventsToPrompt = (
   events: ReadonlyArray<PersistedEvent>
 ): Effect.Effect<Prompt.Prompt, PlatformError.PlatformError, FileSystem.FileSystem> =>
   Effect.gen(function*() {
@@ -48,6 +51,23 @@ const eventsToPrompt = (
         messages.push(
           Prompt.makeMessage("assistant", {
             content: [Prompt.makePart("text", { text: event.content })]
+          })
+        )
+        i++
+      } else if (isInterrupted(event)) {
+        // Include partial response as assistant message
+        messages.push(
+          Prompt.makeMessage("assistant", {
+            content: [Prompt.makePart("text", { text: event.partialResponse })]
+          })
+        )
+        // Add user message explaining the interruption
+        messages.push(
+          Prompt.makeMessage("user", {
+            content: [Prompt.makePart("text", {
+              text:
+                `Your previous response was interrupted by the user. Here is what you said until that point:\n\n${event.partialResponse}`
+            })]
           })
         )
         i++

@@ -38,10 +38,6 @@ const nameOption = Options.text("name").pipe(
   Options.optional
 )
 
-// =============================================================================
-// Context Selection
-// =============================================================================
-
 const NEW_CONTEXT_VALUE = "__new__"
 
 /** Prompt user to select an existing context or create a new one */

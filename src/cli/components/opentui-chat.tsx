@@ -4,7 +4,7 @@
  * A chat interface with:
  * - Scrollable event log at top with pluggable renderers by _tag
  * - Input field at bottom
- * - Enter submits, Escape cancels streaming or exits
+ * - Enter submits (or interrupts streaming if empty), Escape exits
  *
  * Streaming behavior: during LLM request, streaming text accumulates.
  * Once complete, the streaming display is replaced by the final AssistantMessageEvent.
@@ -12,7 +12,6 @@
 import { createCliRenderer, TextAttributes } from "@opentui/core"
 import { useKeyboard } from "@opentui/react"
 import { createRoot } from "@opentui/react/renderer"
-import * as fs from "node:fs"
 import { memo, useCallback, useEffect, useRef, useState } from "react"
 import type {
   AssistantMessageEvent,
@@ -22,18 +21,8 @@ import type {
   UserMessageEvent
 } from "../../context.model.ts"
 
-const DEBUG_LOG = "/tmp/chat-ui-debug.log"
-const debug = (msg: string) => {
-  fs.appendFileSync(DEBUG_LOG, `[${new Date().toISOString()}] [opentui] ${msg}\n`)
-}
-
-// =============================================================================
-// Types
-// =============================================================================
-
 export interface ChatCallbacks {
   onSubmit: (text: string) => void
-  onEscape: () => void
   onExit: () => void
 }
 
@@ -44,10 +33,6 @@ export interface ChatController {
   endStreaming: () => void
   cleanup: () => void
 }
-
-// =============================================================================
-// Colors
-// =============================================================================
 
 const colors = {
   cyan: "#00FFFF",
@@ -62,10 +47,6 @@ const colors = {
   separator: "#444444",
   placeholder: "#555555"
 }
-
-// =============================================================================
-// Event Renderer Registry
-// =============================================================================
 
 interface EventRendererProps<E extends PersistedEvent> {
   event: E
@@ -143,10 +124,6 @@ const EventView = memo<{ event: PersistedEvent; isHistory: boolean }>(({ event, 
   }
 })
 
-// =============================================================================
-// Streaming Display
-// =============================================================================
-
 interface StreamingDisplayProps {
   text: string
 }
@@ -169,10 +146,6 @@ const StreamingDisplay = memo<StreamingDisplayProps>(({ text }) => {
   )
 })
 
-// =============================================================================
-// Chat App Component
-// =============================================================================
-
 interface ChatAppProps {
   contextName: string
   initialEvents: PersistedEvent[]
@@ -186,20 +159,11 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
   const [streamingText, setStreamingText] = useState("")
   const [isStreaming, setIsStreaming] = useState(false)
   const [inputValue, setInputValue] = useState("")
-  const isStreamingRef = useRef(isStreaming)
-
-  useEffect(() => {
-    isStreamingRef.current = isStreaming
-  }, [isStreaming])
+  const isStreamingRef = useRef(false)
 
   useKeyboard((key) => {
     if (key.name === "escape") {
-      debug("useKeyboard: Escape pressed")
-      if (isStreamingRef.current) {
-        callbacks.onEscape()
-      } else {
-        callbacks.onExit()
-      }
+      callbacks.onExit()
     }
   })
 
@@ -209,6 +173,7 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
         setEvents(prev => [...prev, event])
       },
       startStreaming() {
+        isStreamingRef.current = true
         setIsStreaming(true)
         setStreamingText("")
       },
@@ -216,6 +181,7 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
         setStreamingText(prev => prev + delta)
       },
       endStreaming() {
+        isStreamingRef.current = false
         setIsStreaming(false)
         setStreamingText("")
       },
@@ -231,13 +197,11 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
 
   const handleSubmit = useCallback((value: string) => {
     if (value.trim()) {
-      if (isStreamingRef.current) {
-        callbacks.onEscape()
-      }
       setInputValue("")
       callbacks.onSubmit(value.trim())
     } else if (isStreamingRef.current) {
-      callbacks.onEscape()
+      // Empty return during streaming = interrupt
+      callbacks.onSubmit("")
     } else {
       callbacks.onExit()
     }
@@ -290,7 +254,7 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
         <input
           flexGrow={1}
           value={inputValue}
-          placeholder={isStreaming ? "Type to interrupt and send..." : "Type your message..."}
+          placeholder={isStreaming ? "Hit return to interrupt..." : "Type your message..."}
           focused={true}
           onInput={handleInput}
           onSubmit={handleSubmit}
@@ -303,54 +267,39 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
           <span fg={colors.yellow}>context: </span>
           <span fg={colors.dim}>{contextName}</span>
           <span fg={colors.dim}> · </span>
-          <span fg={colors.yellow}>{isStreaming ? "Enter to cancel" : "Enter to exit"}</span>
+          <span fg={colors.yellow}>{isStreaming ? "Return to interrupt" : "Esc to exit"}</span>
         </text>
       </box>
     </box>
   )
 }
 
-// =============================================================================
-// Chat Runner
-// =============================================================================
-
 export async function runOpenTUIChat(
   contextName: string,
   initialEvents: PersistedEvent[],
   callbacks: ChatCallbacks
 ): Promise<ChatController> {
-  debug("runOpenTUIChat starting")
-
   let exitSignaled = false
   const signalExit = () => {
     if (!exitSignaled) {
       exitSignaled = true
-      debug("signalExit: calling callbacks.onExit()")
       callbacks.onExit()
     }
   }
 
-  const onSigint = () => {
-    debug("SIGINT received - signaling exit")
-    signalExit()
-  }
-  const onSigterm = () => {
-    debug("SIGTERM received - signaling exit")
-    signalExit()
-  }
+  const onSigint = () => signalExit()
+  const onSigterm = () => signalExit()
   process.once("SIGINT", onSigint)
   process.once("SIGTERM", onSigterm)
 
   const renderer = await createCliRenderer({
     exitOnCtrlC: true
   })
-  debug("renderer created")
   const root = createRoot(renderer)
   const controllerRef: { current: ChatController | null } = { current: null }
 
   const pollInterval = setInterval(() => {
     if (!process.stdin.isRaw) {
-      debug("stdin no longer in raw mode - OpenTUI exited")
       clearInterval(pollInterval)
       signalExit()
     }
@@ -381,13 +330,11 @@ export async function runOpenTUIChat(
       controllerRef.current?.endStreaming()
     },
     cleanup() {
-      debug("cleanup() called")
       clearInterval(pollInterval)
       process.off("SIGINT", onSigint)
       process.off("SIGTERM", onSigterm)
       root.unmount()
       renderer.stop()
-      debug("cleanup() completed")
     }
   }
 }
