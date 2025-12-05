@@ -274,8 +274,7 @@ const runEventStream = (
 
     // Codemode is always enabled - ContextService handles execution internally
     yield* contextService.addEvents(contextName, inputEvents, { codemode: true }).pipe(
-      Stream.runForEach((event) => handleEvent(event, options)),
-      Effect.scoped
+      Stream.runForEach((event) => handleEvent(event, options))
     )
   })
 
@@ -328,8 +327,7 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
 
           if (Schema.is(UserMessageEvent)(event)) {
             yield* contextService.addEvents(contextName, [event], { codemode: true }).pipe(
-              Stream.runForEach((outputEvent) => handleEvent(outputEvent, options)),
-              Effect.scoped
+              Stream.runForEach((outputEvent) => handleEvent(outputEvent, options))
             )
           } else if (Schema.is(SystemPromptEvent)(event)) {
             yield* Effect.logDebug("SystemPrompt events in script mode are echoed but not persisted")

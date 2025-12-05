@@ -50,8 +50,7 @@ This code will greet you!`
           Stream.runForEach((event) => {
             events.push({ _tag: event._tag })
             return Effect.void
-          }),
-          Effect.scoped
+          })
         )
 
         // Should have: CodeBlock, TypecheckStart, TypecheckPass, ExecutionStart, ExecutionOutput*, ExecutionComplete
@@ -94,8 +93,7 @@ export default async function(t: Tools): Promise<void> {
             }
             events.push(e)
             return Effect.void
-          }),
-          Effect.scoped
+          })
         )
 
         // Should have TypecheckFail, not ExecutionStart

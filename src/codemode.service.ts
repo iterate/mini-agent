@@ -11,7 +11,6 @@
  * Supports multiple codeblocks per assistant message.
  */
 import type { Error as PlatformError } from "@effect/platform"
-import type { Scope } from "effect"
 import { Context, Effect, Layer, Option, pipe, Stream } from "effect"
 import { CodeExecutor, type ExecutionEvent } from "./code-executor.service.ts"
 import {
@@ -44,7 +43,7 @@ interface CodemodeServiceInterface {
     contextName: string,
     content: string
   ) => Effect.Effect<
-    Option.Option<Stream.Stream<CodemodeStreamEvent, PlatformError.PlatformError | CodeStorageError, Scope.Scope>>,
+    Option.Option<Stream.Stream<CodemodeStreamEvent, PlatformError.PlatformError | CodeStorageError, never>>,
     never,
     never
   >
@@ -71,7 +70,7 @@ export class CodemodeService extends Context.Tag("@app/CodemodeService")<
         loc: CodeblockLocation,
         block: ParsedCodeBlock,
         requestId: RequestId
-      ): Stream.Stream<CodemodeStreamEvent, PlatformError.PlatformError | CodeStorageError, Scope.Scope> =>
+      ): Stream.Stream<CodemodeStreamEvent, PlatformError.PlatformError | CodeStorageError, never> =>
         Stream.unwrap(
           Effect.gen(function*() {
             const { code, codeblockId } = block
@@ -124,7 +123,7 @@ export class CodemodeService extends Context.Tag("@app/CodemodeService")<
         contextName: string,
         content: string
       ): Effect.Effect<
-        Option.Option<Stream.Stream<CodemodeStreamEvent, PlatformError.PlatformError | CodeStorageError, Scope.Scope>>,
+        Option.Option<Stream.Stream<CodemodeStreamEvent, PlatformError.PlatformError | CodeStorageError, never>>,
         never,
         never
       > =>
@@ -141,7 +140,7 @@ export class CodemodeService extends Context.Tag("@app/CodemodeService")<
           const stream: Stream.Stream<
             CodemodeStreamEvent,
             PlatformError.PlatformError | CodeStorageError,
-            Scope.Scope
+            never
           > = Stream.fromIterable(blocks).pipe(
             Stream.flatMap((block) => {
               const loc: CodeblockLocation = {
@@ -172,7 +171,7 @@ export class CodemodeService extends Context.Tag("@app/CodemodeService")<
 
           if (blocks.length === 0) {
             return Option.none<
-              Stream.Stream<CodemodeStreamEvent, PlatformError.PlatformError | CodeStorageError, Scope.Scope>
+              Stream.Stream<CodemodeStreamEvent, PlatformError.PlatformError | CodeStorageError, never>
             >()
           }
 
@@ -191,7 +190,7 @@ export class CodemodeService extends Context.Tag("@app/CodemodeService")<
           const stream: Stream.Stream<
             CodemodeStreamEvent,
             PlatformError.PlatformError | CodeStorageError,
-            Scope.Scope
+            never
           > = Stream.fromIterable(allEvents)
 
           return Option.some(stream)

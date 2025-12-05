@@ -12,7 +12,6 @@
  */
 import type { AiError, LanguageModel } from "@effect/ai"
 import type { Error as PlatformError, FileSystem } from "@effect/platform"
-import type { Scope } from "effect"
 import { Context, Effect, Layer, Option, pipe, Schema, Stream } from "effect"
 import { parseCodeBlock } from "./codemode.model.ts"
 import type { CodemodeStreamEvent } from "./codemode.service.ts"
@@ -67,7 +66,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
     ) => Stream.Stream<
       ContextOrCodemodeEvent,
       AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
-      LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig | Scope.Scope
+      LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
     >
 
     /** Load all events from a context. */
@@ -102,7 +101,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
       ): Stream.Stream<
         ContextOrCodemodeEvent,
         AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
-        LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig | Scope.Scope
+        LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
       > => {
         // Check if any event should trigger an agent turn
         const shouldTriggerAgent = inputEvents.some(
@@ -126,7 +125,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         ): Stream.Stream<
           ContextOrCodemodeEvent,
           PlatformError.PlatformError | CodeStorageError | ContextLoadError | ContextSaveError,
-          Scope.Scope
+          never
         > => {
           if (!codemodeEnabled) {
             return Stream.empty
@@ -215,7 +214,7 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         ): Stream.Stream<
           ContextOrCodemodeEvent,
           AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
-          LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig | Scope.Scope
+          LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
         > =>
           pipe(
             streamLLMResponse(currentEvents),

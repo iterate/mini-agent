@@ -7,10 +7,10 @@
 import type { AiError, LanguageModel } from "@effect/ai"
 import type { Error as PlatformError, FileSystem } from "@effect/platform"
 import { Context, Effect, Layer, Schema, Stream } from "effect"
-import type { ContextEvent, InputEvent } from "./context.model.ts"
+import type { InputEvent } from "./context.model.ts"
 import { SystemPromptEvent, UserMessageEvent } from "./context.model.ts"
-import { ContextService } from "./context.service.ts"
-import type { ContextLoadError, ContextSaveError } from "./errors.ts"
+import { type ContextOrCodemodeEvent, ContextService } from "./context.service.ts"
+import type { CodeStorageError, ContextLoadError, ContextSaveError } from "./errors.ts"
 import type { CurrentLlmConfig } from "./llm-config.ts"
 
 /** Script mode input events - schema for HTTP parsing */
@@ -31,8 +31,8 @@ export class AgentServer extends Context.Tag("@app/AgentServer")<
       contextName: string,
       events: ReadonlyArray<InputEvent>
     ) => Stream.Stream<
-      ContextEvent,
-      AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
+      ContextOrCodemodeEvent,
+      AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
       LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
     >
   }
@@ -45,7 +45,7 @@ export class AgentServer extends Context.Tag("@app/AgentServer")<
       const handleRequest = (
         contextName: string,
         events: ReadonlyArray<InputEvent>
-      ) => contextService.addEvents(contextName, events)
+      ) => contextService.addEvents(contextName, events, { codemode: true })
 
       return AgentServer.of({ handleRequest })
     })

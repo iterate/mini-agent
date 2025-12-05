@@ -6,7 +6,6 @@
  */
 import { Command, CommandExecutor } from "@effect/platform"
 import type { Error as PlatformError } from "@effect/platform"
-import type { Scope } from "effect"
 import { Context, Effect, Layer, pipe, Stream } from "effect"
 import {
   type CodeblockId,
@@ -24,12 +23,13 @@ interface CodeExecutorInterface {
   /**
    * Execute a TypeScript file via bun subprocess.
    * Streams execution events: start, output chunks, complete.
+   * Note: Scope is managed internally - stream is self-scoped.
    */
   readonly execute: (
     indexPath: string,
     requestId: RequestId,
     codeblockId: CodeblockId
-  ) => Stream.Stream<ExecutionEvent, PlatformError.PlatformError, Scope.Scope>
+  ) => Stream.Stream<ExecutionEvent, PlatformError.PlatformError, never>
 }
 
 export class CodeExecutor extends Context.Tag("@app/CodeExecutor")<
@@ -45,11 +45,12 @@ export class CodeExecutor extends Context.Tag("@app/CodeExecutor")<
         indexPath: string,
         requestId: RequestId,
         codeblockId: CodeblockId
-      ): Stream.Stream<ExecutionEvent, PlatformError.PlatformError, Scope.Scope> =>
+      ): Stream.Stream<ExecutionEvent, PlatformError.PlatformError, never> =>
         pipe(
           Stream.make(new ExecutionStartEvent({ requestId, codeblockId })),
           Stream.concat(
-            Stream.unwrap(
+            // Use unwrapScoped to manage subprocess lifecycle internally
+            Stream.unwrapScoped(
               Effect.gen(function*() {
                 // Create runner code that imports and executes the generated module
                 const runnerCode = `

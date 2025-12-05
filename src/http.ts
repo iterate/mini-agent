@@ -7,12 +7,14 @@
 import { LanguageModel } from "@effect/ai"
 import { FileSystem, HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Effect, Schema, Stream } from "effect"
-import type { ContextEvent } from "./context.model.ts"
+import { type InputEvent, UserMessageEvent } from "./context.model.ts"
+import type { ContextOrCodemodeEvent } from "./context.service.ts"
 import { CurrentLlmConfig } from "./llm-config.ts"
 import { AgentServer, ScriptInputEvent } from "./server.service.ts"
 
-/** Encode a ContextEvent as an SSE data line */
-const encodeSSE = (event: ContextEvent): Uint8Array => new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`)
+/** Encode an event as an SSE data line */
+const encodeSSE = (event: ContextOrCodemodeEvent): Uint8Array =>
+  new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`)
 
 /** Error for JSONL parsing failures */
 class JsonParseError extends Error {
@@ -77,12 +79,25 @@ const contextHandler = Effect.gen(function*() {
     return HttpServerResponse.text(message, { status: 400 })
   }
 
-  const events = parseResult.right
-  if (events.length === 0) {
+  const parsedEvents = parseResult.right
+  if (parsedEvents.length === 0) {
     return HttpServerResponse.text("No valid events in body", { status: 400 })
   }
 
-  // Stream SSE events directly - provide services to remove context requirements
+  // Filter to InputEvent only (exclude SystemPromptEvent which isn't an InputEvent)
+  const events: Array<InputEvent> = []
+  for (const e of parsedEvents) {
+    if (Schema.is(UserMessageEvent)(e)) {
+      events.push(e)
+    }
+  }
+  if (events.length === 0) {
+    return HttpServerResponse.text("No valid input events in body (SystemPrompt alone is not supported)", {
+      status: 400
+    })
+  }
+
+  // Stream SSE events - provide services to remove context requirements
   const sseStream = agentServer.handleRequest(contextName, events).pipe(
     Stream.map(encodeSSE),
     Stream.provideService(LanguageModel.LanguageModel, langModel),
