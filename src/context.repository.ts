@@ -11,40 +11,40 @@ import { AppConfig } from "./config.ts"
 import {
   ContextName,
   DEFAULT_SYSTEM_PROMPT,
+  makeBaseFields,
   PersistedEvent,
   type PersistedEvent as PersistedEventType,
   SystemPromptEvent
 } from "./context.model.ts"
-import { ContextLoadError, ContextSaveError } from "./errors.ts"
-
-// =============================================================================
-// Event Decoding Helper
-// =============================================================================
+import {
+  ContextLoadError,
+  ContextSaveError,
+  makeContextLoadError,
+  makeContextSaveError
+} from "./errors.ts"
 
 /**
  * Decode a plain object to a PersistedEvent class instance.
- * This ensures the event has all the methods defined on the class.
  */
 const decodeEvent = Schema.decodeUnknownSync(PersistedEvent)
 
 /**
  * Decode an array of plain objects to PersistedEvent class instances.
  */
-const decodeEvents = (rawEvents: Array<unknown>): Array<PersistedEventType> => rawEvents.map((raw) => decodeEvent(raw))
+const decodeEvents = (rawEvents: Array<unknown>): Array<PersistedEventType> =>
+  rawEvents.map((raw) => decodeEvent(raw))
 
 /**
  * Encode an event to a plain object for YAML serialization.
  */
 const encodeEvent = Schema.encodeSync(PersistedEvent)
 
-// =============================================================================
-// Context Repository Service
-// =============================================================================
-
 export class ContextRepository extends Context.Tag("@app/ContextRepository")<
   ContextRepository,
   {
-    readonly load: (contextName: string) => Effect.Effect<Array<PersistedEventType>, ContextLoadError>
+    readonly load: (
+      contextName: string
+    ) => Effect.Effect<Array<PersistedEventType>, ContextLoadError>
     readonly loadOrCreate: (
       contextName: string
     ) => Effect.Effect<Array<PersistedEventType>, ContextLoadError | ContextSaveError>
@@ -56,9 +56,6 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
     readonly getContextsDir: () => string
   }
 >() {
-  /**
-   * Production layer with file system persistence.
-   */
   static readonly layer = Layer.effect(
     ContextRepository,
     Effect.gen(function*() {
@@ -66,94 +63,88 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
       const path = yield* Path.Path
       const config = yield* AppConfig
 
-      // Resolve the contexts directory from config
       const cwd = Option.getOrElse(config.cwd, () => process.cwd())
       const contextsDir = path.join(cwd, config.dataStorageDir, "contexts")
 
-      const getContextPath = (contextName: string) => path.join(contextsDir, `${contextName}.yaml`)
+      const getContextPath = (contextName: string) =>
+        path.join(contextsDir, `${contextName}.yaml`)
 
-      // Service methods wrapped with Effect.fn for call-site tracing
-      // See: https://www.effect.solutions/services-and-layers
-
-      /**
-       * Save events to a context file.
-       */
       const save = Effect.fn("ContextRepository.save")(
         function*(contextName: string, events: ReadonlyArray<PersistedEventType>) {
           const filePath = getContextPath(contextName)
 
-          // Ensure directory exists
           yield* fs.makeDirectory(contextsDir, { recursive: true }).pipe(
             Effect.catchAll(() => Effect.void)
           )
 
-          // Convert to plain objects for YAML serialization using Schema encoding
           const plainEvents = events.map((e) => encodeEvent(e))
-
           const yaml = YAML.stringify({ events: plainEvents })
+
           yield* fs.writeFileString(filePath, yaml).pipe(
-            Effect.catchAll((error) =>
-              new ContextSaveError({
-                name: ContextName.make(contextName),
-                cause: error
-              })
+            Effect.mapError((error) =>
+              makeContextSaveError(
+                ContextName.make(contextName),
+                `Failed to save context: ${error.message}`,
+                error
+              )
             )
           )
         }
       )
 
-      /**
-       * Load events from a context file.
-       * Returns empty array if context doesn't exist.
-       */
-      const load = Effect.fn("ContextRepository.load")(
-        function*(contextName: string) {
-          const filePath = getContextPath(contextName)
-          const exists = yield* fs.exists(filePath).pipe(
-            Effect.catchAll((error) =>
-              new ContextLoadError({
-                name: ContextName.make(contextName),
-                cause: error
-              })
+      const load = Effect.fn("ContextRepository.load")(function*(contextName: string) {
+        const filePath = getContextPath(contextName)
+
+        const exists = yield* fs.exists(filePath).pipe(
+          Effect.mapError((error) =>
+            makeContextLoadError(
+              ContextName.make(contextName),
+              `Failed to check if context exists: ${error.message}`,
+              error
             )
           )
+        )
 
-          if (!exists) {
-            return [] as Array<PersistedEventType>
-          }
-
-          return yield* fs.readFileString(filePath).pipe(
-            Effect.map((yaml) => {
-              const parsed = YAML.parse(yaml) as { events?: Array<unknown> }
-              return decodeEvents(parsed?.events ?? [])
-            }),
-            Effect.catchAll((error) =>
-              new ContextLoadError({
-                name: ContextName.make(contextName),
-                cause: error
-              })
-            )
-          )
+        if (!exists) {
+          return [] as Array<PersistedEventType>
         }
-      )
 
-      /**
-       * Load events from a context, creating it with default system prompt if it doesn't exist.
-       */
+        return yield* fs.readFileString(filePath).pipe(
+          Effect.map((yaml) => {
+            const parsed = YAML.parse(yaml) as { events?: Array<unknown> }
+            return decodeEvents(parsed?.events ?? [])
+          }),
+          Effect.mapError((error) =>
+            makeContextLoadError(
+              ContextName.make(contextName),
+              `Failed to load context: ${error instanceof Error ? error.message : String(error)}`,
+              error
+            )
+          )
+        )
+      })
+
       const loadOrCreate = Effect.fn("ContextRepository.loadOrCreate")(
         function*(contextName: string) {
           const filePath = getContextPath(contextName)
+
           const exists = yield* fs.exists(filePath).pipe(
-            Effect.catchAll((error) =>
-              new ContextLoadError({
-                name: ContextName.make(contextName),
-                cause: error
-              })
+            Effect.mapError((error) =>
+              makeContextLoadError(
+                ContextName.make(contextName),
+                `Failed to check if context exists: ${error.message}`,
+                error
+              )
             )
           )
 
           if (!exists) {
-            const initialEvents = [new SystemPromptEvent({ content: DEFAULT_SYSTEM_PROMPT })]
+            const initialEvents = [
+              new SystemPromptEvent({
+                ...makeBaseFields(ContextName.make(contextName)),
+                content: DEFAULT_SYSTEM_PROMPT
+              })
+            ]
             yield* save(contextName, initialEvents)
             return initialEvents
           }
@@ -163,47 +154,46 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
               const parsed = YAML.parse(yaml) as { events?: Array<unknown> }
               return decodeEvents(parsed?.events ?? [])
             }),
-            Effect.catchAll((error) =>
-              new ContextLoadError({
-                name: ContextName.make(contextName),
-                cause: error
-              })
+            Effect.mapError((error) =>
+              makeContextLoadError(
+                ContextName.make(contextName),
+                `Failed to load context: ${error instanceof Error ? error.message : String(error)}`,
+                error
+              )
             )
           )
         }
       )
 
-      /**
-       * List all existing context names.
-       */
-      const list = Effect.fn("ContextRepository.list")(
-        function*() {
-          const exists = yield* fs.exists(contextsDir).pipe(
-            Effect.catchAll((error) =>
-              new ContextLoadError({
-                name: ContextName.make(""),
-                cause: error
-              })
+      const list = Effect.fn("ContextRepository.list")(function*() {
+        const exists = yield* fs.exists(contextsDir).pipe(
+          Effect.mapError((error) =>
+            makeContextLoadError(
+              ContextName.make(""),
+              `Failed to check contexts directory: ${error.message}`,
+              error
             )
           )
-          if (!exists) return [] as Array<string>
+        )
 
-          return yield* fs.readDirectory(contextsDir).pipe(
-            Effect.map((entries) =>
-              entries
-                .filter((name) => name.endsWith(".yaml"))
-                .map((name) => name.replace(/\.yaml$/, ""))
-                .sort()
-            ),
-            Effect.catchAll((error) =>
-              new ContextLoadError({
-                name: ContextName.make(""),
-                cause: error
-              })
+        if (!exists) return [] as Array<string>
+
+        return yield* fs.readDirectory(contextsDir).pipe(
+          Effect.map((entries) =>
+            entries
+              .filter((name) => name.endsWith(".yaml"))
+              .map((name) => name.replace(/\.yaml$/, ""))
+              .sort()
+          ),
+          Effect.mapError((error) =>
+            makeContextLoadError(
+              ContextName.make(""),
+              `Failed to list contexts: ${error.message}`,
+              error
             )
           )
-        }
-      )
+        )
+      })
 
       return ContextRepository.of({
         load,
@@ -215,10 +205,6 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
     })
   )
 
-  /**
-   * Test layer with in-memory storage for unit tests.
-   * See: https://www.effect.solutions/testing
-   */
   static readonly testLayer = Layer.sync(ContextRepository, () => {
     const store = new Map<string, Array<PersistedEventType>>()
 
@@ -228,7 +214,12 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
         Effect.sync(() => {
           const existing = store.get(contextName)
           if (existing) return existing
-          const initial = [new SystemPromptEvent({ content: DEFAULT_SYSTEM_PROMPT })]
+          const initial = [
+            new SystemPromptEvent({
+              ...makeBaseFields(ContextName.make(contextName)),
+              content: DEFAULT_SYSTEM_PROMPT
+            })
+          ]
           store.set(contextName, initial)
           return initial
         }),
