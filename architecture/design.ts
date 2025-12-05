@@ -610,12 +610,19 @@ export const LoggingHooksLayer = Layer.sync(HooksService, () =>
  * ContextActor represents a single context as an actor.
  *
  * Each actor encapsulates:
- * - Input queue (mailbox) for incoming events
- * - Output PubSub for broadcasting events to subscribers
+ * - Mailbox for incoming events (actor mailbox pattern)
+ * - broadcastDynamic for fan-out to multiple subscribers
  * - Background fiber for processing events
  * - State refs for events and reduced context
  *
  * The actor is scoped - when the scope closes, the actor shuts down gracefully.
+ *
+ * IMPLEMENTATION NOTE: Use Effect's Mailbox + Stream.broadcastDynamic pattern:
+ * - Mailbox.make<ContextEvent>() for input
+ * - Stream.broadcastDynamic(Mailbox.toStream(mailbox), { capacity: "unbounded" })
+ * - Each execution of the `events` stream creates a new subscriber (fan-out)
+ * - Late subscribers miss events (live stream, not replay/event-sourcing)
+ * - For historical events, use getEvents
  */
 export class ContextActor extends Context.Tag("@app/ContextActor")<
   ContextActor,
@@ -629,34 +636,34 @@ export class ContextActor extends Context.Tag("@app/ContextActor")<
      * Flow:
      * 1. Persist event immediately to YAML
      * 2. Update in-memory state
-     * 3. Offer to input queue (triggers processing via debounced stream)
-     * 4. Publish to output PubSub (subscribers see input events immediately)
+     * 3. Offer to mailbox (triggers processing via debounced stream)
+     * 4. Broadcast to all subscribers via internal PubSub
      */
     readonly addEvent: (event: ContextEvent) => Effect.Effect<void, ContextError>
 
     /**
-     * Subscribe to the event stream.
-     * Each call creates a new subscription to the internal PubSub.
+     * Event stream - each execution creates a new subscriber.
+     *
+     * Uses Stream.broadcastDynamic internally which maintains a PubSub.
      * Multiple subscribers each receive all events (fan-out).
-     * The subscription is scoped - stream ends when scope closes or actor shuts down.
+     *
+     * NOTE: This is a LIVE stream - late subscribers only receive events
+     * published AFTER they subscribe. For historical events, use getEvents.
      *
      * Usage (SSE endpoint):
      * ```typescript
-     * Effect.scoped(
-     *   Effect.gen(function*() {
-     *     const stream = yield* actor.subscribe
-     *     yield* stream.pipe(
-     *       Stream.map(event => `data: ${JSON.stringify(event)}\n\n`),
-     *       Stream.runForEach(chunk => sendSSE(res, chunk))
-     *     )
-     *   })
+     * const actor = yield* ContextActor
+     * yield* actor.events.pipe(
+     *   Stream.map(event => `data: ${JSON.stringify(event)}\n\n`),
+     *   Stream.runForEach(chunk => sendSSE(res, chunk))
      * )
      * ```
      */
-    readonly subscribe: Effect.Effect<Stream.Stream<ContextEvent, never>, never, Scope>
+    readonly events: Stream.Stream<ContextEvent, never>
 
     /**
-     * Get all events currently in the context.
+     * Get all events currently in the context (from in-memory state).
+     * Use this for historical events since `events` stream is live-only.
      */
     readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
 
@@ -754,13 +761,23 @@ export class ActorApplicationService extends Context.Tag("@app/ActorApplicationS
     ) => Effect.Effect<void, ContextError>
 
     /**
-     * Subscribe to event stream for a context.
+     * Get event stream for a context.
      * Creates actor if needed.
-     * Each call creates a new subscription - multiple subscribers each get all events.
+     * Each execution of the stream creates a new subscriber - all get same events.
+     *
+     * NOTE: This is a live stream. Late subscribers only get events published
+     * after they subscribe. For historical events, use getEvents.
      */
-    readonly subscribe: (
+    readonly getEventStream: (
       contextName: ContextName
-    ) => Effect.Effect<Stream.Stream<ContextEvent, never>, ContextError, Scope>
+    ) => Effect.Effect<Stream.Stream<ContextEvent, never>, ContextError>
+
+    /**
+     * Get all events for a context.
+     */
+    readonly getEvents: (
+      contextName: ContextName
+    ) => Effect.Effect<ReadonlyArray<ContextEvent>, ContextError>
 
     /**
      * List all active contexts.
@@ -801,17 +818,14 @@ export const sampleActorProgram = Effect.gen(function*() {
   const app = yield* ActorApplicationService
   const contextName = ContextName.make("chat")
 
-  // Subscribe to event stream (creates actor if needed)
-  // Using Effect.scoped to auto-cleanup subscription
-  const streamFiber = yield* Effect.scoped(
-    Effect.gen(function*() {
-      const eventStream = yield* app.subscribe(contextName)
-      yield* eventStream.pipe(
-        Stream.tap((event) => Effect.log(`Event: ${event._tag}`)),
-        Stream.runDrain
-      )
-    })
-  ).pipe(Effect.fork)
+  // Get event stream (creates actor if needed)
+  // Each execution of the stream creates a new subscriber
+  const eventStream = yield* app.getEventStream(contextName)
+  const streamFiber = yield* eventStream.pipe(
+    Stream.tap((event) => Effect.log(`Event: ${event._tag}`)),
+    Stream.runDrain,
+    Effect.fork
+  )
 
   // Add a user message (fire and forget)
   yield* app.addEvent(
