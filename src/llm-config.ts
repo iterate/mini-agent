@@ -72,32 +72,13 @@ const PROVIDER_PREFIXES: Record<string, ProviderPreset> = {
   groq
 }
 
-/** Named model presets */
+/** Named model presets (first-party only, use prefix syntax for others) */
 const LLMS: Record<string, LlmConfig> = {
-  // OpenAI
   "gpt-4.1-mini": new LlmConfig({ ...openai, model: "gpt-4.1-mini" }),
   "gpt-4.1": new LlmConfig({ ...openai, model: "gpt-4.1" }),
-
-  // Anthropic
   "claude-haiku-4-5": new LlmConfig({ ...anthropic, model: "claude-haiku-4-5" }),
   "claude-sonnet-4": new LlmConfig({ ...anthropic, model: "claude-sonnet-4-20250514" }),
-
-  // Google
-  "gemini-2.5-flash": new LlmConfig({ ...gemini, model: "gemini-2.5-flash" }),
-
-  // OpenRouter shortcuts
-  "openrouter-claude-sonnet": new LlmConfig({ ...openrouter, model: "anthropic/claude-sonnet-4" }),
-  "openrouter-gpt-4o": new LlmConfig({ ...openrouter, model: "openai/gpt-4o" }),
-  "openrouter-llama-70b": new LlmConfig({ ...openrouter, model: "meta-llama/llama-3.3-70b-instruct" }),
-
-  // Cerebras shortcuts (ultra-fast inference)
-  "cerebras-llama-70b": new LlmConfig({ ...cerebras, model: "llama-3.3-70b" }),
-  "cerebras-llama-8b": new LlmConfig({ ...cerebras, model: "llama-3.1-8b" }),
-  "cerebras-qwen-32b": new LlmConfig({ ...cerebras, model: "qwen-3-32b" }),
-
-  // Groq shortcuts (fast inference)
-  "groq-llama-70b": new LlmConfig({ ...groq, model: "llama-3.3-70b-versatile" }),
-  "groq-llama-8b": new LlmConfig({ ...groq, model: "llama-3.1-8b-instant" })
+  "gemini-2.5-flash": new LlmConfig({ ...gemini, model: "gemini-2.5-flash" })
 }
 
 export const DEFAULT_LLM = "gpt-4.1-mini"
