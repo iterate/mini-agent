@@ -13,6 +13,7 @@
  *
  * Designed for single-process now, future-ready for @effect/cluster distribution.
  */
+import type { Scope } from "effect"
 import { Context, DateTime, Duration, Effect, Fiber, Layer, Option, PubSub, Queue, Ref, Schedule, Stream } from "effect"
 import {
   AgentTurnCompletedEvent,
@@ -83,7 +84,12 @@ export class ContextActor extends Context.Tag("@app/ContextActor")<
   {
     readonly contextName: ContextName
     readonly addEvent: (event: ContextEvent) => Effect.Effect<void, ContextLoadError | ContextSaveError>
-    readonly events: Stream.Stream<ContextEvent, never>
+    /**
+     * Subscribe to the event stream.
+     * Each call creates a new subscription to the internal PubSub.
+     * The stream ends when the scope closes or the actor shuts down.
+     */
+    readonly subscribe: Effect.Effect<Stream.Stream<ContextEvent, never>, never, Scope.Scope>
     readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
     readonly shutdown: Effect.Effect<void>
   }
@@ -241,7 +247,12 @@ export class ContextActor extends Context.Tag("@app/ContextActor")<
             // yield* repository.append(contextName, [event])
           })
 
-        const events = Stream.fromPubSub(outputPubSub)
+        // Subscribe creates a new Queue subscription to the PubSub
+        // The subscription is scoped - cleaned up when scope closes
+        const subscribe = Effect.gen(function*() {
+          const queue = yield* PubSub.subscribe(outputPubSub)
+          return Stream.fromQueue(queue)
+        })
 
         const getEvents = Ref.get(stateRef).pipe(Effect.map((s) => s.events))
 
@@ -253,7 +264,7 @@ export class ContextActor extends Context.Tag("@app/ContextActor")<
         return ContextActor.of({
           contextName,
           addEvent,
-          events,
+          subscribe,
           getEvents,
           shutdown
         })
@@ -273,7 +284,7 @@ export class ContextActor extends Context.Tag("@app/ContextActor")<
         Effect.sync(() => {
           events.push(event)
         }),
-      events: Stream.empty,
+      subscribe: Effect.succeed(Stream.empty),
       getEvents: Effect.succeed(events),
       shutdown: Effect.void
     })
