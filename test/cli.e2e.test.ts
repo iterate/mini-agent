@@ -14,11 +14,22 @@ import * as path from "node:path"
 import { describe } from "vitest"
 import { expect, runCli, runCliWithEnv, test } from "./fixtures.js"
 
-const llms = [
+/** LLMs with full vision support */
+const llmsWithVision = [
   { llm: "openai:gpt-4.1-mini" },
   { llm: "anthropic:claude-haiku-4-5" },
-  { llm: "gemini:gemini-2.5-flash" }
+  { llm: "gemini:gemini-2.5-flash" },
+  { llm: "groq:meta-llama/llama-4-scout-17b-16e-instruct" },
+  { llm: "openrouter:qwen/qwen3-vl-8b-instruct" }
 ] as const
+
+/** LLMs without vision support (text-only) */
+const llmsTextOnly = [
+  { llm: "cerebras:llama-3.3-70b" }
+] as const
+
+/** All LLMs for basic chat tests */
+const allLlms = [...llmsWithVision, ...llmsTextOnly] as const
 
 /** Context name used in tests - safe to reuse since each test has isolated testDir */
 const TEST_CONTEXT = "test-context"
@@ -363,10 +374,10 @@ describe("CLI options", () => {
   })
 })
 
-describe.each(llms)("LLM: $llm", ({ llm }) => {
+describe.each(allLlms)("LLM: $llm", ({ llm }) => {
   test(
     "basic chat works",
-    { timeout: 30000 },
+    { timeout: 60000 },
     async ({ testDir }) => {
       const result = await Effect.runPromise(
         runCliWithEnv(testDir, { LLM: llm }, "chat", "-n", "test", "-m", "Say exactly: TEST_SUCCESS")
@@ -375,10 +386,12 @@ describe.each(llms)("LLM: $llm", ({ llm }) => {
       expect(result.exitCode).toBe(0)
     }
   )
+})
 
+describe.each(llmsWithVision)("LLM Vision: $llm", ({ llm }) => {
   test(
     "recognizes letter in image",
-    { timeout: 30000 },
+    { timeout: 60000 },
     async ({ testDir }) => {
       // Path to test image: white "i" on black background
       const imagePath = path.resolve(__dirname, "fixtures/letter-i.png")
