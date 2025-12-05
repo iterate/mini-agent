@@ -172,7 +172,7 @@ LLM='{"apiFormat":"openai-responses","model":"my-model","baseUrl":"https://my-ap
 
 `apiFormat` options:
 - `openai-responses` — OpenAI Responses API (for OpenAI native models)
-- `openai-chat` — OpenAI Chat Completions API (for Groq, Cerebras, and other OpenAI-compatible providers)
+- `openai-chat-completions` — OpenAI Chat Completions API (for Groq, Cerebras, OpenRouter, and other OpenAI-compatible providers)
 - `anthropic` — Anthropic Messages API
 - `gemini` — Google Gemini API
 

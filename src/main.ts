@@ -20,7 +20,7 @@ import { ContextRepository } from "./context.repository.ts"
 import { ContextService } from "./context.service.ts"
 import { CurrentLlmConfig, getApiKey, type LlmConfig, resolveLlmConfig } from "./llm-config.ts"
 import { createLoggingLayer } from "./logging.ts"
-import { OpenAiChatClient, OpenAiChatLanguageModel } from "./openai-chat-client.ts"
+import { OpenAiChatClient, OpenAiChatLanguageModel } from "./openai-chat-completions-client.ts"
 import { createTracingLayer } from "./tracing.ts"
 
 const makeLanguageModelLayer = (llmConfig: LlmConfig) => {
@@ -37,7 +37,7 @@ const makeLanguageModelLayer = (llmConfig: LlmConfig) => {
           )
         )
 
-      case "openai-chat":
+      case "openai-chat-completions":
         return OpenAiChatLanguageModel.layer({ model: llmConfig.model }).pipe(
           Layer.provide(
             OpenAiChatClient.layer({ apiKey, apiUrl: llmConfig.baseUrl }).pipe(
