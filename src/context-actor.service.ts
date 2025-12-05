@@ -2,19 +2,14 @@
  * Context Actor Service
  *
  * Each Context is modeled as an Actor with:
- * - addEvent: fire-and-forget input (persists immediately, queues for processing)
- * - events: continuous output stream (tap into all events via PubSub subscription)
+ * - addEvent: fire-and-forget input via Mailbox
+ * - events: broadcast stream (each execution = new subscriber)
  *
- * Internal flow:
- * 1. addEvent -> persist to YAML -> Queue.offer
- * 2. Stream.fromQueue -> debounce -> process batch
- * 3. Process: reduce -> agent turn -> persist response -> PubSub.publish
- * 4. events stream: Stream.fromPubSub (subscribers get all events)
+ * Uses Mailbox + Stream.broadcastDynamic for clean fan-out to multiple subscribers.
  *
  * Designed for single-process now, future-ready for @effect/cluster distribution.
  */
-import type { Scope } from "effect"
-import { Context, DateTime, Duration, Effect, Fiber, Layer, Option, PubSub, Queue, Ref, Schedule, Stream } from "effect"
+import { Context, DateTime, Duration, Effect, Fiber, Layer, Mailbox, Option, Ref, Schedule, Stream } from "effect"
 import {
   AgentTurnCompletedEvent,
   AgentTurnFailedEvent,
@@ -35,15 +30,15 @@ import type { ContextLoadError, ContextSaveError } from "./errors.ts"
 export interface ActorConfig {
   /** Debounce delay before processing events (ms) */
   readonly debounceMs: number
-  /** Input queue capacity */
-  readonly queueCapacity: number
+  /** Mailbox capacity */
+  readonly capacity: number
   /** Retry schedule for LLM requests */
   readonly retrySchedule: Schedule.Schedule<unknown, unknown>
 }
 
 export const defaultActorConfig: ActorConfig = {
   debounceMs: 10,
-  queueCapacity: 100,
+  capacity: 100,
   retrySchedule: Schedule.exponential(Duration.millis(100)).pipe(
     Schedule.jittered,
     Schedule.intersect(Schedule.recurs(3))
@@ -73,11 +68,11 @@ const initialActorState: ActorState = {
 /**
  * ContextActor represents a single context as an actor.
  *
- * Each actor encapsulates:
- * - Input queue (mailbox) for incoming events
- * - Output PubSub for broadcasting events to subscribers
- * - Background fiber for processing events
- * - State refs for events and reduced context
+ * Uses:
+ * - Mailbox for input (actor mailbox pattern)
+ * - Stream.broadcastDynamic for fan-out to multiple subscribers
+ *
+ * Each execution of `events` stream creates a new subscriber.
  */
 export class ContextActor extends Context.Tag("@app/ContextActor")<
   ContextActor,
@@ -85,11 +80,10 @@ export class ContextActor extends Context.Tag("@app/ContextActor")<
     readonly contextName: ContextName
     readonly addEvent: (event: ContextEvent) => Effect.Effect<void, ContextLoadError | ContextSaveError>
     /**
-     * Subscribe to the event stream.
-     * Each call creates a new subscription to the internal PubSub.
-     * The stream ends when the scope closes or the actor shuts down.
+     * Event stream - each execution creates a new subscriber.
+     * All subscribers receive the same events (fan-out via internal PubSub).
      */
-    readonly subscribe: Effect.Effect<Stream.Stream<ContextEvent, never>, never, Scope.Scope>
+    readonly events: Stream.Stream<ContextEvent, never>
     readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
     readonly shutdown: Effect.Effect<void>
   }
@@ -98,10 +92,10 @@ export class ContextActor extends Context.Tag("@app/ContextActor")<
    * Create an actor for a specific context.
    *
    * The actor lifecycle:
-   * 1. Load existing events from storage
-   * 2. Start background processing fiber
-   * 3. Emit SessionStartedEvent
-   * 4. Process incoming events with debouncing
+   * 1. Create mailbox for input events
+   * 2. Set up broadcastDynamic for fan-out
+   * 3. Start background processing fiber
+   * 4. Emit SessionStartedEvent
    * 5. On shutdown: emit SessionEndedEvent, cleanup resources
    */
   static readonly make = (
@@ -111,18 +105,11 @@ export class ContextActor extends Context.Tag("@app/ContextActor")<
     Layer.scoped(
       ContextActor,
       Effect.gen(function*() {
-        // Dependencies would come from context in real implementation
-        // For now, we'll use stubs and wire up in actor-registry
-
-        // Input queue (mailbox) - bounded for backpressure
-        const inputQueue = yield* Queue.bounded<ContextEvent>(config.queueCapacity)
-
-        // Output PubSub - unbounded for event broadcasting
-        const outputPubSub = yield* PubSub.unbounded<ContextEvent>()
+        // Input mailbox - events go in here
+        const mailbox = yield* Mailbox.make<ContextEvent>({ capacity: config.capacity })
 
         // State refs
         const stateRef = yield* Ref.make<ActorState>(initialActorState)
-        const shutdownRef = yield* Ref.make(false)
 
         // Helper to generate event metadata
         const makeEventMeta = () => ({
@@ -132,103 +119,72 @@ export class ContextActor extends Context.Tag("@app/ContextActor")<
           parentEventId: Option.none()
         })
 
-        // Helper to emit event (persist if needed, then publish)
-        const emitEvent = (event: ContextEvent) =>
-          Effect.gen(function*() {
-            // Update state
-            yield* Ref.update(stateRef, (s) => ({
-              ...s,
-              events: [...s.events, event]
-            }))
+        // Convert mailbox to stream, then broadcast to multiple subscribers
+        // broadcastDynamic creates internal PubSub, returns a Stream
+        // Each execution of the returned Stream = new subscriber
+        const broadcast = yield* Stream.broadcastDynamic(Mailbox.toStream(mailbox), {
+          capacity: "unbounded"
+        })
 
-            // Publish to subscribers
-            yield* PubSub.publish(outputPubSub, event)
-          })
-
-        // Process a batch of events after debounce
+        // Process events when user message detected
         const processBatch = Effect.gen(function*() {
           const state = yield* Ref.get(stateRef)
 
-          // Check if we have any user messages to process
           const hasUserMessage = state.events.some(isUserMessageEvent)
           if (!hasUserMessage) return
 
-          // Mark as processing
           yield* Ref.update(stateRef, (s) => ({ ...s, isProcessing: true }))
 
           const startTime = Date.now()
 
           try {
-            // Emit turn started
-            yield* emitEvent(new AgentTurnStartedEvent(makeEventMeta()))
+            yield* mailbox.offer(new AgentTurnStartedEvent(makeEventMeta()))
 
             // TODO: Call reducer and agent here
-            // For now, just emit a placeholder
-            // In real implementation:
-            // const reduced = yield* reducer.reduce(initialContext, state.events)
-            // yield* agent.takeTurn(reduced).pipe(
-            //   Stream.tap(emitEvent),
-            //   Stream.runDrain
-            // )
-
             yield* Effect.logInfo("Processing events (agent turn would happen here)")
 
-            // Emit turn completed
             const durationMs = Date.now() - startTime
-            yield* emitEvent(
-              new AgentTurnCompletedEvent({
-                ...makeEventMeta(),
-                durationMs
-              })
+            yield* mailbox.offer(
+              new AgentTurnCompletedEvent({ ...makeEventMeta(), durationMs })
             )
           } catch (error) {
-            // Emit turn failed
-            yield* emitEvent(
-              new AgentTurnFailedEvent({
-                ...makeEventMeta(),
-                error: String(error)
-              })
+            yield* mailbox.offer(
+              new AgentTurnFailedEvent({ ...makeEventMeta(), error: String(error) })
             )
           } finally {
             yield* Ref.update(stateRef, (s) => ({ ...s, isProcessing: false }))
           }
         })
 
-        // Background processing fiber - runs until queue is shutdown
-        const processingFiber = yield* Stream.fromQueue(inputQueue).pipe(
-          // Debounce: wait for quiet period before processing
+        // Background processing fiber - subscribes to broadcast for debouncing
+        const processingFiber = yield* broadcast.pipe(
           Stream.debounce(Duration.millis(config.debounceMs)),
-          // Process each batch
           Stream.mapEffect(() => processBatch),
-          // Handle errors without stopping the stream
           Stream.catchAll((error) =>
             Stream.fromEffect(
               Effect.logError("Processing error", { error }).pipe(Effect.as(undefined))
             )
           ),
-          // Stream ends when queue is shutdown
           Stream.runDrain,
           Effect.fork
         )
 
         // Emit session started
-        yield* emitEvent(new SessionStartedEvent(makeEventMeta()))
+        yield* mailbox.offer(new SessionStartedEvent(makeEventMeta()))
 
         // Cleanup on scope close
-        yield* Effect.addFinalizer(() =>
+        yield* Effect.addFinalizer((_exit) =>
           Effect.gen(function*() {
-            yield* Ref.set(shutdownRef, true)
-            yield* Queue.shutdown(inputQueue)
-            yield* emitEvent(new SessionEndedEvent(makeEventMeta()))
+            yield* mailbox.offer(new SessionEndedEvent(makeEventMeta()))
+            yield* mailbox.end
             yield* Fiber.interrupt(processingFiber)
-            yield* PubSub.shutdown(outputPubSub)
           })
         )
 
         // Service implementation
         const addEvent = (event: ContextEvent) =>
           Effect.gen(function*() {
-            // 1. Update in-memory state
+            // Update in-memory state
             yield* Ref.update(stateRef, (s) => ({
               ...s,
               events: [...s.events, event],
@@ -237,34 +193,21 @@ export class ContextActor extends Context.Tag("@app/ContextActor")<
                 : s.lastUserMessageId
             }))
 
-            // 2. Publish to output (subscribers see input events immediately)
-            yield* PubSub.publish(outputPubSub, event)
-
-            // 3. Offer to input queue (triggers processing via debounced stream)
-            yield* Queue.offer(inputQueue, event)
-
-            // Note: Persistence would happen here in real implementation
-            // yield* repository.append(contextName, [event])
+            // Offer to mailbox - broadcasts to all subscribers
+            yield* mailbox.offer(event)
           })
 
-        // Subscribe creates a new Queue subscription to the PubSub
-        // The subscription is scoped - cleaned up when scope closes
-        const subscribe = Effect.gen(function*() {
-          const queue = yield* PubSub.subscribe(outputPubSub)
-          return Stream.fromQueue(queue)
-        })
+        // Each execution of this stream creates a new subscriber
+        const events = broadcast
 
         const getEvents = Ref.get(stateRef).pipe(Effect.map((s) => s.events))
 
-        const shutdown = Effect.gen(function*() {
-          yield* Ref.set(shutdownRef, true)
-          yield* Queue.shutdown(inputQueue)
-        })
+        const shutdown = mailbox.end.pipe(Effect.asVoid)
 
         return ContextActor.of({
           contextName,
           addEvent,
-          subscribe,
+          events,
           getEvents,
           shutdown
         })
@@ -284,47 +227,9 @@ export class ContextActor extends Context.Tag("@app/ContextActor")<
         Effect.sync(() => {
           events.push(event)
         }),
-      subscribe: Effect.succeed(Stream.empty),
+      events: Stream.empty,
       getEvents: Effect.succeed(events),
       shutdown: Effect.void
     })
   })
 }
-
-// =============================================================================
-// ContextActorLive - Full implementation with dependencies
-// =============================================================================
-
-/**
- * Create a fully-wired ContextActor with all dependencies.
- *
- * This is the production factory that connects:
- * - ContextRepository for persistence
- * - Agent for LLM requests
- * - EventReducer for state reduction
- * - HooksService for extensibility
- */
-export const makeContextActorLive = (
-  contextName: ContextName,
-  config: ActorConfig = defaultActorConfig
-) =>
-  Layer.scoped(
-    ContextActor,
-    Effect.gen(function*() {
-      // TODO: Wire up real dependencies here
-      // const repository = yield* ContextRepository
-      // const agent = yield* Agent
-      // const reducer = yield* EventReducer
-      // const hooks = yield* HooksService
-
-      // For now, delegate to the basic implementation
-      // In production, this would be fully wired
-      const actor = yield* Effect.scoped(
-        Layer.build(ContextActor.make(contextName, config)).pipe(
-          Effect.map((ctx) => Context.get(ctx, ContextActor))
-        )
-      )
-
-      return actor
-    })
-  )

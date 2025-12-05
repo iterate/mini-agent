@@ -34,7 +34,8 @@ import type { ContextLoadError, ContextSaveError } from "./errors.ts"
 type ActorHandle = {
   readonly contextName: ContextName
   readonly addEvent: (event: ContextEvent) => Effect.Effect<void, ContextLoadError | ContextSaveError>
-  readonly subscribe: Effect.Effect<Stream.Stream<ContextEvent, never>, never, Scope.Scope>
+  /** Event stream - each execution creates a new subscriber (fan-out via internal PubSub) */
+  readonly events: Stream.Stream<ContextEvent, never>
   readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
   readonly shutdown: Effect.Effect<void>
 }
@@ -95,7 +96,7 @@ export class ActorRegistry extends Context.Tag("@app/ActorRegistry")<
             return {
               contextName: existing.contextName,
               addEvent: existing.addEvent,
-              subscribe: existing.subscribe,
+              events: existing.events,
               getEvents: existing.getEvents,
               shutdown: existing.shutdown
             } satisfies ActorHandle
@@ -111,7 +112,7 @@ export class ActorRegistry extends Context.Tag("@app/ActorRegistry")<
           const handle: InternalActorHandle = {
             contextName: actor.contextName,
             addEvent: actor.addEvent,
-            subscribe: actor.subscribe,
+            events: actor.events,
             getEvents: actor.getEvents,
             shutdown: actor.shutdown,
             scope: actorScope
@@ -127,7 +128,7 @@ export class ActorRegistry extends Context.Tag("@app/ActorRegistry")<
           return {
             contextName: actor.contextName,
             addEvent: actor.addEvent,
-            subscribe: actor.subscribe,
+            events: actor.events,
             getEvents: actor.getEvents,
             shutdown: actor.shutdown
           } satisfies ActorHandle
@@ -144,7 +145,7 @@ export class ActorRegistry extends Context.Tag("@app/ActorRegistry")<
           return {
             contextName: actor.contextName,
             addEvent: actor.addEvent,
-            subscribe: actor.subscribe,
+            events: actor.events,
             getEvents: actor.getEvents,
             shutdown: actor.shutdown
           } satisfies ActorHandle
@@ -238,7 +239,7 @@ export class ActorRegistry extends Context.Tag("@app/ActorRegistry")<
           Effect.sync(() => {
             events.push(event)
           }),
-        subscribe: Effect.succeed(Stream.empty as Stream.Stream<ContextEvent, never>),
+        events: Stream.empty as Stream.Stream<ContextEvent, never>,
         getEvents: Effect.succeed(events),
         shutdown: Effect.void
       }
@@ -298,13 +299,13 @@ export class ActorApplicationService extends Context.Tag("@app/ActorApplicationS
     ) => Effect.Effect<void, ContextLoadError | ContextSaveError>
 
     /**
-     * Subscribe to event stream for a context.
+     * Get event stream for a context.
      * Creates actor if needed.
-     * Each call creates a new subscription - multiple subscribers each get all events.
+     * Each execution of the stream creates a new subscriber - all get same events.
      */
-    readonly subscribe: (
+    readonly getEventStream: (
       contextName: ContextName
-    ) => Effect.Effect<Stream.Stream<ContextEvent, never>, ContextLoadError | ContextSaveError, Scope.Scope>
+    ) => Effect.Effect<Stream.Stream<ContextEvent, never>, ContextLoadError | ContextSaveError>
 
     /**
      * Get all events for a context.
@@ -336,10 +337,10 @@ export class ActorApplicationService extends Context.Tag("@app/ActorApplicationS
         }
       )
 
-      const subscribe = Effect.fn("ActorApplicationService.subscribe")(
+      const getEventStream = Effect.fn("ActorApplicationService.getEventStream")(
         function*(contextName: ContextName) {
           const actor = yield* registry.getOrCreate(contextName)
-          return yield* actor.subscribe
+          return actor.events
         }
       )
 
@@ -356,7 +357,7 @@ export class ActorApplicationService extends Context.Tag("@app/ActorApplicationS
 
       return ActorApplicationService.of({
         addEvent,
-        subscribe,
+        getEventStream,
         getEvents,
         list,
         shutdown
@@ -375,10 +376,10 @@ export class ActorApplicationService extends Context.Tag("@app/ActorApplicationS
             const actor = yield* registry.getOrCreate(contextName)
             yield* actor.addEvent(event)
           }),
-        subscribe: (contextName) =>
+        getEventStream: (contextName) =>
           Effect.gen(function*() {
             const actor = yield* registry.getOrCreate(contextName)
-            return yield* actor.subscribe
+            return actor.events
           }),
         getEvents: (contextName) =>
           Effect.gen(function*() {
