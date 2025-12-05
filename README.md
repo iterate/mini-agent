@@ -98,20 +98,79 @@ Output:
 
 ## LLM Configuration
 
-Set `LLM` env var to one of the named presets:
+Use `--llm` (global option, before subcommand) or `LLM` env var:
 
 ```bash
-LLM=gpt-4.1-mini        # OpenAI (default)
-LLM=claude-haiku-4-5    # Anthropic
-LLM=gemini-2.5-flash    # Google
+# Via --llm flag (must come before subcommand)
+bun run mini-agent --llm openai:gpt-4.1-mini chat -m "Hello"
+bun run mini-agent --llm anthropic:claude-sonnet-4-5-20250929 chat
+
+# Via env var
+LLM=groq:llama-3.3-70b-versatile bun run mini-agent chat -m "Hello"
 ```
 
-Or pass JSON for custom config:
+### Supported Providers & Models
+
+**OpenAI** (`OPENAI_API_KEY`)
+```
+openai:gpt-4.1              # Latest GPT-4.1 (1M context)
+openai:gpt-4.1-mini         # Default - fast and affordable
+openai:gpt-4.1-nano         # Smallest/fastest
+openai:gpt-4o               # Multimodal flagship
+openai:gpt-4o-mini          # Lighter multimodal
+openai:o3                   # Deep reasoning
+openai:o4-mini              # Fast reasoning
+openai:o1                   # Original reasoning model
+```
+
+**Anthropic** (`ANTHROPIC_API_KEY`)
+```
+anthropic:claude-opus-4-5-20251101      # Most capable
+anthropic:claude-sonnet-4-5-20250929    # Best balance
+anthropic:claude-haiku-4-5-20251001     # Fast and cheap
+```
+
+**Google Gemini** (`GEMINI_API_KEY`)
+```
+gemini:gemini-2.5-flash       # Best price-performance
+gemini:gemini-2.5-flash-lite  # Fastest/cheapest
+gemini:gemini-2.5-pro         # Advanced reasoning
+gemini:gemini-2.0-flash       # 1M context workhorse
+gemini:gemini-3-pro-preview   # Latest preview
+```
+
+**Groq** (`GROQ_API_KEY`) — Ultra-fast inference
+```
+groq:llama-3.3-70b-versatile  # Best Llama on Groq
+groq:llama-3.1-8b-instant     # Fastest
+groq:qwen/qwen3-32b           # Qwen 3 (preview)
+```
+
+**Cerebras** (`CEREBRAS_API_KEY`) — Fast inference
+```
+cerebras:llama-3.3-70b        # Llama 3.3
+cerebras:llama-3.1-8b         # Fast Llama
+cerebras:qwen-3-32b           # Qwen 3 hybrid reasoning
+```
+
+**OpenRouter** (`OPENROUTER_API_KEY`) — Multi-provider gateway
+```
+openrouter:deepseek/deepseek-chat-v3.1      # DeepSeek V3.1
+openrouter:deepseek/deepseek-r1             # DeepSeek R1 reasoning
+openrouter:anthropic/claude-sonnet-4        # Claude via OpenRouter
+openrouter:google/gemini-2.5-pro-preview    # Gemini via OpenRouter
+openrouter:qwen/qwen3-235b                  # Qwen 3 235B
+```
+Full list: https://openrouter.ai/models
+
+### Custom Configuration
+
+For unlisted models or custom endpoints, pass JSON:
 ```bash
 LLM='{"apiFormat":"openai-responses","model":"my-model","baseUrl":"https://my-api.com/v1","apiKeyEnvVar":"MY_KEY"}'
 ```
 
-Requires `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY` depending on provider.
+`apiFormat` options: `openai-responses`, `anthropic`, `gemini`
 
 # Side quests (so far)
 
