@@ -1,11 +1,9 @@
 /**
  * Workflow Integration with Context Service
  *
- * Demonstrates how to:
- * 1. Detect workflow code in LLM responses
- * 2. Parse and execute workflows
- * 3. Journal workflow events as context events
- * 4. Handle approval flows with suspend/resume
+ * Integrates TypeScript Effect workflow execution with the context event system.
+ * When an LLM response contains workflow code, it's parsed and executed,
+ * with all workflow events persisted as context events.
  */
 import { Context, Effect, Layer, Option, pipe, Schema, Stream } from "effect"
 import {
@@ -16,35 +14,22 @@ import {
 import { ContextRepository } from "../context.repository.ts"
 import type { ContextLoadError, ContextSaveError } from "../errors.ts"
 import { type WorkflowEvent, WorkflowSuspendedEvent } from "./workflow-events.ts"
-import type { WorkflowExecutionError } from "./workflow-executor.ts"
-import { WorkflowExecutor } from "./workflow-executor.ts"
-import type { WorkflowParseError } from "./workflow-parser.ts"
-import { parseWorkflowFromResponse } from "./workflow-parser.ts"
-
-// =============================================================================
-// Extended Event Types (add workflow events to persisted events)
-// =============================================================================
-
-/**
- * Extended persisted event union that includes workflow events.
- * In production, you'd update context.model.ts to include these.
- */
-// Note: For actual integration, add WorkflowEvent types to context.model.ts PersistedEvent union
-
-// =============================================================================
-// Combined Error Type
-// =============================================================================
+import { WorkflowRunner } from "./workflow-primitives.ts"
+import type { WorkflowCodeExecutionError, WorkflowCodeParseError } from "./workflow-runtime.ts"
+import { WorkflowRuntime } from "./workflow-runtime.ts"
 
 type WorkflowIntegrationError =
-  | WorkflowParseError
-  | WorkflowExecutionError
+  | WorkflowCodeParseError
+  | WorkflowCodeExecutionError
   | ContextLoadError
   | ContextSaveError
 
-// =============================================================================
-// Workflow-Aware Context Service
-// =============================================================================
-
+/**
+ * Workflow-Aware Context Service
+ *
+ * Processes LLM responses, detects TypeScript Effect workflow code,
+ * executes it with journaling, and persists events.
+ */
 export class WorkflowContextService extends Context.Tag("@app/WorkflowContextService")<
   WorkflowContextService,
   {
@@ -65,7 +50,7 @@ export class WorkflowContextService extends Context.Tag("@app/WorkflowContextSer
       contextName: string,
       executionId: string,
       approvedBy?: string
-    ) => Stream.Stream<WorkflowEvent, WorkflowIntegrationError>
+    ) => Effect.Effect<Array<WorkflowEvent>, WorkflowIntegrationError>
 
     /**
      * Get pending approvals for a context.
@@ -79,9 +64,9 @@ export class WorkflowContextService extends Context.Tag("@app/WorkflowContextSer
     WorkflowContextService,
     Effect.gen(function*() {
       const repo = yield* ContextRepository
-      const executor = yield* WorkflowExecutor
+      const runtime = yield* WorkflowRuntime
 
-      // Track pending approvals by context
+      // Track pending approvals by context -> executionId -> event
       const pendingApprovals = new Map<string, Map<string, WorkflowSuspendedEvent>>()
 
       const ensurePendingMap = (contextName: string) => {
@@ -97,73 +82,87 @@ export class WorkflowContextService extends Context.Tag("@app/WorkflowContextSer
         processResponse: (contextName, response) =>
           Stream.unwrap(
             Effect.gen(function*() {
-              // Try to parse workflow from response
-              const workflowResult = yield* parseWorkflowFromResponse(response).pipe(
+              // Always emit the assistant message first
+              const assistantEvent = new AssistantMessageEvent({ content: response })
+
+              // Check if response contains workflow code
+              if (!runtime.hasWorkflowCode(response)) {
+                return Stream.make(assistantEvent as ContextEvent | WorkflowEvent)
+              }
+
+              // Execute workflow and collect events
+              const workflowResult = yield* runtime.executeFromResponse(
+                `workflow-${Date.now()}`,
+                response
+              ).pipe(
                 Effect.map(Option.some),
-                Effect.catchTag("WorkflowParseError", () => Effect.succeed(Option.none()))
+                Effect.catchAll((e) => {
+                  // Log error but continue - workflow parsing/execution failed
+                  return Effect.logWarning("Workflow execution failed", { error: e }).pipe(
+                    Effect.map(() => Option.none())
+                  )
+                })
               )
 
               if (Option.isNone(workflowResult)) {
-                // No workflow - just emit the assistant message
-                return Stream.make(
-                  new AssistantMessageEvent({ content: response }) as ContextEvent | WorkflowEvent
-                )
+                return Stream.make(assistantEvent as ContextEvent | WorkflowEvent)
               }
 
-              const workflow = workflowResult.value
+              const { events } = workflowResult.value
 
-              // Emit assistant message first (contains the workflow definition)
-              const assistantEvent = new AssistantMessageEvent({ content: response })
+              // Persist workflow events
+              yield* Effect.gen(function*() {
+                const current = yield* repo.load(contextName)
+                // Cast workflow events to persisted events
+                yield* repo.save(contextName, [
+                  ...current,
+                  ...events as unknown as Array<PersistedEventType>
+                ])
 
-              // Execute workflow and stream events
-              const workflowEvents = executor.execute(workflow).pipe(
-                // Persist each event
-                Stream.tap((event) =>
-                  Effect.gen(function*() {
-                    const current = yield* repo.load(contextName)
-                    // Cast workflow event to persisted event (in prod, WorkflowEvent would be in union)
-                    yield* repo.save(contextName, [...current, event as unknown as PersistedEventType])
+                // Track suspended events for approval
+                for (const event of events) {
+                  if (Schema.is(WorkflowSuspendedEvent)(event)) {
+                    const map = ensurePendingMap(contextName)
+                    map.set(event.executionId, event)
+                  }
+                }
 
-                    // Track suspended events for approval
-                    if (Schema.is(WorkflowSuspendedEvent)(event)) {
-                      const map = ensurePendingMap(contextName)
-                      map.set(event.executionId, event)
-                    }
-                  })
-                ),
                 // Remove from pending on completion/failure
-                Stream.tap((event) =>
-                  Effect.sync(() => {
-                    if (event._tag === "WorkflowCompleted" || event._tag === "WorkflowFailed") {
-                      const map = pendingApprovals.get(contextName)
-                      map?.delete(event.executionId)
-                    }
-                  })
-                )
-              )
+                for (const event of events) {
+                  if (event._tag === "WorkflowCompleted" || event._tag === "WorkflowFailed") {
+                    const map = pendingApprovals.get(contextName)
+                    map?.delete(event.executionId)
+                  }
+                }
+              })
 
+              // Emit all events
               return pipe(
                 Stream.make(assistantEvent as ContextEvent | WorkflowEvent),
-                Stream.concat(workflowEvents)
+                Stream.concat(Stream.fromIterable(events))
               )
             })
           ),
 
-        approveWorkflow: (contextName, executionId, approvedBy) =>
-          executor.resume(executionId, approvedBy).pipe(
-            Stream.tap((event) =>
-              Effect.gen(function*() {
-                const current = yield* repo.load(contextName)
-                yield* repo.save(contextName, [...current, event as unknown as PersistedEventType])
+        approveWorkflow: (contextName, executionId, _approvedBy) =>
+          Effect.gen(function*() {
+            // In production, this would resume a suspended workflow
+            // For now, just mark as approved and log
+            const map = pendingApprovals.get(contextName)
+            const pending = map?.get(executionId)
 
-                // Remove from pending on completion
-                if (event._tag === "WorkflowCompleted" || event._tag === "WorkflowFailed") {
-                  const map = pendingApprovals.get(contextName)
-                  map?.delete(executionId)
-                }
-              })
-            )
-          ),
+            if (!pending) {
+              yield* Effect.logWarning("No pending approval found", { executionId })
+              return []
+            }
+
+            // Remove from pending
+            map?.delete(executionId)
+
+            // In full implementation: resume workflow execution from the approval step
+            yield* Effect.logInfo("Workflow approved", { executionId })
+            return []
+          }),
 
         getPendingApprovals: (contextName) =>
           Effect.sync(() => {
@@ -173,170 +172,71 @@ export class WorkflowContextService extends Context.Tag("@app/WorkflowContextSer
       })
     })
   )
+
+  static readonly live = Layer.provideMerge(
+    WorkflowContextService.layer,
+    Layer.merge(WorkflowRuntime.layer, WorkflowRunner.layer)
+  )
 }
 
-// =============================================================================
-// Example Usage (showing the full flow)
-// =============================================================================
-
 /**
- * Example: Full conversation with workflow execution and approval
+ * Example: Full conversation with TypeScript workflow
  *
  * ```typescript
  * const program = Effect.gen(function*() {
  *   const contextService = yield* WorkflowContextService
  *
- *   // 1. User asks for a deployment
- *   const userMessage = new UserMessageEvent({
- *     content: "Deploy version 2.0 to production with approval gate"
+ *   // 1. LLM responds with TypeScript Effect workflow
+ *   const llmResponse = `
+ * I'll create a workflow to deploy your application:
+ *
+ * \`\`\`typescript
+ * Effect.gen(function*() {
+ *   yield* W.log("Starting deployment")
+ *
+ *   // Build
+ *   const build = yield* W.exec("npm run build")
+ *   if (build.exitCode !== 0) {
+ *     throw new Error("Build failed: " + build.stderr)
+ *   }
+ *
+ *   // Test
+ *   const test = yield* W.exec("npm test")
+ *   yield* W.log("Tests passed", { exitCode: test.exitCode })
+ *
+ *   // Request approval before production deploy
+ *   yield* W.approval("Build and tests passed. Deploy to production?", {
+ *     buildOutput: build.stdout.slice(-200)
  *   })
  *
- *   // 2. LLM responds with a workflow
- *   const llmResponse = `
- * I'll create a deployment workflow with an approval gate:
+ *   // Deploy
+ *   yield* W.exec("kubectl apply -f k8s/production/")
  *
- * \`\`\`workflow
- * {
- *   "name": "deploy-v2",
- *   "steps": [
- *     { "_tag": "Shell", "id": "build", "command": "npm run build" },
- *     { "_tag": "Shell", "id": "test", "command": "npm test" },
- *     { "_tag": "Shell", "id": "deploy-staging", "command": "kubectl apply -f staging/" },
- *     {
- *       "_tag": "Approval",
- *       "id": "approve-prod",
- *       "message": "Staging deployment successful. Deploy to production?",
- *       "context": { "version": "2.0", "staging_url": "https://staging.example.com" }
- *     },
- *     { "_tag": "Shell", "id": "deploy-prod", "command": "kubectl apply -f production/" }
- *   ]
- * }
+ *   return { status: "deployed" }
+ * })
  * \`\`\`
  *
- * The workflow will:
- * 1. Build the application
- * 2. Run tests
- * 3. Deploy to staging
- * 4. Wait for your approval
- * 5. Deploy to production
+ * This will build, test, get your approval, then deploy.
  *   `
  *
- *   // 3. Process the response (executes workflow, journals events)
+ *   // 2. Process response - executes workflow, journals events
  *   const events = yield* contextService.processResponse("deployment", llmResponse).pipe(
  *     Stream.runCollect
  *   )
  *
- *   // Events will be:
- *   // - AssistantMessageEvent (the LLM response)
+ *   // 3. Events include:
+ *   // - AssistantMessageEvent (the LLM response text)
  *   // - WorkflowStartedEvent
  *   // - WorkflowStepCompletedEvent (build)
  *   // - WorkflowStepCompletedEvent (test)
- *   // - WorkflowStepCompletedEvent (deploy-staging)
  *   // - WorkflowSuspendedEvent (waiting for approval)
  *
- *   // 4. Check pending approvals
+ *   // 4. Get pending approvals
  *   const pending = yield* contextService.getPendingApprovals("deployment")
- *   // [{ executionId: "...", stepId: "approve-prod", message: "Deploy to production?" }]
+ *   console.log(pending[0]?.message) // "Build and tests passed. Deploy to production?"
  *
- *   // 5. User approves (could be from CLI input, web UI, Slack, etc.)
- *   const resumeEvents = yield* contextService.approveWorkflow(
- *     "deployment",
- *     pending[0].executionId,
- *     "user@example.com"
- *   ).pipe(Stream.runCollect)
- *
- *   // Events will be:
- *   // - WorkflowResumedEvent
- *   // - WorkflowStepCompletedEvent (deploy-prod)
- *   // - WorkflowCompletedEvent
- *
- *   // 6. All events are now persisted in the context YAML file
+ *   // 5. User approves
+ *   yield* contextService.approveWorkflow("deployment", pending[0].executionId, "user@example.com")
  * })
  * ```
- */
-
-// =============================================================================
-// Example: What the context YAML looks like after workflow execution
-// =============================================================================
-
-/**
- * After the above flow, the context file would contain:
- *
- * ```yaml
- * events:
- *   - _tag: SystemPrompt
- *     content: "You are a helpful assistant..."
- *
- *   - _tag: UserMessage
- *     content: "Deploy version 2.0 to production with approval gate"
- *
- *   - _tag: AssistantMessage
- *     content: "I'll create a deployment workflow..."
- *
- *   - _tag: WorkflowStarted
- *     executionId: "abc123"
- *     workflowName: "deploy-v2"
- *     inputs: {}
- *     timestamp: 1701234567890
- *
- *   - _tag: WorkflowStepCompleted
- *     executionId: "abc123"
- *     stepId: "build"
- *     stepType: "Shell"
- *     output: { stdout: "...", exitCode: 0 }
- *     durationMs: 45000
- *     timestamp: 1701234612890
- *
- *   - _tag: WorkflowStepCompleted
- *     executionId: "abc123"
- *     stepId: "test"
- *     stepType: "Shell"
- *     output: { stdout: "...", exitCode: 0 }
- *     durationMs: 30000
- *     timestamp: 1701234642890
- *
- *   - _tag: WorkflowStepCompleted
- *     executionId: "abc123"
- *     stepId: "deploy-staging"
- *     stepType: "Shell"
- *     output: { stdout: "...", exitCode: 0 }
- *     durationMs: 15000
- *     timestamp: 1701234657890
- *
- *   - _tag: WorkflowSuspended
- *     executionId: "abc123"
- *     stepId: "approve-prod"
- *     reason: "approval"
- *     message: "Staging deployment successful. Deploy to production?"
- *     context: { version: "2.0", staging_url: "https://staging.example.com" }
- *     timestamp: 1701234657900
- *
- *   # --- User approves later ---
- *
- *   - _tag: WorkflowResumed
- *     executionId: "abc123"
- *     stepId: "approve-prod"
- *     approvedBy: "user@example.com"
- *     timestamp: 1701234957890
- *
- *   - _tag: WorkflowStepCompleted
- *     executionId: "abc123"
- *     stepId: "deploy-prod"
- *     stepType: "Shell"
- *     output: { stdout: "...", exitCode: 0 }
- *     durationMs: 20000
- *     timestamp: 1701234977890
- *
- *   - _tag: WorkflowCompleted
- *     executionId: "abc123"
- *     output: { stdout: "...", exitCode: 0 }
- *     totalDurationMs: 320000
- *     timestamp: 1701234977900
- * ```
- *
- * This provides:
- * - Full audit trail of what happened
- * - Ability to replay/resume workflows
- * - Integration with conversation history
- * - Machine-readable structured events
  */

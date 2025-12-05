@@ -1,24 +1,28 @@
 /**
  * Workflow Module
  *
- * Provides LLM-emittable workflow DSL with:
- * - Declarative step definitions (Fetch, Shell, Approval, etc.)
- * - Parser for extracting workflows from LLM responses
- * - Executor with journaling to context events
+ * Provides TypeScript Effect workflow execution:
+ * - Journaled primitives (W.fetch, W.exec, W.approval, etc.)
+ * - Parser for extracting TypeScript code from LLM responses
+ * - Runtime with journaling to context events
  * - Suspend/resume for human-in-the-loop approvals
+ *
+ * Also includes JSON DSL for declarative workflows.
  */
 
-// DSL and schema
-export * from "./workflow-dsl.ts"
+// TypeScript workflow primitives (W namespace)
+export * from "./workflow-primitives.ts"
+
+// TypeScript workflow runtime (parser + executor)
+export * from "./workflow-runtime.ts"
 
 // Event types
 export * from "./workflow-events.ts"
 
-// Parser
-export * from "./workflow-parser.ts"
-
-// Executor
-export * from "./workflow-executor.ts"
-
 // Integration with context service
 export * from "./workflow-integration.ts"
+
+// JSON DSL (alternative declarative approach)
+export * from "./workflow-dsl.ts"
+export * from "./workflow-executor.ts"
+export * from "./workflow-parser.ts"
