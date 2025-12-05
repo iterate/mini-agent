@@ -170,7 +170,11 @@ For unlisted models or custom endpoints, pass JSON:
 LLM='{"apiFormat":"openai-responses","model":"my-model","baseUrl":"https://my-api.com/v1","apiKeyEnvVar":"MY_KEY"}'
 ```
 
-`apiFormat` options: `openai-responses`, `anthropic`, `gemini`
+`apiFormat` options:
+- `openai-responses` — OpenAI Responses API (for OpenAI native models)
+- `openai-chat` — OpenAI Chat Completions API (for Groq, Cerebras, and other OpenAI-compatible providers)
+- `anthropic` — Anthropic Messages API
+- `gemini` — Google Gemini API
 
 # Side quests (so far)
 

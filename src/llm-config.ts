@@ -7,10 +7,10 @@
  */
 import { Config, Context, Effect, Layer, Redacted, Schema } from "effect"
 
-export type ApiFormat = "openai-responses" | "anthropic" | "gemini"
+export type ApiFormat = "openai-responses" | "openai-chat" | "anthropic" | "gemini"
 
 export class LlmConfig extends Schema.Class<LlmConfig>("LlmConfig")({
-  apiFormat: Schema.Literal("openai-responses", "anthropic", "gemini"),
+  apiFormat: Schema.Literal("openai-responses", "openai-chat", "anthropic", "gemini"),
   model: Schema.String,
   baseUrl: Schema.String,
   apiKeyEnvVar: Schema.String
@@ -48,13 +48,13 @@ const openrouter: ProviderPreset = {
 }
 
 const cerebras: ProviderPreset = {
-  apiFormat: "openai-responses",
+  apiFormat: "openai-chat",
   baseUrl: "https://api.cerebras.ai/v1",
   apiKeyEnvVar: "CEREBRAS_API_KEY"
 }
 
 const groq: ProviderPreset = {
-  apiFormat: "openai-responses",
+  apiFormat: "openai-chat",
   baseUrl: "https://api.groq.com/openai/v1",
   apiKeyEnvVar: "GROQ_API_KEY"
 }
