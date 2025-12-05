@@ -554,3 +554,291 @@ export const LoggingHooksLayer = Layer.sync(HooksService, () =>
       }
     )
   }))
+
+// =============================================================================
+// Actor-Based Architecture
+// =============================================================================
+
+/**
+ * ACTOR MODEL FOR CONTEXTS
+ *
+ * Each Context is modeled as an Actor with:
+ * - addEvent: fire-and-forget input (persists immediately, queues for processing)
+ * - events: continuous output stream (tap into all events via PubSub subscription)
+ *
+ * Internal flow:
+ * 1. addEvent -> persist to YAML -> Queue.offer
+ * 2. Stream.fromQueue -> debounce -> process batch
+ * 3. Process: reduce -> agent turn -> persist response -> PubSub.publish
+ * 4. events stream: Stream.fromPubSub (subscribers get all events)
+ *
+ * Designed for single-process now, future-ready for @effect/cluster distribution.
+ *
+ * ```
+ * ┌─────────────────────────────────────────────────────────────────┐
+ * │                       ContextActor                              │
+ * │                                                                 │
+ * │  addEvent(event) ──▶ [persist to YAML] ──▶ [Queue.offer]       │
+ * │                                                   │             │
+ * │                           ┌───────────────────────┘             │
+ * │                           ▼                                     │
+ * │              Stream.fromQueue(inputQueue)                       │
+ * │                           │                                     │
+ * │                           ▼                                     │
+ * │              Stream.debounce(debounceMs)                        │
+ * │                           │                                     │
+ * │                           ▼                                     │
+ * │           ┌───────────────────────────────┐                     │
+ * │           │  Process: Reduce → Agent Turn │                     │
+ * │           └───────────────────────────────┘                     │
+ * │                           │                                     │
+ * │                           ▼                                     │
+ * │              [persist to YAML] ──▶ [PubSub.publish]            │
+ * │                                           │                     │
+ * │                                           ▼                     │
+ * │  events stream ◀──── Stream.fromPubSub(outputPubSub)           │
+ * └─────────────────────────────────────────────────────────────────┘
+ * ```
+ */
+
+// =============================================================================
+// ContextActor Service
+// =============================================================================
+
+/**
+ * ContextActor represents a single context as an actor.
+ *
+ * Each actor encapsulates:
+ * - Input queue (mailbox) for incoming events
+ * - Output PubSub for broadcasting events to subscribers
+ * - Background fiber for processing events
+ * - State refs for events and reduced context
+ *
+ * The actor is scoped - when the scope closes, the actor shuts down gracefully.
+ */
+export class ContextActor extends Context.Tag("@app/ContextActor")<
+  ContextActor,
+  {
+    /** The context name this actor manages */
+    readonly contextName: ContextName
+
+    /**
+     * Add an event to the actor (fire and forget).
+     *
+     * Flow:
+     * 1. Persist event immediately to YAML
+     * 2. Update in-memory state
+     * 3. Offer to input queue (triggers processing via debounced stream)
+     * 4. Publish to output PubSub (subscribers see input events immediately)
+     */
+    readonly addEvent: (event: ContextEvent) => Effect.Effect<void, ContextError>
+
+    /**
+     * Continuous stream of all events.
+     * Includes both input events (as they're added) and output events (as they're generated).
+     * Stream never ends until actor is shutdown.
+     */
+    readonly events: Stream.Stream<ContextEvent, never>
+
+    /**
+     * Get all events currently in the context.
+     */
+    readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
+
+    /**
+     * Gracefully shutdown the actor.
+     * Completes any in-flight processing, emits SessionEndedEvent, closes streams.
+     */
+    readonly shutdown: Effect.Effect<void>
+  }
+>() {
+  /**
+   * Create an actor for a specific context.
+   * Returns a scoped layer that manages the actor's lifecycle.
+   */
+  static readonly make: (
+    contextName: ContextName
+  ) => Layer.Layer<ContextActor, ContextError, Agent | EventReducer | ContextRepository | HooksService | AppConfig> =
+    undefined as never
+
+  static readonly testLayer: Layer.Layer<ContextActor> = undefined as never
+}
+
+// =============================================================================
+// ActorRegistry Service
+// =============================================================================
+
+/**
+ * ActorRegistry manages multiple ContextActor instances.
+ *
+ * Responsibilities:
+ * - Create actors on demand (lazy initialization)
+ * - Cache actors by context name
+ * - Route events to correct actor
+ * - Graceful shutdown of all actors
+ *
+ * This is the main entry point for the application layer.
+ * In the future, this could be replaced by @effect/cluster Sharding.
+ */
+export class ActorRegistry extends Context.Tag("@app/ActorRegistry")<
+  ActorRegistry,
+  {
+    /**
+     * Get or create an actor for a context.
+     * Actors are cached - subsequent calls return the same instance.
+     */
+    readonly getOrCreate: (contextName: ContextName) => Effect.Effect<ContextActor, ContextError>
+
+    /**
+     * Get an existing actor (fails if not found).
+     */
+    readonly get: (contextName: ContextName) => Effect.Effect<ContextActor, ContextNotFoundError>
+
+    /**
+     * List all active context names.
+     */
+    readonly list: Effect.Effect<ReadonlyArray<ContextName>>
+
+    /**
+     * Shutdown a specific actor.
+     */
+    readonly shutdownActor: (contextName: ContextName) => Effect.Effect<void, ContextNotFoundError>
+
+    /**
+     * Shutdown all actors gracefully.
+     */
+    readonly shutdownAll: Effect.Effect<void>
+  }
+>() {
+  static readonly layer: Layer.Layer<
+    ActorRegistry,
+    never,
+    Agent | EventReducer | ContextRepository | HooksService | AppConfig
+  > = undefined as never
+
+  static readonly testLayer: Layer.Layer<ActorRegistry> = undefined as never
+}
+
+// =============================================================================
+// Actor-Based Application Service
+// =============================================================================
+
+/**
+ * Application service using actor-based architecture.
+ * Thin facade over ActorRegistry.
+ */
+export class ActorApplicationService extends Context.Tag("@app/ActorApplicationService")<
+  ActorApplicationService,
+  {
+    /**
+     * Add event to a context (creates actor if needed).
+     */
+    readonly addEvent: (
+      contextName: ContextName,
+      event: ContextEvent
+    ) => Effect.Effect<void, ContextError>
+
+    /**
+     * Get event stream for a context.
+     * Creates actor if needed.
+     */
+    readonly eventStream: (
+      contextName: ContextName
+    ) => Effect.Effect<Stream.Stream<ContextEvent, never>, ContextError>
+
+    /**
+     * List all active contexts.
+     */
+    readonly list: Effect.Effect<ReadonlyArray<ContextName>>
+
+    /**
+     * Shutdown all actors.
+     */
+    readonly shutdown: Effect.Effect<void>
+  }
+>() {
+  static readonly layer: Layer.Layer<ActorApplicationService, never, ActorRegistry> = undefined as never
+  static readonly testLayer: Layer.Layer<ActorApplicationService> = undefined as never
+}
+
+// =============================================================================
+// Actor Layer Composition
+// =============================================================================
+
+/**
+ * Complete actor-based application layer.
+ */
+export const ActorAppLayer = ActorApplicationService.layer.pipe(
+  Layer.provide(ActorRegistry.layer),
+  Layer.provide(EventReducer.layer),
+  Layer.provide(Agent.layer),
+  Layer.provide(ContextRepository.layer),
+  Layer.provide(HooksService.layer),
+  Layer.provide(AppConfig.layer)
+)
+
+// =============================================================================
+// Sample Actor Usage
+// =============================================================================
+
+export const sampleActorProgram = Effect.gen(function*() {
+  const app = yield* ActorApplicationService
+  const contextName = ContextName.make("chat")
+
+  // Get the event stream (creates actor if needed)
+  const eventStream = yield* app.eventStream(contextName)
+
+  // Fork the event stream consumer
+  const streamFiber = yield* eventStream.pipe(
+    Stream.tap((event) => Effect.log(`Event: ${event._tag}`)),
+    Stream.runDrain,
+    Effect.fork
+  )
+
+  // Add a user message (fire and forget)
+  yield* app.addEvent(
+    contextName,
+    new UserMessageEvent({
+      id: EventId.make(crypto.randomUUID()),
+      timestamp: new Date() as never, // DateTime.unsafeNow() in real code
+      contextName,
+      parentEventId: Option.none(),
+      content: "Hello, how are you?"
+    })
+  )
+
+  // Wait for response events...
+  yield* Effect.sleep(Duration.seconds(5))
+
+  // Graceful shutdown
+  yield* app.shutdown()
+  yield* Fiber.await(streamFiber)
+})
+
+// =============================================================================
+// Future: @effect/cluster Distribution
+// =============================================================================
+
+/**
+ * To distribute in the future:
+ *
+ * 1. Replace ContextActor with Entity:
+ *    ```typescript
+ *    const ContextEntity = Entity.define({
+ *      id: ContextName,
+ *      initialState: () => ({ events: [] }),
+ *      onMessage: (state, msg) => { ... }
+ *    })
+ *    ```
+ *
+ * 2. Replace ActorRegistry with Sharding:
+ *    ```typescript
+ *    const sharding = yield* Sharding
+ *    const proxy = yield* sharding.entity(ContextEntity)
+ *    yield* proxy.send(contextName, AddEventMessage.make({ event }))
+ *    ```
+ *
+ * 3. Add persistent storage (Postgres/Redis) for event logs
+ *
+ * 4. Configure cluster nodes and discovery
+ */
