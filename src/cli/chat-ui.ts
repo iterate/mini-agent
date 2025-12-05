@@ -6,7 +6,7 @@
  */
 import type { AiError, LanguageModel } from "@effect/ai"
 import type { Error as PlatformError, FileSystem } from "@effect/platform"
-import { Cause, Context, Effect, Exit, Fiber, Layer, Mailbox, Stream } from "effect"
+import { Cause, Context, Effect, Fiber, Layer, Mailbox, Stream } from "effect"
 import { is } from "effect/Schema"
 import {
   AssistantMessageEvent,
@@ -53,7 +53,6 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
             },
             onExit: () => {
               mailbox.unsafeOffer({ _tag: "Exit" })
-              mailbox.unsafeDone(Exit.void)
             }
           })
         )

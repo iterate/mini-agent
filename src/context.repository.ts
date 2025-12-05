@@ -174,7 +174,7 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
       )
 
       /**
-       * List all existing context names.
+       * List all existing context names, sorted by most recently modified first.
        */
       const list = Effect.fn("ContextRepository.list")(
         function*() {
@@ -188,13 +188,8 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
           )
           if (!exists) return [] as Array<string>
 
-          return yield* fs.readDirectory(contextsDir).pipe(
-            Effect.map((entries) =>
-              entries
-                .filter((name) => name.endsWith(".yaml"))
-                .map((name) => name.replace(/\.yaml$/, ""))
-                .sort()
-            ),
+          const entries = yield* fs.readDirectory(contextsDir).pipe(
+            Effect.map((names) => names.filter((name) => name.endsWith(".yaml"))),
             Effect.catchAll((error) =>
               new ContextLoadError({
                 name: ContextName.make(""),
@@ -202,6 +197,24 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
               })
             )
           )
+
+          // Get modification times for each file
+          const entriesWithTimes = yield* Effect.all(
+            entries.map((name) =>
+              fs.stat(path.join(contextsDir, name)).pipe(
+                Effect.map((stat) => ({
+                  name: name.replace(/\.yaml$/, ""),
+                  mtime: Option.getOrElse(stat.mtime, () => new Date(0))
+                })),
+                Effect.catchAll(() => Effect.succeed({ name: name.replace(/\.yaml$/, ""), mtime: new Date(0) }))
+              )
+            )
+          )
+
+          // Sort by modification time, most recent first
+          return entriesWithTimes
+            .sort((a, b) => b.mtime.getTime() - a.mtime.getTime())
+            .map((entry) => entry.name)
         }
       )
 
