@@ -1,10 +1,9 @@
 /**
  * LLM Configuration
  *
- * Supports three ways to specify an LLM:
- * 1. Named presets: "gpt-4.1-mini", "claude-haiku-4-5", etc.
- * 2. Provider prefix: "openrouter:anthropic/claude-3.5-sonnet", "groq:llama-3.3-70b-versatile"
- * 3. JSON config: '{"apiFormat":"openai-responses","model":"...","baseUrl":"...","apiKeyEnvVar":"..."}'
+ * Supports two ways to specify an LLM:
+ * 1. Provider prefix: "openai:gpt-4.1-mini", "groq:llama-3.3-70b-versatile"
+ * 2. JSON config: '{"apiFormat":"openai-responses","model":"...","baseUrl":"...","apiKeyEnvVar":"..."}'
  */
 import { Config, Context, Effect, Layer, Redacted, Schema } from "effect"
 
@@ -90,6 +89,9 @@ export const getLlmConfig = (name: string): LlmConfig => {
     if (prefix !== "" && !modelName.startsWith("{")) {
       const provider = PROVIDER_PREFIXES[prefix]
       if (provider) {
+        if (!modelName) {
+          throw new Error(`Missing model name for provider '${prefix}'. Use: ${prefix}:<model-name>`)
+        }
         return new LlmConfig({ ...provider, model: modelName })
       }
     }
