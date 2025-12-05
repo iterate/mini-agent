@@ -17,10 +17,6 @@ import {
 } from "./context.model.ts"
 import { ContextLoadError, ContextSaveError } from "./errors.ts"
 
-// =============================================================================
-// Event Decoding Helper
-// =============================================================================
-
 /**
  * Decode a plain object to a PersistedEvent class instance.
  * This ensures the event has all the methods defined on the class.
@@ -36,10 +32,6 @@ const decodeEvents = (rawEvents: Array<unknown>): Array<PersistedEventType> => r
  * Encode an event to a plain object for YAML serialization.
  */
 const encodeEvent = Schema.encodeSync(PersistedEvent)
-
-// =============================================================================
-// Context Repository Service
-// =============================================================================
 
 export class ContextRepository extends Context.Tag("@app/ContextRepository")<
   ContextRepository,
@@ -70,20 +62,19 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
       const cwd = Option.getOrElse(config.cwd, () => process.cwd())
       const contextsDir = path.join(cwd, config.dataStorageDir, "contexts")
 
-      const getContextPath = (contextName: string) => path.join(contextsDir, `${contextName}.yaml`)
-
-      // Service methods wrapped with Effect.fn for call-site tracing
-      // See: https://www.effect.solutions/services-and-layers
+      const getContextDir = (contextName: string) => path.join(contextsDir, contextName)
+      const getContextPath = (contextName: string) => path.join(getContextDir(contextName), "events.yaml")
 
       /**
        * Save events to a context file.
        */
       const save = Effect.fn("ContextRepository.save")(
         function*(contextName: string, events: ReadonlyArray<PersistedEventType>) {
+          const contextDir = getContextDir(contextName)
           const filePath = getContextPath(contextName)
 
-          // Ensure directory exists
-          yield* fs.makeDirectory(contextsDir, { recursive: true }).pipe(
+          // Ensure context directory exists
+          yield* fs.makeDirectory(contextDir, { recursive: true }).pipe(
             Effect.catchAll(() => Effect.void)
           )
 
@@ -175,6 +166,7 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
 
       /**
        * List all existing context names, sorted by most recently modified first.
+       * Finds directories that contain an events.yaml file.
        */
       const list = Effect.fn("ContextRepository.list")(
         function*() {
@@ -189,7 +181,6 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
           if (!exists) return [] as Array<string>
 
           const entries = yield* fs.readDirectory(contextsDir).pipe(
-            Effect.map((names) => names.filter((name) => name.endsWith(".yaml"))),
             Effect.catchAll((error) =>
               new ContextLoadError({
                 name: ContextName.make(""),
@@ -198,18 +189,23 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
             )
           )
 
-          // Get modification times for each file
-          const entriesWithTimes = yield* Effect.all(
-            entries.map((name) =>
-              fs.stat(path.join(contextsDir, name)).pipe(
-                Effect.map((stat) => ({
-                  name: name.replace(/\.yaml$/, ""),
-                  mtime: Option.getOrElse(stat.mtime, () => new Date(0))
-                })),
-                Effect.catchAll(() => Effect.succeed({ name: name.replace(/\.yaml$/, ""), mtime: new Date(0) }))
-              )
+          // Filter to directories that contain events.yaml and get their mtimes
+          const entriesWithTimes: Array<{ name: string; mtime: Date }> = []
+          for (const name of entries) {
+            const eventsPath = path.join(contextsDir, name, "events.yaml")
+            const hasEvents = yield* fs.exists(eventsPath).pipe(
+              Effect.catchAll(() => Effect.succeed(false))
             )
-          )
+            if (hasEvents) {
+              const stat = yield* fs.stat(eventsPath).pipe(
+                Effect.catchAll(() => Effect.succeed({ mtime: Option.none<Date>() }))
+              )
+              entriesWithTimes.push({
+                name,
+                mtime: Option.getOrElse(stat.mtime, () => new Date(0))
+              })
+            }
+          }
 
           // Sort by modification time, most recent first
           return entriesWithTimes
@@ -230,7 +226,6 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
 
   /**
    * Test layer with in-memory storage for unit tests.
-   * See: https://www.effect.solutions/testing
    */
   static readonly testLayer = Layer.sync(ContextRepository, () => {
     const store = new Map<string, Array<PersistedEventType>>()

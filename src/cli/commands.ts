@@ -7,10 +7,12 @@ import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
 import { type Error as PlatformError, HttpServer, Terminal } from "@effect/platform"
 import { BunHttpServer, BunStream } from "@effect/platform-bun"
-import { Chunk, Console, Effect, Layer, Option, Schema, Stream } from "effect"
+import { Chunk, Console, Effect, Either, Layer, Option, Ref, Schema, Stream } from "effect"
+import { CodemodeService } from "../codemode/index.ts"
 import { AppConfig } from "../config.ts"
 import {
   AssistantMessageEvent,
+  CodemodeBlockEvent,
   type ContextEvent,
   FileAttachmentEvent,
   type InputEvent,
@@ -116,8 +118,20 @@ interface OutputOptions {
   showEphemeral: boolean
 }
 
+interface CodemodeContext {
+  contextName: string
+  responseNumberRef: Ref.Ref<number>
+}
+
+/** Maximum agentic loop iterations to prevent infinite loops */
+const MAX_AGENTIC_ITERATIONS = 20
+
 /**
  * Handle a single context event based on output options.
+ *
+ * Note: TextDelta events are NOT displayed in non-raw mode when codemode is active.
+ * The codemode execution output (via sendMessage → stderr) is the user-visible output.
+ * This prevents showing raw <codemode> blocks during streaming.
  */
 const handleEvent = (
   event: ContextEvent,
@@ -134,17 +148,155 @@ const handleEvent = (
       return
     }
 
+    // In non-raw mode, don't display TextDelta at all - codemode output goes via sendMessage (stderr)
     if (Schema.is(TextDeltaEvent)(event)) {
-      yield* terminal.display(event.delta)
       return
     }
+
+    if (Schema.is(CodemodeBlockEvent)(event)) {
+      yield* terminal.display(event.userOutput)
+      return
+    }
+
     if (Schema.is(AssistantMessageEvent)(event)) {
-      yield* Console.log("")
+      // If the response contains codemode blocks, they'll be processed separately
+      // Only display the full content if there are no codemode blocks
+      const hasCodemode = /<codemode>[\s\S]*?<\/codemode>/.test(event.content)
+      if (!hasCodemode && event.content.trim()) {
+        yield* terminal.display(event.content + "\n")
+      }
       return
     }
   })
 
-/** Run the event stream, handling each event */
+/** Result from processing codemode blocks */
+interface CodemodeResult {
+  needsRetry: boolean
+  continueLoop: boolean
+  nextEvents?: ReadonlyArray<InputEvent>
+}
+
+/** Process codemode blocks from an assistant message */
+const processCodemode = (
+  content: string,
+  options: OutputOptions,
+  ctx: CodemodeContext
+) =>
+  Effect.gen(function*() {
+    const codemode = yield* CodemodeService
+    const terminal = yield* Terminal.Terminal
+
+    if (!codemode.hasCodeBlocks(content)) {
+      return { needsRetry: false, continueLoop: false } as CodemodeResult
+    }
+
+    const extractedBlocks = codemode.extractCodeBlocks(content)
+    if (extractedBlocks.length === 0) {
+      return { needsRetry: false, continueLoop: false } as CodemodeResult
+    }
+
+    yield* Effect.logDebug(`Found ${extractedBlocks.length} codemode block(s)`)
+
+    // Get and increment response number
+    const responseNumber = yield* Ref.getAndUpdate(ctx.responseNumberRef, (n) => n + 1)
+
+    // Write response to disk
+    const { blocks, dir: responseDir } = yield* codemode.writeResponse(
+      ctx.contextName,
+      responseNumber + 1,
+      extractedBlocks
+    )
+    yield* Effect.logDebug(`Wrote codemode response to ${responseDir}`)
+
+    // Typecheck all blocks
+    const typecheckResult = yield* codemode.typecheck(responseDir).pipe(Effect.either)
+
+    if (Either.isLeft(typecheckResult)) {
+      const errors = typecheckResult.left.errors
+      yield* Effect.logDebug("Typecheck failed, requesting fix from LLM")
+
+      if (!options.raw) {
+        yield* Console.log("\n[Typecheck failed, asking LLM to fix...]\n")
+      }
+
+      const nextEvents = [
+        new UserMessageEvent({
+          content: `TypeScript errors in your code:\n\`\`\`\n${errors}\`\`\`\nPlease fix these errors and try again.`
+        })
+      ]
+
+      return { needsRetry: true, continueLoop: true, nextEvents } as CodemodeResult
+    }
+
+    yield* Effect.logDebug("Typecheck passed, executing code")
+
+    // Execute all blocks (catch runtime errors)
+    const executeResult = yield* codemode.execute(responseDir, blocks).pipe(Effect.either)
+
+    if (Either.isLeft(executeResult)) {
+      const error = executeResult.left
+      yield* Effect.logDebug("Execution failed, requesting fix from LLM")
+
+      if (!options.raw) {
+        yield* Console.log("\n[Execution failed, asking LLM to fix...]\n")
+      }
+
+      const nextEvents = [
+        new UserMessageEvent({
+          content: `Runtime error executing your code:\n\`\`\`\n${
+            String(error)
+          }\`\`\`\nPlease fix this error and try again.`
+        })
+      ]
+
+      return { needsRetry: true, continueLoop: true, nextEvents } as CodemodeResult
+    }
+
+    const blockResults = executeResult.right
+
+    // Create and display each block event (don't persist yet - addEvents will handle that)
+    const blockEvents: Array<CodemodeBlockEvent> = []
+    let shouldContinue = false
+
+    for (const result of blockResults) {
+      const blockEvent = new CodemodeBlockEvent({
+        code: result.code,
+        blockNumber: result.blockNumber,
+        responseNumber: responseNumber + 1,
+        userOutput: result.userOutput,
+        agentOutput: result.agentOutput,
+        triggerAgentTurn: result.triggerAgentTurn
+      })
+      blockEvents.push(blockEvent)
+
+      // Check if this block triggers continuation
+      if (result.triggerAgentTurn === "after-current-turn") {
+        shouldContinue = true
+      }
+
+      // Display each block's user output
+      if (options.raw) {
+        yield* Console.log(JSON.stringify(blockEvent))
+      } else if (result.userOutput) {
+        yield* terminal.display(result.userOutput)
+      }
+    }
+
+    // If any block triggers continuation, feed it back to LLM
+    if (shouldContinue) {
+      yield* Effect.logDebug("Agent output detected, continuing agentic loop")
+      if (!options.raw) {
+        yield* Console.log("\n[Agent continuing...]\n")
+      }
+
+      return { needsRetry: false, continueLoop: true, nextEvents: blockEvents } as CodemodeResult
+    }
+
+    // No continuation needed - still need to persist the block events
+    return { needsRetry: false, continueLoop: false, nextEvents: blockEvents } as CodemodeResult
+  })
+
+/** Run the event stream with codemode processing loop */
 const runEventStream = (
   contextName: string,
   userMessage: string,
@@ -180,9 +332,62 @@ const runEventStream = (
 
     inputEvents.push(new UserMessageEvent({ content: userMessage }))
 
+    // Codemode context for tracking response numbers
+    const responseNumberRef = yield* Ref.make(0)
+    const ctx: CodemodeContext = { contextName, responseNumberRef }
+
+    // Track the last assistant content for codemode processing
+    let lastAssistantContent: string | undefined
+
     yield* contextService.addEvents(contextName, inputEvents).pipe(
-      Stream.runForEach((event) => handleEvent(event, options))
+      Stream.runForEach((event) =>
+        Effect.gen(function*() {
+          yield* handleEvent(event, options)
+          if (Schema.is(AssistantMessageEvent)(event)) {
+            lastAssistantContent = event.content
+          }
+        })
+      )
     )
+
+    // Process codemode blocks with agentic loop (bounded to prevent infinite loops)
+    let iterations = 0
+    while (lastAssistantContent) {
+      if (iterations >= MAX_AGENTIC_ITERATIONS) {
+        yield* Effect.logWarning(`Agentic loop hit max iterations (${MAX_AGENTIC_ITERATIONS}), stopping`)
+        if (!options.raw) {
+          yield* Console.log(`\n[Agent stopped: max iterations (${MAX_AGENTIC_ITERATIONS}) reached]\n`)
+        }
+        break
+      }
+      iterations++
+
+      const result = yield* processCodemode(lastAssistantContent, options, ctx)
+
+      // If we have events to persist (whether continuing or not)
+      if (result.nextEvents && result.nextEvents.length > 0) {
+        // Continue: add events (will trigger LLM if any has triggerAgentTurn = "after-current-turn")
+        lastAssistantContent = undefined
+        yield* contextService.addEvents(contextName, result.nextEvents).pipe(
+          Stream.runForEach((event) =>
+            Effect.gen(function*() {
+              yield* handleEvent(event, options)
+              if (Schema.is(AssistantMessageEvent)(event)) {
+                lastAssistantContent = event.content
+              }
+            })
+          )
+        )
+
+        // If we didn't get a new assistant message and we're supposed to continue, break
+        if (!result.continueLoop) {
+          break
+        }
+      } else {
+        // No events to process, break
+        break
+      }
+    }
   })
 
 /** CLI interaction mode - determines how input/output is handled */

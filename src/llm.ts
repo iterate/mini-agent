@@ -8,6 +8,7 @@ import { type Error as PlatformError, FileSystem } from "@effect/platform"
 import { Effect, Option, pipe, Ref, Schema, Stream } from "effect"
 import {
   AssistantMessageEvent,
+  CodemodeBlockEvent,
   type ContextEvent,
   FileAttachmentEvent,
   LLMRequestInterruptedEvent,
@@ -18,15 +19,12 @@ import {
 } from "./context.model.ts"
 import { CurrentLlmConfig } from "./llm-config.ts"
 
-// =============================================================================
-// Event to Prompt Conversion
-// =============================================================================
-
 const isSystem = Schema.is(SystemPromptEvent)
 const isAssistant = Schema.is(AssistantMessageEvent)
 const isUser = Schema.is(UserMessageEvent)
 const isFile = Schema.is(FileAttachmentEvent)
 const isInterrupted = Schema.is(LLMRequestInterruptedEvent)
+const isCodemodeBlock = Schema.is(CodemodeBlockEvent)
 
 /**
  * Groups consecutive user events (messages + attachments) into single multi-part messages.
@@ -74,8 +72,8 @@ export const eventsToPrompt = (
           )
         }
         i++
-      } else if (isUser(event) || isFile(event)) {
-        // Consecutive user/file events become a single multi-part user message
+      } else if (isUser(event) || isFile(event) || isCodemodeBlock(event)) {
+        // Consecutive user/file/codemode events become a single multi-part user message
         const userParts: Array<Prompt.UserMessagePart> = []
 
         while (i < events.length) {
@@ -102,6 +100,9 @@ export const eventsToPrompt = (
             i++
           } else if (isUser(e)) {
             userParts.push(Prompt.makePart("text", { text: e.content }))
+            i++
+          } else if (isCodemodeBlock(e)) {
+            userParts.push(Prompt.makePart("text", { text: e.agentOutput }))
             i++
           } else {
             break

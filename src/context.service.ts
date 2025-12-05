@@ -22,8 +22,7 @@ import {
   type PersistedEvent as PersistedEventType,
   SetLlmConfigEvent,
   SystemPromptEvent,
-  TextDeltaEvent,
-  UserMessageEvent
+  TextDeltaEvent
 } from "./context.model.ts"
 import { ContextRepository } from "./context.repository.ts"
 import type { ContextLoadError, ContextSaveError } from "./errors.ts"
@@ -38,12 +37,12 @@ export class ContextService extends Context.Tag("@app/ContextService")<
   ContextService,
   {
     /**
-     * Add events to a context, triggering LLM processing if UserMessage present.
+     * Add events to a context, triggering LLM processing if any event has triggerAgentTurn: "after-current-turn".
      *
      * This is the core operation on a Context:
      * 1. Loads existing events (or creates context with system prompt)
-     * 2. Appends the input events (UserMessage and/or FileAttachment)
-     * 3. Runs LLM with full history (only if UserMessage present)
+     * 2. Appends the input events (UserMessage, FileAttachment, or CodemodeBlock)
+     * 3. Runs LLM with full history (only if any event triggers agent turn)
      * 4. Streams back TextDelta (ephemeral) and AssistantMessage (persisted)
      * 5. Persists new events as they complete
      */
@@ -88,8 +87,8 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
         LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
       > => {
-        // Check if any UserMessage is present (triggers LLM)
-        const hasUserMessage = inputEvents.some(Schema.is(UserMessageEvent))
+        // Check if any event triggers an LLM request
+        const shouldTriggerLLM = inputEvents.some((e) => e.triggerAgentTurn === "after-current-turn")
 
         return pipe(
           // Load or create context, append input events
@@ -117,8 +116,8 @@ export class ContextService extends Context.Tag("@app/ContextService")<
             }
             return baseEvents
           })(),
-          // Only stream LLM response if there's a UserMessage
-          Effect.andThen((events) => hasUserMessage ? streamLLMResponse(events) : Stream.empty),
+          // Only stream LLM response if any event triggers it
+          Effect.andThen((events) => shouldTriggerLLM ? streamLLMResponse(events) : Stream.empty),
           Stream.unwrap,
           // Persist events as they complete (only persisted ones)
           Stream.tap((event) =>
@@ -198,11 +197,11 @@ export class ContextService extends Context.Tag("@app/ContextService")<
           store.set(contextName, events)
         }
 
-        // Check if any UserMessage is present
-        const hasUserMessage = inputEvents.some(Schema.is(UserMessageEvent))
+        // Check if any event triggers an LLM request
+        const shouldTriggerLLM = inputEvents.some((e) => e.triggerAgentTurn === "after-current-turn")
 
-        // Only generate mock LLM response if there's a UserMessage
-        if (!hasUserMessage) {
+        // Only generate mock LLM response if triggered
+        if (!shouldTriggerLLM) {
           return Stream.empty
         }
 

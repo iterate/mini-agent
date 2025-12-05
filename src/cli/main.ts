@@ -7,6 +7,7 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
+import { CodemodeService } from "../codemode/index.ts"
 import {
   AppConfig,
   extractConfigPath,
@@ -99,6 +100,7 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
 
         return ContextService.layer.pipe(
           Layer.provideMerge(ContextRepository.layer),
+          Layer.provideMerge(CodemodeService.layer),
           Layer.provideMerge(languageModelLayer),
           Layer.provideMerge(llmConfigLayer),
           Layer.provideMerge(tracingLayer),

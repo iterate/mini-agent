@@ -128,11 +128,11 @@ describe("CLI", () => {
 
       expect(result.stdout.length).toBeGreaterThan(0)
 
-      // Context file should exist with random name (chat-xxxxx pattern)
+      // Context directory should exist with random name (chat-xxxxx pattern)
       const contextsDir = path.join(testDir, ".mini-agent", "contexts")
-      const files = fs.readdirSync(contextsDir)
-      expect(files.length).toBe(1)
-      expect(files[0]).toMatch(/^chat-[a-z0-9]{5}\.yaml$/)
+      const entries = fs.readdirSync(contextsDir)
+      expect(entries.length).toBe(1)
+      expect(entries[0]).toMatch(/^chat-[a-z0-9]{5}$/)
     })
   })
 
@@ -306,8 +306,8 @@ describe("CLI", () => {
         runCli(["chat", "-n", TEST_CONTEXT, "-m", "Hello"], { cwd: testDir })
       )
 
-      // Context file should exist in testDir/.mini-agent/contexts/
-      const contextPath = path.join(testDir, ".mini-agent", "contexts", `${TEST_CONTEXT}.yaml`)
+      // Context file should exist in testDir/.mini-agent/contexts/[name]/events.yaml
+      const contextPath = path.join(testDir, ".mini-agent", "contexts", TEST_CONTEXT, "events.yaml")
       expect(fs.existsSync(contextPath)).toBe(true)
     })
 
@@ -440,8 +440,9 @@ describe("Interrupted response context", () => {
 
       // Create a context file with an interrupted response containing a specific number
       // This simulates what happens when a user interrupts the LLM mid-response
-      const contextsDir = path.join(testDir, ".mini-agent", "contexts")
-      fs.mkdirSync(contextsDir, { recursive: true })
+      // Context files are now stored as: contexts/{name}/events.yaml
+      const contextDir = path.join(testDir, ".mini-agent", "contexts", contextName)
+      fs.mkdirSync(contextDir, { recursive: true })
 
       const contextContent = `events:
   - _tag: SystemPrompt
@@ -453,7 +454,7 @@ describe("Interrupted response context", () => {
     reason: user_cancel
     partialResponse: "${testNumber}! Once upon a time in a faraway land, there lived a wise old wizard who..."
 `
-      fs.writeFileSync(path.join(contextsDir, `${contextName}.yaml`), contextContent)
+      fs.writeFileSync(path.join(contextDir, "events.yaml"), contextContent)
 
       // Now make a follow-up request asking about the number.
       // The LLM should know the number because:
