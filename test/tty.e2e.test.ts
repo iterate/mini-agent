@@ -98,16 +98,13 @@ describe("TTY Interactive Mode", () => {
     // Wait for the "You" prompt (input prompt)
     await session.waitForText("You", { timeout: 5000 })
 
-    // Type a message
+    // Type a message asking for a specific response
     await session.type("Say exactly: TUISTORY_TEST_OK")
     await session.press("enter")
 
-    // Wait for the assistant response
-    await session.waitForText("Assistant", { timeout: 30000 })
-
-    // The response should appear
-    const text = await session.text()
-    expect(text).toContain("Context name: test-chat")
+    // Wait for the LLM response containing our requested text
+    const text = await session.waitForText("TUISTORY_TEST_OK", { timeout: 45000 })
+    expect(text).toContain("TUISTORY_TEST_OK")
 
     // Exit with Ctrl+C
     await session.press(["ctrl", "c"])
