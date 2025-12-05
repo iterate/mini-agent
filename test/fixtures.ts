@@ -13,7 +13,7 @@ import { join, resolve } from "node:path"
 import { expect, test as baseTest } from "vitest"
 import { AppConfig, type MiniAgentConfig } from "../src/config.ts"
 
-const CLI_PATH = resolve(__dirname, "../src/main.ts")
+const CLI_PATH = resolve(__dirname, "../src/cli/main.ts")
 
 export interface CliResult {
   stdout: string

@@ -61,6 +61,12 @@ export class ContextService extends Context.Tag("@app/ContextService")<
 
     /** List all context names. */
     readonly list: () => Effect.Effect<Array<string>, ContextLoadError>
+
+    /** Persist an event directly (e.g., LLMRequestInterruptedEvent on cancel). */
+    readonly persistEvent: (
+      contextName: string,
+      event: PersistedEventType
+    ) => Effect.Effect<void, ContextLoadError | ContextSaveError>
   }
 >() {
   /**
@@ -138,10 +144,18 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         }
       )
 
+      const persistEvent = Effect.fn("ContextService.persistEvent")(
+        function*(contextName: string, event: PersistedEventType) {
+          const current = yield* repo.load(contextName)
+          yield* repo.save(contextName, [...current, event])
+        }
+      )
+
       return ContextService.of({
         addEvents,
         load,
-        list
+        list,
+        persistEvent
       })
     })
   )
@@ -213,7 +227,13 @@ export class ContextService extends Context.Tag("@app/ContextService")<
 
       load: (contextName: string) => Effect.succeed(store.get(contextName) ?? []),
 
-      list: () => Effect.sync(() => Array.from(store.keys()).sort())
+      list: () => Effect.sync(() => Array.from(store.keys()).sort()),
+
+      persistEvent: (contextName: string, event: PersistedEventType) =>
+        Effect.sync(() => {
+          const current = store.get(contextName) ?? []
+          store.set(contextName, [...current, event])
+        })
     })
   })
 }

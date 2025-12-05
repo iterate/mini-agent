@@ -8,20 +8,44 @@
  */
 import { Command } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
-import { type ChildProcess, spawn } from "child_process"
+import { spawn } from "child_process"
 import { Effect } from "effect"
 import { describe } from "vitest"
 import { expect, test } from "./fixtures.js"
 
 // Resolve CLI path relative to this file
-const CLI_PATH = new URL("../src/main.ts", import.meta.url).pathname
+const CLI_PATH = new URL("../src/cli/main.ts", import.meta.url).pathname
 
-/** Start the server in background */
+// Global port counter to avoid conflicts between parallel tests
+let portCounter = 4000 + Math.floor(Math.random() * 1000)
+const getNextPort = () => portCounter++
+
+/** Retry a fetch request with exponential backoff */
+const fetchWithRetry = async (
+  url: string,
+  options?: RequestInit,
+  maxRetries = 3
+): Promise<Response> => {
+  let lastError: Error | undefined
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fetch(url, options)
+    } catch (e) {
+      lastError = e as Error
+      if (attempt < maxRetries - 1) {
+        await new Promise((resolve) => setTimeout(resolve, 100 * Math.pow(2, attempt)))
+      }
+    }
+  }
+  throw lastError
+}
+
+/** Start the server in background and return port + cleanup function */
 const startServer = async (
   cwd: string,
-  port: number,
   subcommand: "serve" | "layercode serve" = "serve"
-): Promise<ChildProcess> => {
+): Promise<{ port: number; cleanup: () => Promise<void> }> => {
+  const port = getNextPort()
   const args = subcommand === "serve"
     ? [CLI_PATH, "--cwd", cwd, "serve", "--port", String(port)]
     : [CLI_PATH, "--cwd", cwd, "layercode", "serve", "--port", String(port), "--no-tunnel"]
@@ -35,17 +59,40 @@ const startServer = async (
     stdio: "ignore"
   })
 
-  // Wait for server to be ready by polling health endpoint
-  for (let i = 0; i < 50; i++) {
-    try {
-      await fetch(`http://localhost:${port}/health`)
-      return proc
-    } catch {
-      await new Promise((resolve) => setTimeout(resolve, 200))
+  const cleanup = async () => {
+    if (!proc.killed) {
+      proc.kill("SIGTERM")
+      // Wait for process to actually exit
+      await new Promise<void>((resolve) => {
+        const timeout = setTimeout(() => {
+          proc.kill("SIGKILL")
+          resolve()
+        }, 2000)
+        proc.on("exit", () => {
+          clearTimeout(timeout)
+          resolve()
+        })
+      })
     }
   }
 
-  return proc
+  // Wait for server to be ready by polling health endpoint
+  for (let i = 0; i < 100; i++) {
+    try {
+      const res = await fetch(`http://localhost:${port}/health`)
+      if (res.ok) {
+        // Small delay to ensure all routes are registered
+        await new Promise((resolve) => setTimeout(resolve, 50))
+        return { port, cleanup }
+      }
+    } catch {
+      // Server not ready yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100))
+  }
+
+  await cleanup()
+  throw new Error(`Server failed to start on port ${port} after 10 seconds`)
 }
 
 /** Parse SSE stream from response */
@@ -73,26 +120,24 @@ describe("HTTP Server", () => {
     })
 
     test("health endpoint returns ok", { timeout: 30000 }, async ({ testDir }) => {
-      const port = 3100 + Math.floor(Math.random() * 100)
-      const proc = await startServer(testDir, port)
+      const { cleanup, port } = await startServer(testDir)
 
       try {
-        const response = await fetch(`http://localhost:${port}/health`)
+        const response = await fetchWithRetry(`http://localhost:${port}/health`)
         const body = await response.json() as { status: string }
 
         expect(response.status).toBe(200)
         expect(body.status).toBe("ok")
       } finally {
-        proc.kill()
+        await cleanup()
       }
     })
 
     test("context endpoint processes messages", { timeout: 60000 }, async ({ testDir }) => {
-      const port = 3200 + Math.floor(Math.random() * 100)
-      const proc = await startServer(testDir, port)
+      const { cleanup, port } = await startServer(testDir)
 
       try {
-        const response = await fetch(`http://localhost:${port}/context/test-context`, {
+        const response = await fetchWithRetry(`http://localhost:${port}/context/test-context`, {
           method: "POST",
           headers: { "Content-Type": "application/x-ndjson" },
           body: "{\"_tag\":\"UserMessage\",\"content\":\"Say exactly: HELLO_SERVER\"}"
@@ -108,16 +153,15 @@ describe("HTTP Server", () => {
         const hasAssistant = events.some((e) => e.includes("\"AssistantMessage\""))
         expect(hasAssistant).toBe(true)
       } finally {
-        proc.kill()
+        await cleanup()
       }
     })
 
     test("context endpoint returns 400 for empty body", { timeout: 30000 }, async ({ testDir }) => {
-      const port = 3300 + Math.floor(Math.random() * 100)
-      const proc = await startServer(testDir, port)
+      const { cleanup, port } = await startServer(testDir)
 
       try {
-        const response = await fetch(`http://localhost:${port}/context/test-context`, {
+        const response = await fetchWithRetry(`http://localhost:${port}/context/test-context`, {
           method: "POST",
           headers: { "Content-Type": "application/x-ndjson" },
           body: ""
@@ -125,7 +169,7 @@ describe("HTTP Server", () => {
 
         expect(response.status).toBe(400)
       } finally {
-        proc.kill()
+        await cleanup()
       }
     })
   })
@@ -145,26 +189,24 @@ describe("HTTP Server", () => {
     })
 
     test("health endpoint works with layercode serve", { timeout: 30000 }, async ({ testDir }) => {
-      const port = 3400 + Math.floor(Math.random() * 100)
-      const proc = await startServer(testDir, port, "layercode serve")
+      const { cleanup, port } = await startServer(testDir, "layercode serve")
 
       try {
-        const response = await fetch(`http://localhost:${port}/health`)
+        const response = await fetchWithRetry(`http://localhost:${port}/health`)
         const body = await response.json() as { status: string }
 
         expect(response.status).toBe(200)
         expect(body.status).toBe("ok")
       } finally {
-        proc.kill()
+        await cleanup()
       }
     })
 
     test("layercode webhook processes message events", { timeout: 60000 }, async ({ testDir }) => {
-      const port = 3500 + Math.floor(Math.random() * 100)
-      const proc = await startServer(testDir, port, "layercode serve")
+      const { cleanup, port } = await startServer(testDir, "layercode serve")
 
       try {
-        const response = await fetch(`http://localhost:${port}/layercode/webhook`, {
+        const response = await fetchWithRetry(`http://localhost:${port}/layercode/webhook`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -187,16 +229,15 @@ describe("HTTP Server", () => {
         expect(hasTTS).toBe(true)
         expect(hasEnd).toBe(true)
       } finally {
-        proc.kill()
+        await cleanup()
       }
     })
 
     test("layercode webhook handles session.start", { timeout: 30000 }, async ({ testDir }) => {
-      const port = 3600 + Math.floor(Math.random() * 100)
-      const proc = await startServer(testDir, port, "layercode serve")
+      const { cleanup, port } = await startServer(testDir, "layercode serve")
 
       try {
-        const response = await fetch(`http://localhost:${port}/layercode/webhook`, {
+        const response = await fetchWithRetry(`http://localhost:${port}/layercode/webhook`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -212,16 +253,15 @@ describe("HTTP Server", () => {
         const hasEnd = events.some((e) => e.includes("\"response.end\""))
         expect(hasEnd).toBe(true)
       } finally {
-        proc.kill()
+        await cleanup()
       }
     })
 
     test("layercode webhook handles session.end", { timeout: 30000 }, async ({ testDir }) => {
-      const port = 3700 + Math.floor(Math.random() * 100)
-      const proc = await startServer(testDir, port, "layercode serve")
+      const { cleanup, port } = await startServer(testDir, "layercode serve")
 
       try {
-        const response = await fetch(`http://localhost:${port}/layercode/webhook`, {
+        const response = await fetchWithRetry(`http://localhost:${port}/layercode/webhook`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -232,16 +272,15 @@ describe("HTTP Server", () => {
 
         expect(response.status).toBe(200)
       } finally {
-        proc.kill()
+        await cleanup()
       }
     })
 
     test("layercode webhook returns 400 for invalid event", { timeout: 30000 }, async ({ testDir }) => {
-      const port = 3800 + Math.floor(Math.random() * 100)
-      const proc = await startServer(testDir, port, "layercode serve")
+      const { cleanup, port } = await startServer(testDir, "layercode serve")
 
       try {
-        const response = await fetch(`http://localhost:${port}/layercode/webhook`, {
+        const response = await fetchWithRetry(`http://localhost:${port}/layercode/webhook`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -252,7 +291,7 @@ describe("HTTP Server", () => {
 
         expect(response.status).toBe(400)
       } finally {
-        proc.kill()
+        await cleanup()
       }
     })
   })
@@ -260,12 +299,11 @@ describe("HTTP Server", () => {
 
 describe("Signature Verification", () => {
   test("accepts request without signature when no secret configured", { timeout: 30000 }, async ({ testDir }) => {
-    const port = 3900 + Math.floor(Math.random() * 100)
-    const proc = await startServer(testDir, port, "layercode serve")
+    const { cleanup, port } = await startServer(testDir, "layercode serve")
 
     try {
       // No layercode-signature header, should still work
-      const response = await fetch(`http://localhost:${port}/layercode/webhook`, {
+      const response = await fetchWithRetry(`http://localhost:${port}/layercode/webhook`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -276,7 +314,7 @@ describe("Signature Verification", () => {
 
       expect(response.status).toBe(200)
     } finally {
-      proc.kill()
+      await cleanup()
     }
   })
 })
