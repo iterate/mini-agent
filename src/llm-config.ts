@@ -62,40 +62,24 @@ const groq: ProviderPreset = {
 
 /** Provider prefix mapping for dynamic model resolution */
 const PROVIDER_PREFIXES: Record<string, ProviderPreset> = {
-  // First-party providers
   openai,
   anthropic,
   gemini,
-  // Third-party providers
   openrouter,
   cerebras,
   groq
 }
 
-/** Named model presets (first-party only, use prefix syntax for others) */
-const LLMS: Record<string, LlmConfig> = {
-  "gpt-4.1-mini": new LlmConfig({ ...openai, model: "gpt-4.1-mini" }),
-  "gpt-4.1": new LlmConfig({ ...openai, model: "gpt-4.1" }),
-  "claude-haiku-4-5": new LlmConfig({ ...anthropic, model: "claude-haiku-4-5" }),
-  "claude-sonnet-4": new LlmConfig({ ...anthropic, model: "claude-sonnet-4-20250514" }),
-  "gemini-2.5-flash": new LlmConfig({ ...gemini, model: "gemini-2.5-flash" })
-}
-
-export const DEFAULT_LLM = "gpt-4.1-mini"
+export const DEFAULT_LLM = "openai:gpt-4.1-mini"
 
 /**
- * Get LlmConfig by name, prefix, or JSON.
+ * Get LlmConfig by prefix or JSON.
  *
  * Supports:
- * - Named presets: "gpt-4.1-mini"
- * - Provider prefix: "openrouter:anthropic/claude-3.5-sonnet"
+ * - Provider prefix: "openai:gpt-4.1-mini", "openrouter:anthropic/claude-3.5-sonnet"
  * - JSON config: '{"apiFormat":"openai-responses",...}'
  */
 export const getLlmConfig = (name: string): LlmConfig => {
-  // Check named presets first
-  const config = LLMS[name]
-  if (config) return config
-
   // Check for provider prefix (e.g., "openrouter:model-name")
   const colonIndex = name.indexOf(":")
   if (colonIndex > 0) {
@@ -103,9 +87,7 @@ export const getLlmConfig = (name: string): LlmConfig => {
     const modelName = name.slice(colonIndex + 1)
 
     // Check if it's a JSON config (starts with "{")
-    if (prefix === "" || modelName.startsWith("{")) {
-      // Not a provider prefix, fall through to JSON parsing
-    } else {
+    if (prefix !== "" && !modelName.startsWith("{")) {
       const provider = PROVIDER_PREFIXES[prefix]
       if (provider) {
         return new LlmConfig({ ...provider, model: modelName })
@@ -123,12 +105,11 @@ export const getLlmConfig = (name: string): LlmConfig => {
     }
   }
 
-  const validLlms = Object.keys(LLMS).join(", ")
   const validPrefixes = Object.keys(PROVIDER_PREFIXES).join(", ")
   throw new Error(
-    `Unknown LLM: ${name}\n` +
-      `Valid presets: ${validLlms}\n` +
-      `Valid prefixes: ${validPrefixes}:<model-name>`
+    `Invalid LLM: ${name}\n` +
+      `Use prefix syntax: ${validPrefixes}:<model-name>\n` +
+      `Example: openai:gpt-4.1-mini, anthropic:claude-sonnet-4-20250514`
   )
 }
 
