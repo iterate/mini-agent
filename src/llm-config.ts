@@ -62,6 +62,11 @@ const groq: ProviderPreset = {
 
 /** Provider prefix mapping for dynamic model resolution */
 const PROVIDER_PREFIXES: Record<string, ProviderPreset> = {
+  // First-party providers
+  openai,
+  anthropic,
+  gemini,
+  // Third-party providers
   openrouter,
   cerebras,
   groq
