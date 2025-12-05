@@ -339,7 +339,10 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
 
   // Check if we have any history (for separator display)
   const hasHistory = initialFeedItems.some(
-    (item) => item._tag === "UserMessageItem" || item._tag === "AssistantMessageItem"
+    (item) =>
+      item._tag === "UserMessageItem" ||
+      item._tag === "AssistantMessageItem" ||
+      item._tag === "LLMInterruptionItem"
   )
 
   // Check if currently streaming (for input placeholder)

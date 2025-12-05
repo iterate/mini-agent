@@ -55,21 +55,24 @@ export const eventsToPrompt = (
         )
         i++
       } else if (isInterrupted(event)) {
-        // Include partial response as assistant message
-        messages.push(
-          Prompt.makeMessage("assistant", {
-            content: [Prompt.makePart("text", { text: event.partialResponse })]
-          })
-        )
-        // Add user message explaining the interruption
-        messages.push(
-          Prompt.makeMessage("user", {
-            content: [Prompt.makePart("text", {
-              text:
-                `Your previous response was interrupted by the user. Here is what you said until that point:\n\n${event.partialResponse}`
-            })]
-          })
-        )
+        // Only include if there was actual content before interruption
+        if (event.partialResponse.trim()) {
+          // Include partial response as assistant message
+          messages.push(
+            Prompt.makeMessage("assistant", {
+              content: [Prompt.makePart("text", { text: event.partialResponse })]
+            })
+          )
+          // Add user message explaining the interruption
+          messages.push(
+            Prompt.makeMessage("user", {
+              content: [Prompt.makePart("text", {
+                text:
+                  `Your previous response was interrupted by the user. Here is what you said until that point:\n\n${event.partialResponse}`
+              })]
+            })
+          )
+        }
         i++
       } else if (isUser(event) || isFile(event)) {
         // Consecutive user/file events become a single multi-part user message

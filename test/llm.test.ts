@@ -145,7 +145,7 @@ describe("eventsToPrompt", () => {
       expect(assistantCount).toBe(2) // 2 partial responses
     }).pipe(Effect.provide(testLayer)))
 
-  it.effect("handles empty partial response in interruption", () =>
+  it.effect("skips empty partial response in interruption", () =>
     Effect.gen(function*() {
       // Edge case: interrupted before any content was generated
       const events = [
@@ -161,7 +161,9 @@ describe("eventsToPrompt", () => {
       const prompt = yield* eventsToPrompt(events)
       const messages = prompt.content
 
-      // Still creates the messages even with empty content
-      expect(messages).toHaveLength(4)
+      // Empty interruption is skipped - only the two user messages remain
+      expect(messages).toHaveLength(2)
+      expect(messages[0]?.role).toBe("user")
+      expect(messages[1]?.role).toBe("user")
     }).pipe(Effect.provide(testLayer)))
 })

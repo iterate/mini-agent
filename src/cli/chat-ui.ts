@@ -59,7 +59,7 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
         )
 
         yield* runChatLoop(contextName, contextService, chat, mailbox).pipe(
-          Effect.catchAll(() => Effect.void),
+          Effect.catchAll((error) => Effect.logError("Chat error", { error }).pipe(Effect.as(undefined))),
           Effect.catchAllCause((cause) =>
             Cause.isInterruptedOnly(cause) ? Effect.void : Effect.logError("Chat loop error", cause)
           ),
