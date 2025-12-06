@@ -97,7 +97,7 @@ class EventStore extends Context.Tag("@app/EventStore")<EventStore, {
 }
 ```
 
-Note: No AppConfig service. All config derives from events via ReducedContext (SetLlmProviderConfigEvent, SetTimeoutEvent).
+Note: No AppConfig service. All config derives from events via ReducedContext (SetLlmConfigEvent, SetTimeoutEvent).
 
 ### ReducedContext (Derived State)
 
@@ -252,6 +252,58 @@ const AgentRegistryTest = AgentRegistry.testLayer.pipe(
   Layer.provide(EventStore.inMemoryLayer)
 )
 ```
+
+---
+
+## Compatibility with Current Implementation
+
+### Event Schema Alignment
+
+Event names and fields are aligned with current `src/context.model.ts` where possible:
+
+| Current Event | Architecture Event | Changes |
+|---------------|-------------------|---------|
+| `SystemPromptEvent` | `SystemPromptEvent` | + BaseEventFields |
+| `UserMessageEvent` | `UserMessageEvent` | + BaseEventFields |
+| `AssistantMessageEvent` | `AssistantMessageEvent` | + BaseEventFields |
+| `TextDeltaEvent` | `TextDeltaEvent` | + BaseEventFields |
+| `FileAttachmentEvent` | `FileAttachmentEvent` | Same source union, mediaType, fileName |
+| `SetLlmConfigEvent` | `SetLlmConfigEvent` | Flattened structure vs nested |
+| `LLMRequestInterruptedEvent` | `AgentTurnInterruptedEvent` | Same InterruptReason enum, + partialResponse |
+
+New events not in current: `SessionStartedEvent`, `SessionEndedEvent`, `AgentTurnStartedEvent`, `AgentTurnCompletedEvent`, `AgentTurnFailedEvent`, `SetTimeoutEvent`.
+
+### Interruption Handling
+
+Current implementation (`chat-ui.ts`) has interruption support via per-turn fiber:
+```typescript
+const streamFiber = yield* Effect.fork(streamLLMResponse(events))
+const result = yield* Effect.race(
+  Fiber.join(streamFiber),          // Wait for completion
+  mailbox.take.pipe(                 // Or user input
+    Effect.tap(() => Fiber.interrupt(streamFiber))
+  )
+)
+```
+
+Architecture uses background processing fiber with debouncing:
+```typescript
+const processingFiber = yield* broadcast.pipe(
+  Stream.filter((e) => e.triggersAgentTurn),
+  Stream.debounce(Duration.millis(100)),
+  Stream.mapEffect(() => processBatch),
+  Effect.fork
+)
+```
+
+Both use Effect's standard fiber interruption patterns.
+
+### Migration Notes
+
+- **BaseEventFields**: Add id, timestamp, agentName, parentEventId, triggersAgentTurn to all events
+- **toLLMMessage()**: Remove methods from events; EventReducer derives messages
+- **InterruptReason**: Reuse existing enum (`"user_cancel" | "user_new_message" | "timeout"`)
+- **partialResponse**: Preserved in AgentTurnInterruptedEvent for capturing partial LLM output
 
 ---
 

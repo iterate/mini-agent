@@ -139,7 +139,7 @@ const makeMiniAgent = (agentName: AgentName) =>
           yield* addEventInternal(startEvent)
 
           // TODO: Call agent with reduced context here
-          // Reducer has already derived config from events (SetLlmProviderConfigEvent, etc.)
+          // Reducer has already derived config from events (SetLlmConfigEvent, etc.)
           yield* Effect.logInfo("Processing events (agent turn would happen here)")
 
           // Create and add AgentTurnCompletedEvent

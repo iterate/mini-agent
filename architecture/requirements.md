@@ -29,7 +29,7 @@ Philosophy: **"Agent events are all you need"** - Everything the agent does is d
 
 The reducer derives ALL actor internal state from events:
 - `messages` - Prompt.Message array for LLM
-- `config` - AgentConfig from SetLlmProviderConfigEvent, SetTimeoutEvent
+- `config` - AgentConfig from SetLlmConfigEvent, SetTimeoutEvent
 - `nextEventNumber` - Counter for EventId generation
 - `currentTurnNumber` - Sequential turn counter
 - `agentTurnStartedAtEventId` - Option<EventId> tracking current turn's AgentTurnStartedEvent (Option.none() = no turn in progress, Option.some(eventId) = turn in progress + parent for new events)
@@ -57,7 +57,7 @@ All events share base fields:
 - `TextDeltaEvent` - Streaming chunk (ephemeral, not persisted)
 
 **Configuration Events**:
-- `SetLlmProviderConfigEvent` - Change LLM provider (primary or fallback)
+- `SetLlmConfigEvent` - Change LLM provider (primary or fallback)
 - `SetTimeoutEvent` - Change request timeout
 
 **Lifecycle Events**:

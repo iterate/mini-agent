@@ -5,7 +5,7 @@
  * Philosophy: "Agent events are all you need"
  * - Everything the agent does is driven by events
  * - Events reduce to state, state drives the agent
- * - Configuration comes from events (SetLlmProviderConfigEvent, etc.)
+ * - Configuration comes from events (SetLlmConfigEvent, etc.)
  * - Future: tools, workflows, everything defined via events
  *
  * Key design decisions:
@@ -46,6 +46,10 @@ export const makeEventId = (agentName: AgentName, counter: number): EventId =>
 
 export const AgentTurnNumber = Schema.Number.pipe(Schema.brand("AgentTurnNumber"))
 export type AgentTurnNumber = typeof AgentTurnNumber.Type
+
+/** Reason for agent turn interruption (matches current LLMRequestInterruptedEvent) */
+export const InterruptReason = Schema.Literal("user_cancel", "user_new_message", "timeout")
+export type InterruptReason = typeof InterruptReason.Type
 
 /**
  * All agent events must have these fields.
@@ -127,13 +131,20 @@ export class UserMessageEvent extends Schema.TaggedClass<UserMessageEvent>()(
   }
 ) {}
 
+/** Attachment source - local file path or remote URL (matches current implementation) */
+export const AttachmentSource = Schema.Union(
+  Schema.Struct({ type: Schema.Literal("file"), path: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("url"), url: Schema.String })
+)
+export type AttachmentSource = typeof AttachmentSource.Type
+
 export class FileAttachmentEvent extends Schema.TaggedClass<FileAttachmentEvent>()(
   "FileAttachmentEvent",
   {
     ...BaseEventFields,
-    source: Schema.String,
-    mimeType: Schema.String,
-    content: Schema.String
+    source: AttachmentSource,
+    mediaType: Schema.String,
+    fileName: Schema.optionalWith(Schema.String, { as: "Option" })
   }
 ) {}
 
@@ -153,8 +164,13 @@ export class TextDeltaEvent extends Schema.TaggedClass<TextDeltaEvent>()(
   }
 ) {}
 
-export class SetLlmProviderConfigEvent extends Schema.TaggedClass<SetLlmProviderConfigEvent>()(
-  "SetLlmProviderConfigEvent",
+/**
+ * LLM configuration event - flattened structure for event sourcing.
+ * Current implementation uses nested LlmConfig object; this uses flat fields.
+ * asFallback=true sets this as the fallback provider.
+ */
+export class SetLlmConfigEvent extends Schema.TaggedClass<SetLlmConfigEvent>()(
+  "SetLlmConfig",
   {
     ...BaseEventFields,
     providerId: LlmProviderId,
@@ -209,7 +225,7 @@ export class AgentTurnInterruptedEvent extends Schema.TaggedClass<AgentTurnInter
   {
     ...BaseEventFields,
     turnNumber: AgentTurnNumber,
-    reason: Schema.String,
+    reason: InterruptReason,
     /** Partial response generated before interruption (if any) */
     partialResponse: Schema.optionalWith(Schema.String, { as: "Option" })
   }
@@ -239,7 +255,7 @@ export const ContextEvent = Schema.Union(
   FileAttachmentEvent,
   AssistantMessageEvent,
   TextDeltaEvent,
-  SetLlmProviderConfigEvent,
+  SetLlmConfigEvent,
   SetTimeoutEvent,
   SessionStartedEvent,
   SessionEndedEvent,
@@ -312,7 +328,7 @@ export class Agent extends Context.Tag("@app/Agent")<
  * EventReducer folds events into ReducedContext.
  *
  * Updates state based on event types:
- * - Config events (SetLlmProviderConfigEvent, SetTimeoutEvent) → config
+ * - Config events (SetLlmConfigEvent, SetTimeoutEvent) → config
  * - Message events (SystemPromptEvent, UserMessageEvent, etc.) → messages
  * - Turn events (AgentTurnStartedEvent, AgentTurnCompletedEvent) → agentTurnStartedAtEventId, currentTurnNumber
  * - All events → increment nextEventNumber
@@ -480,7 +496,7 @@ export const sampleProgram = Effect.gen(function*() {
  * FUTURE: Everything driven by events
  *
  * The philosophy is "Agent events are all you need":
- * - LLM config: SetLlmProviderConfigEvent (already implemented)
+ * - LLM config: SetLlmConfigEvent (already implemented)
  * - Timeouts: SetTimeoutEvent (already implemented)
  * - Retry config: SetRetryConfigEvent (future - will define Schedule via event)
  * - Tools: DefineToolEvent (future - will define callable tools)
