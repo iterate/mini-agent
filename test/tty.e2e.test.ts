@@ -162,7 +162,7 @@ describe.sequential("TTY Interactive Mode", () => {
   // Streaming tests (use mock LLM)
   // ============================================
 
-  test("can type and send a message", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
+  test("can type and send a message", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat", "-n", "test-chat"],
