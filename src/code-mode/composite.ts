@@ -1,14 +1,14 @@
 /**
  * Code Mode Composite Service
  *
- * Orchestrates: transpile → validate → execute
+ * Orchestrates: type-check → transpile → validate → execute
  */
 import { Effect, Layer } from "effect"
 
 import { SecurityViolation } from "./errors.ts"
-import { CodeMode, Executor, Transpiler, Validator } from "./services.ts"
-import type { CallbackRecord, CodeModeConfig, CompiledModule, ParentContext } from "./types.ts"
-import { defaultConfig } from "./types.ts"
+import { CodeMode, Executor, Transpiler, TypeChecker, Validator } from "./services.ts"
+import type { CodeModeConfig, CompiledModule } from "./types.ts"
+import { defaultConfig, defaultTypeCheckConfig } from "./types.ts"
 
 function computeHash(str: string): string {
   if (typeof Bun !== "undefined" && Bun.hash) {
@@ -26,18 +26,23 @@ function computeHash(str: string): string {
 export const CodeModeLive = Layer.effect(
   CodeMode,
   Effect.gen(function*() {
+    const typeChecker = yield* TypeChecker
     const transpiler = yield* Transpiler
     const validator = yield* Validator
     const executor = yield* Executor
 
-    const compile = Effect.fn("CodeMode.compile")(function*<
-      TCallbacks extends CallbackRecord,
-      TData
-    >(
+    const compile = Effect.fn("CodeMode.compile")(function*<TCtx extends object>(
       typescript: string,
       config?: Partial<CodeModeConfig>
     ) {
-      const fullConfig = { ...defaultConfig, ...config }
+      const fullConfig = {
+        ...defaultConfig,
+        ...config,
+        typeCheck: { ...defaultTypeCheckConfig, ...config?.typeCheck }
+      }
+
+      // Type check first (if enabled)
+      yield* typeChecker.check(typescript, fullConfig.typeCheck)
 
       const javascript = yield* transpiler.transpile(typescript)
 
@@ -55,22 +60,17 @@ export const CodeModeLive = Layer.effect(
       return {
         javascript,
         hash,
-        execute: <TResult>(parentContext: ParentContext<TCallbacks, TData>) =>
-          executor.execute<TCallbacks, TData, TResult>(javascript, parentContext, fullConfig)
-      } as CompiledModule<TCallbacks, TData>
+        execute: <TResult>(ctx: TCtx) => executor.execute<TCtx, TResult>(javascript, ctx, fullConfig)
+      } as CompiledModule<TCtx>
     })
 
-    const run = Effect.fn("CodeMode.run")(function*<
-      TCallbacks extends CallbackRecord,
-      TData,
-      TResult
-    >(
+    const run = Effect.fn("CodeMode.run")(function*<TCtx extends object, TResult>(
       typescript: string,
-      parentContext: ParentContext<TCallbacks, TData>,
+      ctx: TCtx,
       config?: Partial<CodeModeConfig>
     ) {
-      const compiled = yield* compile<TCallbacks, TData>(typescript, config)
-      return yield* compiled.execute<TResult>(parentContext)
+      const compiled = yield* compile<TCtx>(typescript, config)
+      return yield* compiled.execute<TResult>(ctx)
     })
 
     return CodeMode.of({ run, compile })

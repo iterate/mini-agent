@@ -4,25 +4,21 @@
 import { describe, expect, it } from "@effect/vitest"
 import { Cause, Effect, Exit } from "effect"
 
-import { CodeMode, CodeModeLive, ExecutionError, SecurityViolation, TimeoutError } from "./index.ts"
-import type { CallbackRecord, ParentContext } from "./types.ts"
+import { CodeMode, CodeModeLive, ExecutionError, SecurityViolation, TimeoutError, TypeCheckError } from "./index.ts"
 
-type TestCallbacks = CallbackRecord & {
+interface TestCtx {
   log: (msg: string) => void
   add: (a: number, b: number) => number
   asyncFetch: (key: string) => Promise<string>
   accumulate: (value: number) => void
   getAccumulated: () => Array<number>
-}
-
-type TestData = {
   value: number
   items: Array<string>
   nested: { deep: { x: number } }
 }
 
 function createTestContext(): {
-  ctx: ParentContext<TestCallbacks, TestData>
+  ctx: TestCtx
   accumulated: Array<number>
   logs: Array<string>
 } {
@@ -31,22 +27,18 @@ function createTestContext(): {
 
   return {
     ctx: {
-      callbacks: {
-        log: (msg) => {
-          logs.push(msg)
-        },
-        add: (a, b) => a + b,
-        asyncFetch: async (key) => `fetched:${key}`,
-        accumulate: (v) => {
-          accumulated.push(v)
-        },
-        getAccumulated: () => [...accumulated]
+      log: (msg) => {
+        logs.push(msg)
       },
-      data: {
-        value: 42,
-        items: ["a", "b", "c"],
-        nested: { deep: { x: 100 } }
-      }
+      add: (a, b) => a + b,
+      asyncFetch: async (key) => `fetched:${key}`,
+      accumulate: (v) => {
+        accumulated.push(v)
+      },
+      getAccumulated: () => [...accumulated],
+      value: 42,
+      items: ["a", "b", "c"],
+      nested: { deep: { x: 100 } }
     },
     accumulated,
     logs
@@ -55,40 +47,40 @@ function createTestContext(): {
 
 const validCode = {
   syncSimple: `
-    export default (ctx) => ctx.callbacks.add(ctx.data.value, 10)
+    export default (ctx) => ctx.add(ctx.value, 10)
   `,
   asyncSimple: `
     export default async (ctx) => {
-      const result = await ctx.callbacks.asyncFetch("key1")
-      return result + ":" + ctx.data.value
+      const result = await ctx.asyncFetch("key1")
+      return result + ":" + ctx.value
     }
   `,
   complex: `
     export default async (ctx) => {
-      ctx.callbacks.log("Starting")
-      for (const item of ctx.data.items) {
-        ctx.callbacks.accumulate(item.charCodeAt(0))
+      ctx.log("Starting")
+      for (const item of ctx.items) {
+        ctx.accumulate(item.charCodeAt(0))
       }
-      const deepValue = ctx.data.nested.deep.x
-      const sum = ctx.callbacks.add(deepValue, ctx.data.value)
-      ctx.callbacks.log("Done")
-      return { sum, accumulated: ctx.callbacks.getAccumulated() }
+      const deepValue = ctx.nested.deep.x
+      const sum = ctx.add(deepValue, ctx.value)
+      ctx.log("Done")
+      return { sum, accumulated: ctx.getAccumulated() }
     }
   `,
   withTypes: `
     interface MyCtx {
-      callbacks: { add: (a: number, b: number) => number }
-      data: { value: number }
+      add: (a: number, b: number) => number
+      value: number
     }
     export default (ctx: MyCtx): number => {
-      const result: number = ctx.callbacks.add(ctx.data.value, 100)
+      const result: number = ctx.add(ctx.value, 100)
       return result
     }
   `,
   usingAllowedGlobals: `
     export default (ctx) => {
       const arr = new Array(3).fill(0).map((_, i) => i)
-      const obj = Object.keys(ctx.data)
+      const obj = Object.keys(ctx)
       const str = JSON.stringify({ arr, obj })
       const parsed = JSON.parse(str)
       return { ...parsed, math: Math.max(...arr) }
@@ -128,7 +120,7 @@ const invalidCode = {
   consoleAccess: `
     export default (ctx) => {
       console.log("hacked")
-      return ctx.data.value
+      return ctx.value
     }
   `,
   fetchAccess: `
@@ -139,7 +131,7 @@ const invalidCode = {
   setTimeoutAccess: `
     export default (ctx) => {
       setTimeout(() => {}, 1000)
-      return ctx.data.value
+      return ctx.value
     }
   `
 }
@@ -152,7 +144,7 @@ const edgeCases = {
   `,
   syntaxError: `
     export default (ctx) => {
-      return ctx.data.value +
+      return ctx.value +
     }
   `,
   asyncThrows: `
@@ -174,7 +166,7 @@ const typeScriptCases = {
   `,
   withTypeAssertions: `
     export default (ctx) => {
-      const value = ctx.data.value as number
+      const value = ctx.value as number
       const result = (value * 2) as const
       return result
     }
@@ -194,7 +186,7 @@ const typeScriptCases = {
       getValue(): number { return this.value }
     }
     export default (ctx) => {
-      const calc = new Calculator(ctx.data.value)
+      const calc = new Calculator(ctx.value)
       return calc.add(10).add(20).getValue()
     }
   `,
@@ -204,7 +196,7 @@ const typeScriptCases = {
       if (value < 0) return { success: false, error: "Negative value" }
       return { success: true, data: value * 2 }
     }
-    export default (ctx) => processValue(ctx.data.value)
+    export default (ctx) => processValue(ctx.value)
   `,
   invalidTypeSyntax: `
     export default (ctx) => {
@@ -278,7 +270,7 @@ describe("CodeMode", () => {
       Effect.gen(function*() {
         const { ctx } = createTestContext()
         const codeMode = yield* CodeMode
-        const result = yield* codeMode.run<TestCallbacks, TestData, number>(
+        const result = yield* codeMode.run<TestCtx, number>(
           validCode.syncSimple,
           ctx
         )
@@ -290,7 +282,7 @@ describe("CodeMode", () => {
       Effect.gen(function*() {
         const { ctx } = createTestContext()
         const codeMode = yield* CodeMode
-        const result = yield* codeMode.run<TestCallbacks, TestData, string>(
+        const result = yield* codeMode.run<TestCtx, string>(
           validCode.asyncSimple,
           ctx
         )
@@ -301,7 +293,7 @@ describe("CodeMode", () => {
       Effect.gen(function*() {
         const { ctx, logs } = createTestContext()
         const codeMode = yield* CodeMode
-        const result = yield* codeMode.run<TestCallbacks, TestData, { sum: number; accumulated: Array<number> }>(
+        const result = yield* codeMode.run<TestCtx, { sum: number; accumulated: Array<number> }>(
           validCode.complex,
           ctx
         )
@@ -314,7 +306,7 @@ describe("CodeMode", () => {
       Effect.gen(function*() {
         const { ctx } = createTestContext()
         const codeMode = yield* CodeMode
-        const result = yield* codeMode.run<TestCallbacks, TestData, number>(
+        const result = yield* codeMode.run<TestCtx, number>(
           validCode.withTypes,
           ctx
         )
@@ -326,8 +318,7 @@ describe("CodeMode", () => {
         const { ctx } = createTestContext()
         const codeMode = yield* CodeMode
         const result = yield* codeMode.run<
-          TestCallbacks,
-          TestData,
+          TestCtx,
           { arr: Array<number>; obj: Array<string>; math: number }
         >(validCode.usingAllowedGlobals, ctx)
         expect(result.value.arr).toEqual([0, 1, 2])
@@ -341,7 +332,7 @@ describe("CodeMode", () => {
       Effect.gen(function*() {
         const { ctx } = createTestContext()
         const codeMode = yield* CodeMode
-        const result = yield* codeMode.run<TestCallbacks, TestData, { num: number; str: string }>(
+        const result = yield* codeMode.run<TestCtx, { num: number; str: string }>(
           typeScriptCases.withGenerics,
           ctx
         )
@@ -353,7 +344,7 @@ describe("CodeMode", () => {
       Effect.gen(function*() {
         const { ctx } = createTestContext()
         const codeMode = yield* CodeMode
-        const result = yield* codeMode.run<TestCallbacks, TestData, number>(
+        const result = yield* codeMode.run<TestCtx, number>(
           typeScriptCases.withTypeAssertions,
           ctx
         )
@@ -365,8 +356,7 @@ describe("CodeMode", () => {
         const { ctx } = createTestContext()
         const codeMode = yield* CodeMode
         const result = yield* codeMode.run<
-          TestCallbacks,
-          TestData,
+          TestCtx,
           { status: string; allStatuses: Array<string> }
         >(typeScriptCases.withEnums, ctx)
         expect(result.value.status).toBe("active")
@@ -377,7 +367,7 @@ describe("CodeMode", () => {
       Effect.gen(function*() {
         const { ctx } = createTestContext()
         const codeMode = yield* CodeMode
-        const result = yield* codeMode.run<TestCallbacks, TestData, number>(
+        const result = yield* codeMode.run<TestCtx, number>(
           typeScriptCases.withClassTypes,
           ctx
         )
@@ -389,8 +379,7 @@ describe("CodeMode", () => {
         const { ctx } = createTestContext()
         const codeMode = yield* CodeMode
         const result = yield* codeMode.run<
-          TestCallbacks,
-          TestData,
+          TestCtx,
           { success: boolean; data?: number }
         >(typeScriptCases.withUnionTypes, ctx)
         expect(result.value.success).toBe(true)
@@ -559,15 +548,171 @@ describe("CodeMode", () => {
     it.effect("compiles once and executes multiple times", () =>
       Effect.gen(function*() {
         const codeMode = yield* CodeMode
-        const code = `export default (ctx) => ctx.data.value * 2`
-        const compiled = yield* codeMode.compile<{ [k: string]: never }, { value: number }>(code)
+        const code = `export default (ctx) => ctx.value * 2`
+        const compiled = yield* codeMode.compile<{ value: number }>(code)
 
-        const result1 = yield* compiled.execute<number>({ callbacks: {}, data: { value: 10 } })
-        const result2 = yield* compiled.execute<number>({ callbacks: {}, data: { value: 20 } })
+        const result1 = yield* compiled.execute<number>({ value: 10 })
+        const result2 = yield* compiled.execute<number>({ value: 20 })
 
         expect(result1.value).toBe(20)
         expect(result2.value).toBe(40)
         expect(compiled.hash).toBeTruthy()
+      }).pipe(Effect.provide(CodeModeLive)))
+  })
+
+  describe("Type Checking", () => {
+    it.effect("passes when types are correct", () =>
+      Effect.gen(function*() {
+        const codeMode = yield* CodeMode
+        const code = `
+          export default (ctx: { value: number }): number => ctx.value * 2
+        `
+        const result = yield* codeMode.run<{ value: number }, number>(
+          code,
+          { value: 21 },
+          {
+            typeCheck: {
+              enabled: true,
+              compilerOptions: { strict: true },
+              preamble: ""
+            }
+          }
+        )
+        expect(result.value).toBe(42)
+      }).pipe(Effect.provide(CodeModeLive)))
+
+    it.effect("fails when types are incorrect", () =>
+      Effect.gen(function*() {
+        const codeMode = yield* CodeMode
+        const code = `
+          export default (ctx: { value: number }): string => ctx.value * 2
+        `
+        const exit = yield* codeMode.run<{ value: number }, string>(
+          code,
+          { value: 21 },
+          {
+            typeCheck: {
+              enabled: true,
+              compilerOptions: { strict: true },
+              preamble: ""
+            }
+          }
+        ).pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const error = Cause.failureOption(exit.cause)
+          if (error._tag === "Some") {
+            expect(error.value).toBeInstanceOf(TypeCheckError)
+          }
+        }
+      }).pipe(Effect.provide(CodeModeLive)))
+
+    it.effect("uses preamble for ctx type definitions", () =>
+      Effect.gen(function*() {
+        const codeMode = yield* CodeMode
+        const preamble = `
+          interface Ctx {
+            multiply: (a: number, b: number) => number
+            value: number
+          }
+        `
+        const code = `
+          export default (ctx: Ctx): number => ctx.multiply(ctx.value, 2)
+        `
+        const result = yield* codeMode.run<{ multiply: (a: number, b: number) => number; value: number }, number>(
+          code,
+          { multiply: (a, b) => a * b, value: 21 },
+          {
+            typeCheck: {
+              enabled: true,
+              compilerOptions: { strict: true },
+              preamble
+            }
+          }
+        )
+        expect(result.value).toBe(42)
+      }).pipe(Effect.provide(CodeModeLive)))
+
+    it.effect("catches type errors with preamble", () =>
+      Effect.gen(function*() {
+        const codeMode = yield* CodeMode
+        const preamble = `
+          interface Ctx {
+            value: string
+          }
+        `
+        const code = `
+          export default (ctx: Ctx): number => ctx.value * 2
+        `
+        const exit = yield* codeMode.run<{ value: number }, number>(
+          code,
+          { value: 21 },
+          {
+            typeCheck: {
+              enabled: true,
+              compilerOptions: { strict: true },
+              preamble
+            }
+          }
+        ).pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const error = Cause.failureOption(exit.cause)
+          if (error._tag === "Some") {
+            expect(error.value).toBeInstanceOf(TypeCheckError)
+          }
+        }
+      }).pipe(Effect.provide(CodeModeLive)))
+
+    it.effect("skips type checking when disabled", () =>
+      Effect.gen(function*() {
+        const codeMode = yield* CodeMode
+        // This has a type error but should still run since type checking is disabled
+        const code = `
+          const x: string = 42
+          export default (ctx) => x
+        `
+        const result = yield* codeMode.run<object, number>(
+          code,
+          {},
+          { typeCheck: { enabled: false, compilerOptions: {}, preamble: "" } }
+        )
+        expect(result.value).toBe(42)
+      }).pipe(Effect.provide(CodeModeLive)))
+
+    it.effect("reports correct line numbers excluding preamble", () =>
+      Effect.gen(function*() {
+        const codeMode = yield* CodeMode
+        const preamble = `
+          interface Ctx {
+            value: number
+          }
+        `
+        const code = `
+          const x: string = 123
+          export default (ctx: Ctx) => x
+        `
+        const exit = yield* codeMode.run<{ value: number }, string>(
+          code,
+          { value: 21 },
+          {
+            typeCheck: {
+              enabled: true,
+              compilerOptions: { strict: true },
+              preamble
+            }
+          }
+        ).pipe(Effect.exit)
+        expect(Exit.isFailure(exit)).toBe(true)
+        if (Exit.isFailure(exit)) {
+          const error = Cause.failureOption(exit.cause)
+          if (error._tag === "Some" && error.value instanceof TypeCheckError) {
+            // Error should be on line 2 of user code, not including preamble
+            const firstDiag = error.value.diagnostics[0]
+            expect(firstDiag).toBeDefined()
+            expect(firstDiag!.line).toBe(2)
+          }
+        }
       }).pipe(Effect.provide(CodeModeLive)))
   })
 

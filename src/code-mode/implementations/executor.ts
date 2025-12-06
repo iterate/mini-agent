@@ -8,14 +8,14 @@ import { Effect, Layer } from "effect"
 
 import { ExecutionError, TimeoutError } from "../errors.ts"
 import { Executor } from "../services.ts"
-import type { CallbackRecord, CodeModeConfig, ExecutionResult, ParentContext } from "../types.ts"
+import type { CodeModeConfig, ExecutionResult } from "../types.ts"
 
 export const ExecutorLive = Layer.succeed(
   Executor,
   Executor.of({
-    execute: <TCallbacks extends CallbackRecord, TData, TResult>(
+    execute: <TCtx extends object, TResult>(
       javascript: string,
-      parentContext: ParentContext<TCallbacks, TData>,
+      ctx: TCtx,
       config: CodeModeConfig
     ): Effect.Effect<ExecutionResult<TResult>, ExecutionError | TimeoutError> =>
       Effect.async<ExecutionResult<TResult>, ExecutionError | TimeoutError>((resume) => {
@@ -45,7 +45,7 @@ export const ExecutorLive = Layer.succeed(
         `
 
         try {
-          const fn = eval(wrappedCode) as (ctx: ParentContext<TCallbacks, TData>) => unknown
+          const fn = eval(wrappedCode) as (ctx: TCtx) => unknown
 
           const timeoutPromise = new Promise<never>((_, reject) => {
             timeoutId = setTimeout(() => {
@@ -53,7 +53,7 @@ export const ExecutorLive = Layer.succeed(
             }, config.timeoutMs)
           })
 
-          Promise.race([Promise.resolve(fn(parentContext)), timeoutPromise])
+          Promise.race([Promise.resolve(fn(ctx)), timeoutPromise])
             .then((value) => {
               safeResume(
                 Effect.succeed({
