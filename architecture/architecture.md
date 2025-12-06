@@ -1,6 +1,8 @@
 # Architecture
 
-Actor-based event architecture where each context is a ContextActor.
+Actor-based event architecture where each agent is a MiniAgent.
+
+Philosophy: **"Agent events are all you need"** - Everything the agent does is driven by events.
 
 ## Reference Files
 
@@ -13,15 +15,15 @@ Actor-based event architecture where each context is a ContextActor.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                       ContextActor                               │
+│                         MiniAgent                                │
 │                                                                  │
 │  INPUT PATH:                                                     │
-│  addEvent(event) ──▶ persist to YAML ──▶ Mailbox.offer          │
-│                                              │                   │
-│  BROADCAST:                                  ▼                   │
-│  actor.events ◀── Stream.broadcastDynamic ◀─┘                   │
+│  addEvent(event) ──▶ persist to EventStore ──▶ Mailbox.offer    │
+│                                                    │             │
+│  BROADCAST:                                        ▼             │
+│  agent.events ◀── Stream.broadcastDynamic ◀───────┘             │
 │       │                                                          │
-│  PROCESSING (triggered by UserMessageEvent):                     │
+│  PROCESSING (triggered by event.triggersAgentTurn=true):         │
 │       └──▶ debounce ──▶ reduce ──▶ Agent.takeTurn               │
 │                                        │                         │
 │                                        ▼                         │
@@ -51,89 +53,79 @@ These are stateless domain services:
 **Agent** - LLM execution with retry and fallback
 ```typescript
 class Agent extends Context.Tag("@app/Agent")<Agent, {
-  readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError>
+  readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<AgentEvent, AgentError>
 }>() {}
 ```
 
-**EventReducer** - Folds events into ReducedContext
+**EventReducer** - Folds events into ReducedContext (including config from events)
 ```typescript
 class EventReducer extends Context.Tag("@app/EventReducer")<EventReducer, {
-  readonly reduce: (current: ReducedContext, newEvents: ReadonlyArray<ContextEvent>) => Effect.Effect<ReducedContext, ReducerError>
+  readonly reduce: (current: ReducedContext, newEvents: ReadonlyArray<AgentEvent>) => Effect.Effect<ReducedContext, ReducerError>
   readonly initialReducedContext: ReducedContext
 }>() {}
 ```
 
-**ContextRepository** - Event persistence
+**EventStore** - Pluggable event persistence
 ```typescript
-class ContextRepository extends Context.Tag("@app/ContextRepository")<ContextRepository, {
-  readonly load: (name: ContextName) => Effect.Effect<ReadonlyArray<ContextEvent>, ContextError>
-  readonly append: (name: ContextName, events: ReadonlyArray<ContextEvent>) => Effect.Effect<void, ContextError>
-  readonly exists: (name: ContextName) => Effect.Effect<boolean>
-}>() {}
+class EventStore extends Context.Tag("@app/EventStore")<EventStore, {
+  readonly load: (name: AgentName) => Effect.Effect<ReadonlyArray<AgentEvent>, AgentLoadError>
+  readonly append: (name: AgentName, events: ReadonlyArray<AgentEvent>) => Effect.Effect<void, AgentSaveError>
+  readonly exists: (name: AgentName) => Effect.Effect<boolean>
+}>() {
+  static readonly yamlFileLayer: Layer.Layer<EventStore>  // Production
+  static readonly inMemoryLayer: Layer.Layer<EventStore>  // Tests
+}
 ```
 
-**HooksService** - Lifecycle callbacks
-```typescript
-class HooksService extends Context.Tag("@app/HooksService")<HooksService, {
-  readonly beforeTurn: BeforeTurnHook
-  readonly afterTurn: AfterTurnHook
-  readonly onEvent: OnEventHook
-}>() {}
-```
-
-**AppConfig** - Global configuration
-```typescript
-class AppConfig extends Context.Tag("@app/AppConfig")<AppConfig, {
-  readonly debounceMs: number
-  readonly retrySchedule: Schedule.Schedule<unknown, unknown>
-}>() {}
-```
+Note: No AppConfig service. All config derives from events via ReducedContext (SetLlmProviderConfigEvent, SetTimeoutEvent, SetDebounceEvent).
 
 ### Actor Service
 
-**ContextActor** - Per-context orchestrator
+**MiniAgent** - Per-agent orchestrator
 
-The actor manages a single context's lifecycle. It uses all core services internally.
+The actor manages a single agent's lifecycle. It uses all core services internally.
 
 ```typescript
-class ContextActor extends Context.Tag("@app/ContextActor")<ContextActor, {
-  readonly contextName: ContextName
-  readonly addEvent: (event: ContextEvent) => Effect.Effect<void, ContextError>
-  readonly events: Stream.Stream<ContextEvent, never>  // Live broadcast
-  readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>  // Historical
+class MiniAgent extends Context.Tag("@app/MiniAgent")<MiniAgent, {
+  readonly agentName: AgentName
+  readonly addEvent: (event: AgentEvent) => Effect.Effect<void, MiniAgentError>
+  readonly events: Stream.Stream<AgentEvent, never>  // Live broadcast
+  readonly getEvents: Effect.Effect<ReadonlyArray<AgentEvent>>  // Historical
   readonly shutdown: Effect.Effect<void>
-}>() {}
+}>() {
+  static readonly make: (agentName: AgentName) => Layer.Layer<MiniAgent, MiniAgentError, Agent | EventReducer | EventStore>
+}
 ```
 
 Implementation pattern (Mailbox + broadcastDynamic):
 ```typescript
-const mailbox = yield* Mailbox.make<ContextEvent>()
+const mailbox = yield* Mailbox.make<AgentEvent>()
 const broadcast = yield* Stream.broadcastDynamic(Mailbox.toStream(mailbox), {
   capacity: "unbounded"
 })
-// actor.events = broadcast
+// agent.events = broadcast
 // Each execution of broadcast creates a new subscriber
 ```
 
 ### Application Facade
 
-**ActorRegistry** - Manages multiple actors
+**AgentRegistry** - Manages multiple agents
 ```typescript
-class ActorRegistry extends Context.Tag("@app/ActorRegistry")<ActorRegistry, {
-  readonly getOrCreate: (contextName: ContextName) => Effect.Effect<ContextActor, ContextError>
-  readonly get: (contextName: ContextName) => Effect.Effect<ContextActor, ContextNotFoundError>
-  readonly list: Effect.Effect<ReadonlyArray<ContextName>>
+class AgentRegistry extends Context.Tag("@app/AgentRegistry")<AgentRegistry, {
+  readonly getOrCreate: (agentName: AgentName) => Effect.Effect<MiniAgent, MiniAgentError>
+  readonly get: (agentName: AgentName) => Effect.Effect<MiniAgent, AgentNotFoundError>
+  readonly list: Effect.Effect<ReadonlyArray<AgentName>>
   readonly shutdownAll: Effect.Effect<void>
 }>() {}
 ```
 
-**ActorApplicationService** - Thin facade for external consumers
+**MiniAgentApp** - Thin facade for external consumers
 ```typescript
-class ActorApplicationService extends Context.Tag("@app/ActorApplicationService")<ActorApplicationService, {
-  readonly addEvent: (contextName: ContextName, event: ContextEvent) => Effect.Effect<void, ContextError>
-  readonly getEventStream: (contextName: ContextName) => Effect.Effect<Stream.Stream<ContextEvent, never>, ContextError>
-  readonly getEvents: (contextName: ContextName) => Effect.Effect<ReadonlyArray<ContextEvent>, ContextError>
-  readonly list: Effect.Effect<ReadonlyArray<ContextName>>
+class MiniAgentApp extends Context.Tag("@app/MiniAgentApp")<MiniAgentApp, {
+  readonly addEvent: (agentName: AgentName, event: AgentEvent) => Effect.Effect<void, MiniAgentError>
+  readonly getEventStream: (agentName: AgentName) => Effect.Effect<Stream.Stream<AgentEvent, never>, MiniAgentError>
+  readonly getEvents: (agentName: AgentName) => Effect.Effect<ReadonlyArray<AgentEvent>, MiniAgentError>
+  readonly list: Effect.Effect<ReadonlyArray<AgentName>>
   readonly shutdown: Effect.Effect<void>
 }>() {}
 ```
@@ -144,16 +136,16 @@ class ActorApplicationService extends Context.Tag("@app/ActorApplicationService"
 
 ### addEvent Flow
 
-1. Persist event to YAML (immediate durability)
+1. Persist event via EventStore (immediate durability)
 2. Update in-memory state (Ref)
 3. `Mailbox.offer(event)` → broadcasts to all current subscribers
-4. If UserMessageEvent: starts debounce timer for processing
+4. If `event.triggersAgentTurn=true`: starts debounce timer for processing
 
 ### Agent Turn Flow
 
-1. Debounce timer fires (no new events for N ms)
+1. Debounce timer fires (no new events with `triggersAgentTurn=true` for N ms)
 2. Emit `AgentTurnStartedEvent` → broadcast
-3. Reduce all events to `ReducedContext`
+3. Reduce all events to `ReducedContext` (includes config from events)
 4. Call `Agent.takeTurn(reducedContext)`
 5. Stream `TextDeltaEvent` → broadcast (each chunk)
 6. On completion: emit `AssistantMessageEvent` → persist → broadcast
@@ -161,7 +153,7 @@ class ActorApplicationService extends Context.Tag("@app/ActorApplicationService"
 
 ### Request Interruption Flow
 
-1. New `UserMessageEvent` arrives during agent turn
+1. New event with `triggersAgentTurn=true` arrives during agent turn
 2. `Fiber.interrupt(turnFiber)` cancels in-flight LLM request
 3. `Effect.onInterrupt` handler emits `AgentTurnInterruptedEvent`
 4. New event processed, debounce timer restarts
@@ -174,7 +166,7 @@ class ActorApplicationService extends Context.Tag("@app/ActorApplicationService"
 ### Mailbox (Actor Input)
 
 ```typescript
-const mailbox = yield* Mailbox.make<ContextEvent>()
+const mailbox = yield* Mailbox.make<AgentEvent>()
 yield* mailbox.offer(event)  // Fire-and-forget
 yield* mailbox.end  // Closes stream
 ```
@@ -204,8 +196,8 @@ Effect.onInterrupt(() =>
 ### Scoped Lifecycle
 
 ```typescript
-Layer.scoped(ContextActor, Effect.gen(function*() {
-  const mailbox = yield* Mailbox.make<ContextEvent>()
+Layer.scoped(MiniAgent, Effect.gen(function*() {
+  const mailbox = yield* Mailbox.make<AgentEvent>()
 
   yield* Effect.addFinalizer((_exit) =>
     Effect.gen(function*() {
@@ -223,14 +215,20 @@ Layer.scoped(ContextActor, Effect.gen(function*() {
 ## Dependency Composition
 
 ```typescript
-const ActorAppLayer = ActorApplicationService.layer.pipe(
-  Layer.provide(ActorRegistry.layer),
-  Layer.provide(ContextActor.layer),  // Factory for actors
+// Production (YAML file storage)
+const MiniAgentAppLayer = MiniAgentApp.layer.pipe(
+  Layer.provide(AgentRegistry.layer),
   Layer.provide(EventReducer.layer),
   Layer.provide(Agent.layer),
-  Layer.provide(ContextRepository.layer),
-  Layer.provide(HooksService.layer),
-  Layer.provide(AppConfig.layer)
+  Layer.provide(EventStore.yamlFileLayer)
+)
+
+// Tests (in-memory, no disk I/O)
+const MiniAgentTestLayer = MiniAgentApp.testLayer.pipe(
+  Layer.provide(AgentRegistry.testLayer),
+  Layer.provide(EventReducer.testLayer),
+  Layer.provide(Agent.testLayer),
+  Layer.provide(EventStore.inMemoryLayer)
 )
 ```
 
@@ -240,9 +238,9 @@ const ActorAppLayer = ActorApplicationService.layer.pipe(
 
 When ready to distribute across nodes:
 
-1. Replace `ContextActor` with `Entity`
-2. Replace `ActorRegistry` with `Sharding`
-3. Add persistent storage (Postgres/Redis)
-4. Configure cluster discovery
+1. Replace `MiniAgent` with `Entity`
+2. Replace `AgentRegistry` with `Sharding`
+3. Use persistent EventStore (Postgres/Redis)
+4. Configure cluster nodes and discovery
 
-See design.ts lines 830-860 for migration notes.
+See design.ts Future Considerations section for details.

@@ -1,7 +1,7 @@
 /**
  * Actor Implementation Sketch
  *
- * This file shows key implementation patterns for the ContextActor service.
+ * This file shows key implementation patterns for the MiniAgent service.
  * NOT runnable code - aspirational design reference only.
  *
  * Key Pattern: Mailbox + broadcastDynamic
@@ -12,6 +12,10 @@
  * IMPORTANT: broadcastDynamic is a LIVE stream:
  * - Late subscribers only receive events published AFTER they subscribe
  * - For historical events, use getEvents (reads from in-memory state)
+ *
+ * Philosophy: "Agent events are all you need"
+ * - triggersAgentTurn property on events determines if LLM request should happen
+ * - All config comes from events via ReducedContext (no separate AppConfig)
  */
 
 import {
@@ -24,88 +28,74 @@ import {
   Mailbox,
   Option,
   Ref,
-  Schedule,
   Stream
 } from "effect"
 import type {
+  AgentEvent,
+  AgentName,
   AgentTurnCompletedEvent,
   AgentTurnFailedEvent,
   AgentTurnStartedEvent,
-  ContextError,
-  ContextEvent,
-  ContextName,
   EventId,
+  MiniAgentError,
   SessionEndedEvent,
-  SessionStartedEvent,
-  UserMessageEvent
+  SessionStartedEvent
 } from "./design.ts"
-
-// =============================================================================
-// Actor Config
-// =============================================================================
-
-interface ActorConfig {
-  readonly debounceMs: number
-  readonly retrySchedule: Schedule.Schedule<unknown, unknown>
-}
-
-const defaultActorConfig: ActorConfig = {
-  debounceMs: 100,
-  retrySchedule: Schedule.exponential("100 millis").pipe(
-    Schedule.intersect(Schedule.recurs(3))
-  )
-}
 
 // =============================================================================
 // Actor Internal State
 // =============================================================================
 
 interface ActorState {
-  readonly events: ReadonlyArray<ContextEvent>
+  readonly events: ReadonlyArray<AgentEvent>
   readonly isProcessing: boolean
-  readonly lastUserMessageId: Option.Option<EventId>
+  readonly lastTriggeringEventId: Option.Option<EventId>
 }
 
 // =============================================================================
-// ContextActor Implementation Pattern
+// MiniAgent Implementation Pattern
 // =============================================================================
 
 /**
- * Implementation sketch for ContextActor using Mailbox + broadcastDynamic.
+ * Implementation sketch for MiniAgent using Mailbox + broadcastDynamic.
  *
  * Key insight: Each execution of `events` (the broadcast stream) creates
  * a new subscriber to the internal PubSub. This is the fan-out mechanism.
+ *
+ * Processing is triggered by events with triggersAgentTurn=true, not event type.
+ * Debounce delay comes from ReducedContext (via SetDebounceEvent).
  */
-const makeContextActor = (
-  contextName: ContextName,
-  config: ActorConfig = defaultActorConfig
-) =>
+const makeMiniAgent = (agentName: AgentName) =>
   Layer.scoped(
-    // ContextActor tag - would be imported from design.ts
+    // MiniAgent tag - would be imported from design.ts
     Context.GenericTag<{
-      readonly contextName: ContextName
-      readonly addEvent: (event: ContextEvent) => Effect.Effect<void, ContextError>
-      readonly events: Stream.Stream<ContextEvent, never>
-      readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
+      readonly agentName: AgentName
+      readonly addEvent: (event: AgentEvent) => Effect.Effect<void, MiniAgentError>
+      readonly events: Stream.Stream<AgentEvent, never>
+      readonly getEvents: Effect.Effect<ReadonlyArray<AgentEvent>>
       readonly shutdown: Effect.Effect<void>
-    }>("@app/ContextActor"),
+    }>("@app/MiniAgent"),
     Effect.gen(function*() {
       // Internal state
       const stateRef = yield* Ref.make<ActorState>({
         events: [],
         isProcessing: false,
-        lastUserMessageId: Option.none()
+        lastTriggeringEventId: Option.none()
       })
 
       // Mailbox for actor input
-      const mailbox = yield* Mailbox.make<ContextEvent>()
+      const mailbox = yield* Mailbox.make<AgentEvent>()
+
+      // Default debounce (would come from ReducedContext in real impl)
+      const debounceMs = 100
 
       // Helper to generate event metadata
-      const makeEventMeta = () => ({
+      const makeEventMeta = (triggersAgentTurn = false) => ({
         id: crypto.randomUUID() as unknown as EventId,
         timestamp: DateTime.unsafeNow(),
-        contextName,
-        parentEventId: Option.none()
+        agentName,
+        parentEventId: Option.none(),
+        triggersAgentTurn
       })
 
       // Convert mailbox to broadcast stream
@@ -116,10 +106,11 @@ const makeContextActor = (
       })
 
       // Background processing fiber - subscribes to broadcast for debouncing
+      // Only processes when an event with triggersAgentTurn=true has been added
       const processBatch = Effect.gen(function*() {
         const state = yield* Ref.get(stateRef)
-        const hasUserMessage = state.events.some((e) => e._tag === "UserMessageEvent")
-        if (!hasUserMessage) return
+        const hasTriggeringEvent = state.events.some((e) => e.triggersAgentTurn)
+        if (!hasTriggeringEvent) return
 
         yield* Ref.update(stateRef, (s) => ({ ...s, isProcessing: true }))
 
@@ -131,6 +122,7 @@ const makeContextActor = (
           } as unknown as AgentTurnStartedEvent)
 
           // TODO: Call reducer and agent here
+          // Reducer derives config from events (SetLlmProviderConfigEvent, etc.)
           yield* Effect.logInfo("Processing events (agent turn would happen here)")
 
           const durationMs = Date.now() - startTime
@@ -151,8 +143,10 @@ const makeContextActor = (
       })
 
       // Start background processing fiber
+      // Only debounce events with triggersAgentTurn=true
       const processingFiber = yield* broadcast.pipe(
-        Stream.debounce(Duration.millis(config.debounceMs)),
+        Stream.filter((e) => e.triggersAgentTurn),
+        Stream.debounce(Duration.millis(debounceMs)),
         Stream.mapEffect(() => processBatch),
         Stream.catchAll((error) =>
           Stream.fromEffect(
@@ -183,24 +177,23 @@ const makeContextActor = (
 
       // Service implementation
       return {
-        contextName,
+        agentName,
 
-        addEvent: (event: ContextEvent) =>
+        addEvent: (event: AgentEvent) =>
           Effect.gen(function*() {
             // 1. Update in-memory state
             yield* Ref.update(stateRef, (s) => ({
               ...s,
               events: [...s.events, event],
-              lastUserMessageId:
-                event._tag === "UserMessageEvent"
-                  ? Option.some((event as unknown as UserMessageEvent).id)
-                  : s.lastUserMessageId
+              lastTriggeringEventId: event.triggersAgentTurn
+                ? Option.some(event.id)
+                : s.lastTriggeringEventId
             }))
 
             // 2. Offer to mailbox - broadcasts to all subscribers
             yield* mailbox.offer(event)
 
-            // 3. TODO: Persist to YAML (not shown)
+            // 3. TODO: Persist to EventStore (not shown)
           }),
 
         // KEY: `events` is the broadcast stream
@@ -233,7 +226,16 @@ const makeContextActor = (
  *
  *    For historical events, use getEvents which returns from in-memory state.
  *
- * 2. SUBSCRIPTION TIMING
+ * 2. TRIGGERSAGENTTURN PROPERTY
+ *
+ *    Processing is triggered by event.triggersAgentTurn=true, not by event type.
+ *    This allows any event type to optionally trigger an LLM request.
+ *    Typical usage:
+ *    - UserMessageEvent: triggersAgentTurn=true
+ *    - FileAttachmentEvent: triggersAgentTurn=false (attached before user sends)
+ *    - SystemPromptEvent: triggersAgentTurn=false (setup phase)
+ *
+ * 3. SUBSCRIPTION TIMING
  *
  *    For tests or code that needs to ensure a subscriber is connected
  *    before events are added, either:
@@ -243,26 +245,27 @@ const makeContextActor = (
  *    Example with Deferred:
  *    ```typescript
  *    const ready = yield* Deferred.make<void>()
- *    const fiber = yield* actor.events.pipe(
+ *    const fiber = yield* agent.events.pipe(
  *      Stream.tap(() => Deferred.succeed(ready, void 0)),
  *      Stream.take(2),
  *      Stream.runCollect,
  *      Effect.fork
  *    )
  *    yield* Deferred.await(ready)
- *    yield* actor.addEvent(event)
+ *    yield* agent.addEvent(event)
  *    ```
  *
- * 3. CLEAN SHUTDOWN
+ * 4. CLEAN SHUTDOWN
  *
  *    - Emit SessionEndedEvent before ending mailbox
  *    - mailbox.end completes the broadcast stream
  *    - Interrupt processing fiber
  *    - Use Effect.addFinalizer for automatic cleanup on scope close
  *
- * 4. TESTING
+ * 5. TESTING
  *
  *    - Tests work well for synchronous subscription scenarios
  *    - Concurrent tests (fork + add events) require careful timing
  *    - Use Deferred for coordination, not sleep/delays
+ *    - Use EventStore.inMemoryLayer for tests (no disk I/O)
  */

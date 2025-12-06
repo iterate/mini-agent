@@ -1,24 +1,29 @@
 /**
- * Complete type definitions for the LLM Context Service Architecture.
+ * Complete type definitions for the MiniAgent Architecture.
  * Service interfaces only - no implementations.
  *
+ * Philosophy: "Agent events are all you need"
+ * - Everything the agent does is driven by events
+ * - Events reduce to state, state drives the agent
+ * - Configuration comes from events (SetLlmProviderConfigEvent, etc.)
+ * - Future: tools, workflows, everything defined via events
+ *
  * Key design decisions:
- * - All events share BaseEventFields (id, timestamp, contextName)
+ * - All events share BaseEventFields (id, timestamp, agentName, triggersAgentTurn)
+ * - triggersAgentTurn property on ALL events determines if LLM request should happen
  * - Uses @effect/ai Prompt.Message for LLM messages (not custom types)
- * - Uses Effect Schedule for retry (not custom RetryConfig)
- * - Agent.takeTurn (not stream) - may involve multiple requests in future
- * - Single ContextEvent union - no InputEvent/StreamEvent distinction
+ * - Single AgentEvent union - no InputEvent/StreamEvent distinction
  */
 
 import type { Prompt } from "@effect/ai"
-import { Context, Duration, Effect, Fiber, Layer, Option, Schedule, Schema, Stream } from "effect"
+import { Context, Duration, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
 
 // =============================================================================
 // Branded Types
 // =============================================================================
 
-export const ContextName = Schema.String.pipe(Schema.brand("ContextName"))
-export type ContextName = typeof ContextName.Type
+export const AgentName = Schema.String.pipe(Schema.brand("AgentName"))
+export type AgentName = typeof AgentName.Type
 
 export const LlmProviderId = Schema.String.pipe(Schema.brand("LlmProviderId"))
 export type LlmProviderId = typeof LlmProviderId.Type
@@ -31,20 +36,25 @@ export type EventId = typeof EventId.Type
 // =============================================================================
 
 /**
- * All context events must have these fields.
+ * All agent events must have these fields.
  * Use spread: { ...BaseEventFields, myField: Schema.String }
+ *
+ * triggersAgentTurn: Whether this event should trigger an LLM request.
+ * This is a property of EVERY event - not hardcoded to specific event types.
  *
  * parentEventId enables future forking - events can reference their causal parent.
  */
 export const BaseEventFields = {
   id: EventId,
   timestamp: Schema.DateTimeUtc,
-  contextName: ContextName,
-  parentEventId: Schema.optionalWith(EventId, { as: "Option" })
+  agentName: AgentName,
+  parentEventId: Schema.optionalWith(EventId, { as: "Option" }),
+  /** Whether adding this event should trigger an agent turn (LLM request) */
+  triggersAgentTurn: Schema.Boolean
 }
 
 // =============================================================================
-// Configuration Schemas
+// Configuration Schemas (derived from events, not AppConfig)
 // =============================================================================
 
 export class LlmProviderConfig extends Schema.Class<LlmProviderConfig>("LlmProviderConfig")({
@@ -55,13 +65,14 @@ export class LlmProviderConfig extends Schema.Class<LlmProviderConfig>("LlmProvi
 }) {}
 
 /**
- * Agent configuration. Uses Effect Schedule for retry instead of custom config.
- * The schedule is not serialized - it's provided at layer construction time.
+ * Agent configuration derived from events.
+ * This is part of ReducedContext, built by the reducer from config events.
  */
 export class AgentConfig extends Schema.Class<AgentConfig>("AgentConfig")({
   primary: LlmProviderConfig,
   fallback: Schema.optionalWith(LlmProviderConfig, { as: "Option" }),
-  timeoutMs: Schema.Number.pipe(Schema.positive())
+  timeoutMs: Schema.Number.pipe(Schema.positive()),
+  debounceMs: Schema.Number
 }) {}
 
 // =============================================================================
@@ -71,6 +82,9 @@ export class AgentConfig extends Schema.Class<AgentConfig>("AgentConfig")({
 /**
  * The reduced state ready for an agent turn.
  * Uses @effect/ai Prompt.Message for messages.
+ *
+ * ALL configuration comes from events via the reducer.
+ * There is no separate AppConfig service.
  */
 export interface ReducedContext {
   readonly messages: ReadonlyArray<Prompt.Message>
@@ -147,6 +161,14 @@ export class SetTimeoutEvent extends Schema.TaggedClass<SetTimeoutEvent>()(
   }
 ) {}
 
+export class SetDebounceEvent extends Schema.TaggedClass<SetDebounceEvent>()(
+  "SetDebounceEvent",
+  {
+    ...BaseEventFields,
+    debounceMs: Schema.Number
+  }
+) {}
+
 // =============================================================================
 // Lifecycle Events
 // =============================================================================
@@ -197,15 +219,17 @@ export class AgentTurnFailedEvent extends Schema.TaggedClass<AgentTurnFailedEven
 ) {}
 
 // =============================================================================
-// ContextEvent - The one and only event union
+// AgentEvent - The one and only event union
 // =============================================================================
 
 /**
- * All events that can occur in a context. There's no distinction between
+ * All events that can occur in an agent. There's no distinction between
  * "input" and "output" events - they're all just events that flow through
  * the system and get streamed to consumers.
+ *
+ * Every event has triggersAgentTurn to indicate if it should start an LLM request.
  */
-export const ContextEvent = Schema.Union(
+export const AgentEvent = Schema.Union(
   // Content events
   SystemPromptEvent,
   UserMessageEvent,
@@ -215,6 +239,7 @@ export const ContextEvent = Schema.Union(
   // Configuration events
   SetLlmProviderConfigEvent,
   SetTimeoutEvent,
+  SetDebounceEvent,
   // Lifecycle events
   SessionStartedEvent,
   SessionEndedEvent,
@@ -223,7 +248,7 @@ export const ContextEvent = Schema.Union(
   AgentTurnInterruptedEvent,
   AgentTurnFailedEvent
 )
-export type ContextEvent = typeof ContextEvent.Type
+export type AgentEvent = typeof AgentEvent.Type
 
 // =============================================================================
 // Errors
@@ -242,55 +267,52 @@ export class ReducerError extends Schema.TaggedError<ReducerError>()(
   "ReducerError",
   {
     message: Schema.String,
-    event: Schema.optionalWith(ContextEvent, { as: "Option" })
+    event: Schema.optionalWith(AgentEvent, { as: "Option" })
   }
 ) {}
 
-export class ContextNotFoundError extends Schema.TaggedError<ContextNotFoundError>()(
-  "ContextNotFoundError",
+export class AgentNotFoundError extends Schema.TaggedError<AgentNotFoundError>()(
+  "AgentNotFoundError",
   {
-    contextName: ContextName
+    agentName: AgentName
   }
 ) {}
 
-export class ContextLoadError extends Schema.TaggedError<ContextLoadError>()(
-  "ContextLoadError",
+export class AgentLoadError extends Schema.TaggedError<AgentLoadError>()(
+  "AgentLoadError",
   {
-    contextName: ContextName,
+    agentName: AgentName,
     message: Schema.String,
     cause: Schema.optionalWith(Schema.Defect, { as: "Option" })
   }
 ) {}
 
-export class HookError extends Schema.TaggedError<HookError>()(
-  "HookError",
+export class AgentSaveError extends Schema.TaggedError<AgentSaveError>()(
+  "AgentSaveError",
   {
-    hook: Schema.Literal("beforeTurn", "afterTurn", "onEvent"),
+    agentName: AgentName,
     message: Schema.String,
     cause: Schema.optionalWith(Schema.Defect, { as: "Option" })
   }
 ) {}
 
-export const ContextError = Schema.Union(ContextNotFoundError, ContextLoadError)
-export type ContextError = typeof ContextError.Type
-
-export const SessionError = Schema.Union(ContextNotFoundError, ContextLoadError, ReducerError, HookError)
-export type SessionError = typeof SessionError.Type
+export const MiniAgentError = Schema.Union(AgentNotFoundError, AgentLoadError, AgentSaveError)
+export type MiniAgentError = typeof MiniAgentError.Type
 
 // =============================================================================
-// Layer 1: Agent Service
+// Agent Service (LLM execution)
 // =============================================================================
 
 /**
  * Agent service - makes LLM requests with retry and fallback.
  *
- * takeTurn: Execute an agent turn (may involve multiple LLM requests in future).
+ * takeTurn: Execute an agent turn using config from ReducedContext.
  * Returns a stream of events during the turn.
  */
 export class Agent extends Context.Tag("@app/Agent")<
   Agent,
   {
-    readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError>
+    readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<AgentEvent, AgentError>
   }
 >() {
   static readonly layer: Layer.Layer<Agent> = undefined as never
@@ -298,19 +320,24 @@ export class Agent extends Context.Tag("@app/Agent")<
 }
 
 // =============================================================================
-// Layer 2: EventReducer Service
+// EventReducer Service
 // =============================================================================
 
 /**
  * EventReducer folds events into a ReducedContext ready for an agent turn.
- * Different implementations handle context growth differently.
+ *
+ * The reducer derives ALL configuration from events:
+ * - SetLlmProviderConfigEvent → config.primary or config.fallback
+ * - SetTimeoutEvent → config.timeoutMs
+ * - SetDebounceEvent → config.debounceMs
+ * - SystemPromptEvent, UserMessageEvent, etc. → messages array
  */
 export class EventReducer extends Context.Tag("@app/EventReducer")<
   EventReducer,
   {
     readonly reduce: (
       current: ReducedContext,
-      newEvents: ReadonlyArray<ContextEvent>
+      newEvents: ReadonlyArray<AgentEvent>
     ) => Effect.Effect<ReducedContext, ReducerError>
 
     readonly initialReducedContext: ReducedContext
@@ -319,228 +346,78 @@ export class EventReducer extends Context.Tag("@app/EventReducer")<
   /** Default reducer - keeps all messages, no truncation */
   static readonly layer: Layer.Layer<EventReducer> = undefined as never
 
-  /**
-   * Truncating reducer - keeps only the last N messages to stay within
-   * token limits. Simple sliding window approach.
-   */
-  static readonly truncatingLayer: Layer.Layer<EventReducer> = undefined as never
-
-  /**
-   * Summarizing reducer - when context grows too large, uses the Agent
-   * to generate a summary of older messages. Requires Agent dependency
-   * since it makes LLM calls to summarize.
-   */
-  static readonly summarizingLayer: Layer.Layer<EventReducer, never, Agent> = undefined as never
-
   static readonly testLayer: Layer.Layer<EventReducer> = undefined as never
 }
 
 // =============================================================================
-// ContextRepository Service
-// =============================================================================
-
-export class ContextRepository extends Context.Tag("@app/ContextRepository")<
-  ContextRepository,
-  {
-    readonly load: (name: ContextName) => Effect.Effect<ReadonlyArray<ContextEvent>, ContextError>
-    readonly append: (name: ContextName, events: ReadonlyArray<ContextEvent>) => Effect.Effect<void, ContextError>
-    readonly exists: (name: ContextName) => Effect.Effect<boolean>
-  }
->() {
-  static readonly layer: Layer.Layer<ContextRepository> = undefined as never
-  static readonly testLayer: Layer.Layer<ContextRepository> = undefined as never
-}
-
-// =============================================================================
-// HooksService
-// =============================================================================
-
-export type BeforeTurnHook = (input: ReducedContext) => Effect.Effect<ReducedContext, HookError>
-export type AfterTurnHook = (event: ContextEvent) => Effect.Effect<ReadonlyArray<ContextEvent>, HookError>
-export type OnEventHook = (event: ContextEvent) => Effect.Effect<void, HookError>
-
-export class HooksService extends Context.Tag("@app/HooksService")<
-  HooksService,
-  {
-    readonly beforeTurn: BeforeTurnHook
-    readonly afterTurn: AfterTurnHook
-    readonly onEvent: OnEventHook
-  }
->() {
-  static readonly layer = Layer.succeed(HooksService, {
-    beforeTurn: (input) => Effect.succeed(input),
-    afterTurn: (event) => Effect.succeed([event]),
-    onEvent: () => Effect.void
-  })
-
-  static readonly testLayer = HooksService.layer
-}
-
-// =============================================================================
-// AppConfig Service
-// =============================================================================
-
-export class AppConfig extends Context.Tag("@app/AppConfig")<
-  AppConfig,
-  {
-    readonly defaultProvider: LlmProviderConfig
-    readonly defaultTimeoutMs: number
-    readonly maxTokens: number
-    readonly debounceMs: number
-    /**
-     * Retry schedule for agent requests. Use Effect Schedule combinators.
-     * Example: Schedule.exponential("100 millis").pipe(Schedule.intersect(Schedule.recurs(3)))
-     */
-    readonly retrySchedule: Schedule.Schedule<unknown, unknown>
-  }
->() {
-  static readonly layer: Layer.Layer<AppConfig> = undefined as never
-  static readonly testLayer: Layer.Layer<AppConfig> = undefined as never
-}
-
-// =============================================================================
-// Hook Composition Utilities
-// =============================================================================
-
-export const composeBeforeTurnHooks = (
-  hooks: ReadonlyArray<BeforeTurnHook>
-): BeforeTurnHook =>
-(input) =>
-  hooks.reduce(
-    (acc, hook) => Effect.flatMap(acc, hook),
-    Effect.succeed(input) as Effect.Effect<ReducedContext, HookError>
-  )
-
-export const composeAfterTurnHooks = (
-  hooks: ReadonlyArray<AfterTurnHook>
-): AfterTurnHook =>
-(event) =>
-  hooks.reduce(
-    (acc, hook) =>
-      Effect.flatMap(acc, (events) =>
-        Effect.map(
-          Effect.all(events.map(hook)),
-          (results) => results.flat()
-        )),
-    Effect.succeed([event]) as Effect.Effect<ReadonlyArray<ContextEvent>, HookError>
-  )
-
-export const composeOnEventHooks = (
-  hooks: ReadonlyArray<OnEventHook>
-): OnEventHook =>
-(event) => Effect.all(hooks.map((hook) => hook(event)), { discard: true })
-
-// =============================================================================
-// Custom Hooks Example
-// =============================================================================
-
-export const LoggingHooksLayer = Layer.sync(HooksService, () =>
-  HooksService.of({
-    beforeTurn: Effect.fn("HooksService.beforeTurn")(
-      function*(input: ReducedContext) {
-        yield* Effect.log(`Turn with ${input.messages.length} messages`)
-        return input
-      }
-    ),
-    afterTurn: Effect.fn("HooksService.afterTurn")(
-      function*(event: ContextEvent) {
-        if (event._tag === "AssistantMessageEvent") {
-          yield* Effect.log(`Response: ${event.content.slice(0, 50)}...`)
-        }
-        return [event]
-      }
-    ),
-    onEvent: Effect.fn("HooksService.onEvent")(
-      function*(event: ContextEvent) {
-        yield* Effect.log(`Event: ${event._tag}`)
-      }
-    )
-  }))
-
-// =============================================================================
-// Actor-Based Architecture
+// EventStore Service (pluggable storage backend)
 // =============================================================================
 
 /**
- * ACTOR MODEL FOR CONTEXTS
+ * EventStore handles persistence of agent events.
  *
- * Each Context is modeled as an Actor with:
- * - addEvent: fire-and-forget input (persists immediately, queues for processing)
- * - events: continuous output stream (tap into all events via PubSub subscription)
- *
- * Internal flow:
- * 1. addEvent -> persist to YAML -> Queue.offer
- * 2. Stream.fromQueue -> debounce -> process batch
- * 3. Process: reduce -> agent turn -> persist response -> PubSub.publish
- * 4. events stream: Stream.fromPubSub (subscribers get all events)
- *
- * Designed for single-process now, future-ready for @effect/cluster distribution.
- *
- * ```
- * ┌─────────────────────────────────────────────────────────────────┐
- * │                       ContextActor                              │
- * │                                                                 │
- * │  addEvent(event) ──▶ [persist to YAML] ──▶ [Queue.offer]       │
- * │                                                   │             │
- * │                           ┌───────────────────────┘             │
- * │                           ▼                                     │
- * │              Stream.fromQueue(inputQueue)                       │
- * │                           │                                     │
- * │                           ▼                                     │
- * │              Stream.debounce(debounceMs)                        │
- * │                           │                                     │
- * │                           ▼                                     │
- * │           ┌───────────────────────────────┐                     │
- * │           │  Process: Reduce → Agent Turn │                     │
- * │           └───────────────────────────────┘                     │
- * │                           │                                     │
- * │                           ▼                                     │
- * │              [persist to YAML] ──▶ [PubSub.publish]            │
- * │                                           │                     │
- * │                                           ▼                     │
- * │  events stream ◀──── Stream.fromPubSub(outputPubSub)           │
- * └─────────────────────────────────────────────────────────────────┘
- * ```
+ * This is a pluggable interface - implementations can be:
+ * - YamlFileStore: Persists to YAML files on disk
+ * - InMemoryStore: For tests (no disk I/O)
+ * - PostgresStore: For future distributed deployment
  */
+export class EventStore extends Context.Tag("@app/EventStore")<
+  EventStore,
+  {
+    readonly load: (name: AgentName) => Effect.Effect<ReadonlyArray<AgentEvent>, AgentLoadError>
+    readonly append: (name: AgentName, events: ReadonlyArray<AgentEvent>) => Effect.Effect<void, AgentSaveError>
+    readonly exists: (name: AgentName) => Effect.Effect<boolean>
+  }
+>() {
+  /** YAML file storage - persists to .mini-agent/<agentName>.yaml */
+  static readonly yamlFileLayer: Layer.Layer<EventStore> = undefined as never
+
+  /** In-memory storage - for tests, no disk I/O */
+  static readonly inMemoryLayer: Layer.Layer<EventStore> = undefined as never
+
+  static readonly testLayer = EventStore.inMemoryLayer
+}
 
 // =============================================================================
-// ContextActor Service
+// MiniAgent Service
 // =============================================================================
 
 /**
- * ContextActor represents a single context as an actor.
+ * MiniAgent represents a single agent as an actor.
  *
- * Each actor encapsulates:
+ * Each agent encapsulates:
  * - Mailbox for incoming events (actor mailbox pattern)
  * - broadcastDynamic for fan-out to multiple subscribers
  * - Background fiber for processing events
- * - State refs for events and reduced context
+ * - State refs for events and reduced state
  *
- * The actor is scoped - when the scope closes, the actor shuts down gracefully.
+ * The agent is scoped - when the scope closes, the agent shuts down gracefully.
  *
  * IMPLEMENTATION NOTE: Use Effect's Mailbox + Stream.broadcastDynamic pattern:
- * - Mailbox.make<ContextEvent>() for input
+ * - Mailbox.make<AgentEvent>() for input
  * - Stream.broadcastDynamic(Mailbox.toStream(mailbox), { capacity: "unbounded" })
  * - Each execution of the `events` stream creates a new subscriber (fan-out)
  * - Late subscribers miss events (live stream, not replay/event-sourcing)
  * - For historical events, use getEvents
+ *
+ * Processing is triggered by events with triggersAgentTurn=true, not by event type.
  */
-export class ContextActor extends Context.Tag("@app/ContextActor")<
-  ContextActor,
+export class MiniAgent extends Context.Tag("@app/MiniAgent")<
+  MiniAgent,
   {
-    /** The context name this actor manages */
-    readonly contextName: ContextName
+    /** The agent name this instance manages */
+    readonly agentName: AgentName
 
     /**
-     * Add an event to the actor (fire and forget).
+     * Add an event to the agent (fire and forget).
      *
      * Flow:
-     * 1. Persist event immediately to YAML
+     * 1. Persist event immediately via EventStore
      * 2. Update in-memory state
-     * 3. Offer to mailbox (triggers processing via debounced stream)
-     * 4. Broadcast to all subscribers via internal PubSub
+     * 3. Offer to mailbox (broadcasts to all subscribers)
+     * 4. If event.triggersAgentTurn, starts debounce timer for processing
      */
-    readonly addEvent: (event: ContextEvent) => Effect.Effect<void, ContextError>
+    readonly addEvent: (event: AgentEvent) => Effect.Effect<void, MiniAgentError>
 
     /**
      * Event stream - each execution creates a new subscriber.
@@ -550,192 +427,190 @@ export class ContextActor extends Context.Tag("@app/ContextActor")<
      *
      * NOTE: This is a LIVE stream - late subscribers only receive events
      * published AFTER they subscribe. For historical events, use getEvents.
-     *
-     * Usage (SSE endpoint):
-     * ```typescript
-     * const actor = yield* ContextActor
-     * yield* actor.events.pipe(
-     *   Stream.map(event => `data: ${JSON.stringify(event)}\n\n`),
-     *   Stream.runForEach(chunk => sendSSE(res, chunk))
-     * )
-     * ```
      */
-    readonly events: Stream.Stream<ContextEvent, never>
+    readonly events: Stream.Stream<AgentEvent, never>
 
     /**
-     * Get all events currently in the context (from in-memory state).
+     * Get all events currently in the agent (from in-memory state).
      * Use this for historical events since `events` stream is live-only.
      */
-    readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
+    readonly getEvents: Effect.Effect<ReadonlyArray<AgentEvent>>
 
     /**
-     * Gracefully shutdown the actor.
+     * Gracefully shutdown the agent.
      * Completes any in-flight processing, emits SessionEndedEvent, closes streams.
      */
     readonly shutdown: Effect.Effect<void>
   }
 >() {
   /**
-   * Create an actor for a specific context.
-   * Returns a scoped layer that manages the actor's lifecycle.
+   * Create an agent instance.
+   * Returns a scoped layer that manages the agent's lifecycle.
+   *
+   * The EventStore is injected - use different implementations for prod vs test:
+   * - EventStore.yamlFileLayer for production (persists to disk)
+   * - EventStore.inMemoryLayer for tests (no disk I/O)
    */
   static readonly make: (
-    contextName: ContextName
-  ) => Layer.Layer<ContextActor, ContextError, Agent | EventReducer | ContextRepository | HooksService | AppConfig> =
+    agentName: AgentName
+  ) => Layer.Layer<MiniAgent, MiniAgentError, Agent | EventReducer | EventStore> =
     undefined as never
 
-  static readonly testLayer: Layer.Layer<ContextActor> = undefined as never
+  static readonly testLayer: Layer.Layer<MiniAgent> = undefined as never
 }
 
 // =============================================================================
-// ActorRegistry Service
+// AgentRegistry Service
 // =============================================================================
 
 /**
- * ActorRegistry manages multiple ContextActor instances.
+ * AgentRegistry manages multiple MiniAgent instances.
  *
  * Responsibilities:
- * - Create actors on demand (lazy initialization)
- * - Cache actors by context name
- * - Route events to correct actor
- * - Graceful shutdown of all actors
+ * - Create agents on demand (lazy initialization)
+ * - Cache agents by name
+ * - Route events to correct agent
+ * - Graceful shutdown of all agents
  *
- * This is the main entry point for the application layer.
  * In the future, this could be replaced by @effect/cluster Sharding.
  */
-export class ActorRegistry extends Context.Tag("@app/ActorRegistry")<
-  ActorRegistry,
+export class AgentRegistry extends Context.Tag("@app/AgentRegistry")<
+  AgentRegistry,
   {
     /**
-     * Get or create an actor for a context.
-     * Actors are cached - subsequent calls return the same instance.
+     * Get or create an agent.
+     * Agents are cached - subsequent calls return the same instance.
      */
-    readonly getOrCreate: (contextName: ContextName) => Effect.Effect<ContextActor, ContextError>
+    readonly getOrCreate: (agentName: AgentName) => Effect.Effect<MiniAgent, MiniAgentError>
 
     /**
-     * Get an existing actor (fails if not found).
+     * Get an existing agent (fails if not found).
      */
-    readonly get: (contextName: ContextName) => Effect.Effect<ContextActor, ContextNotFoundError>
+    readonly get: (agentName: AgentName) => Effect.Effect<MiniAgent, AgentNotFoundError>
 
     /**
-     * List all active context names.
+     * List all active agent names.
      */
-    readonly list: Effect.Effect<ReadonlyArray<ContextName>>
+    readonly list: Effect.Effect<ReadonlyArray<AgentName>>
 
     /**
-     * Shutdown a specific actor.
+     * Shutdown a specific agent.
      */
-    readonly shutdownActor: (contextName: ContextName) => Effect.Effect<void, ContextNotFoundError>
+    readonly shutdownAgent: (agentName: AgentName) => Effect.Effect<void, AgentNotFoundError>
 
     /**
-     * Shutdown all actors gracefully.
+     * Shutdown all agents gracefully.
      */
     readonly shutdownAll: Effect.Effect<void>
   }
 >() {
-  static readonly layer: Layer.Layer<
-    ActorRegistry,
-    never,
-    Agent | EventReducer | ContextRepository | HooksService | AppConfig
-  > = undefined as never
+  static readonly layer: Layer.Layer<AgentRegistry, never, Agent | EventReducer | EventStore> =
+    undefined as never
 
-  static readonly testLayer: Layer.Layer<ActorRegistry> = undefined as never
+  static readonly testLayer: Layer.Layer<AgentRegistry> = undefined as never
 }
 
 // =============================================================================
-// Actor-Based Application Service
+// MiniAgentApp Service (Application Facade)
 // =============================================================================
 
 /**
- * Application service using actor-based architecture.
- * Thin facade over ActorRegistry.
+ * Application service - thin facade over AgentRegistry.
  */
-export class ActorApplicationService extends Context.Tag("@app/ActorApplicationService")<
-  ActorApplicationService,
+export class MiniAgentApp extends Context.Tag("@app/MiniAgentApp")<
+  MiniAgentApp,
   {
     /**
-     * Add event to a context (creates actor if needed).
+     * Add event to an agent (creates agent if needed).
      */
     readonly addEvent: (
-      contextName: ContextName,
-      event: ContextEvent
-    ) => Effect.Effect<void, ContextError>
+      agentName: AgentName,
+      event: AgentEvent
+    ) => Effect.Effect<void, MiniAgentError>
 
     /**
-     * Get event stream for a context.
-     * Creates actor if needed.
+     * Get event stream for an agent.
+     * Creates agent if needed.
      * Each execution of the stream creates a new subscriber - all get same events.
      *
      * NOTE: This is a live stream. Late subscribers only get events published
      * after they subscribe. For historical events, use getEvents.
      */
     readonly getEventStream: (
-      contextName: ContextName
-    ) => Effect.Effect<Stream.Stream<ContextEvent, never>, ContextError>
+      agentName: AgentName
+    ) => Effect.Effect<Stream.Stream<AgentEvent, never>, MiniAgentError>
 
     /**
-     * Get all events for a context.
+     * Get all events for an agent.
      */
     readonly getEvents: (
-      contextName: ContextName
-    ) => Effect.Effect<ReadonlyArray<ContextEvent>, ContextError>
+      agentName: AgentName
+    ) => Effect.Effect<ReadonlyArray<AgentEvent>, MiniAgentError>
 
     /**
-     * List all active contexts.
+     * List all active agents.
      */
-    readonly list: Effect.Effect<ReadonlyArray<ContextName>>
+    readonly list: Effect.Effect<ReadonlyArray<AgentName>>
 
     /**
-     * Shutdown all actors.
+     * Shutdown all agents.
      */
     readonly shutdown: Effect.Effect<void>
   }
 >() {
-  static readonly layer: Layer.Layer<ActorApplicationService, never, ActorRegistry> = undefined as never
-  static readonly testLayer: Layer.Layer<ActorApplicationService> = undefined as never
+  static readonly layer: Layer.Layer<MiniAgentApp, never, AgentRegistry> = undefined as never
+  static readonly testLayer: Layer.Layer<MiniAgentApp> = undefined as never
 }
 
 // =============================================================================
-// Actor Layer Composition
+// Layer Composition
 // =============================================================================
 
 /**
- * Complete actor-based application layer.
+ * Production layer - uses YAML file storage.
  */
-export const ActorAppLayer = ActorApplicationService.layer.pipe(
-  Layer.provide(ActorRegistry.layer),
+export const MiniAgentAppLayer = MiniAgentApp.layer.pipe(
+  Layer.provide(AgentRegistry.layer),
   Layer.provide(EventReducer.layer),
   Layer.provide(Agent.layer),
-  Layer.provide(ContextRepository.layer),
-  Layer.provide(HooksService.layer),
-  Layer.provide(AppConfig.layer)
+  Layer.provide(EventStore.yamlFileLayer)
+)
+
+/**
+ * Test layer - uses in-memory storage (no disk I/O).
+ */
+export const MiniAgentTestLayer = MiniAgentApp.testLayer.pipe(
+  Layer.provide(AgentRegistry.testLayer),
+  Layer.provide(EventReducer.testLayer),
+  Layer.provide(Agent.testLayer),
+  Layer.provide(EventStore.inMemoryLayer)
 )
 
 // =============================================================================
-// Sample Actor Usage
+// Sample Usage
 // =============================================================================
 
-export const sampleActorProgram = Effect.gen(function*() {
-  const app = yield* ActorApplicationService
-  const contextName = ContextName.make("chat")
+export const sampleProgram = Effect.gen(function*() {
+  const app = yield* MiniAgentApp
+  const agentName = AgentName.make("chat")
 
-  // Get event stream (creates actor if needed)
-  // Each execution of the stream creates a new subscriber
-  const eventStream = yield* app.getEventStream(contextName)
+  // Get event stream (creates agent if needed)
+  const eventStream = yield* app.getEventStream(agentName)
   const streamFiber = yield* eventStream.pipe(
     Stream.tap((event) => Effect.log(`Event: ${event._tag}`)),
     Stream.runDrain,
     Effect.fork
   )
 
-  // Add a user message (fire and forget)
+  // Add a user message - triggersAgentTurn=true will start LLM request
   yield* app.addEvent(
-    contextName,
+    agentName,
     new UserMessageEvent({
       id: EventId.make(crypto.randomUUID()),
       timestamp: new Date() as never, // DateTime.unsafeNow() in real code
-      contextName,
+      agentName,
       parentEventId: Option.none(),
+      triggersAgentTurn: true, // This triggers the LLM request
       content: "Hello, how are you?"
     })
   )
@@ -749,29 +624,27 @@ export const sampleActorProgram = Effect.gen(function*() {
 })
 
 // =============================================================================
-// Future: @effect/cluster Distribution
+// Future Considerations
 // =============================================================================
 
 /**
+ * FUTURE: Everything driven by events
+ *
+ * The philosophy is "Agent events are all you need":
+ * - LLM config: SetLlmProviderConfigEvent (already implemented)
+ * - Timeouts: SetTimeoutEvent (already implemented)
+ * - Retry config: SetRetryConfigEvent (future - will define Schedule via event)
+ * - Tools: DefineToolEvent (future - will define callable tools)
+ * - Workflows: DefineWorkflowEvent (future - will define multi-step workflows)
+ * - Memory: SetMemoryConfigEvent (future - vector store, summarization)
+ *
+ * All these reduce to ReducedContext which drives the agent.
+ *
+ * FUTURE: @effect/cluster Distribution
+ *
  * To distribute in the future:
- *
- * 1. Replace ContextActor with Entity:
- *    ```typescript
- *    const ContextEntity = Entity.define({
- *      id: ContextName,
- *      initialState: () => ({ events: [] }),
- *      onMessage: (state, msg) => { ... }
- *    })
- *    ```
- *
- * 2. Replace ActorRegistry with Sharding:
- *    ```typescript
- *    const sharding = yield* Sharding
- *    const proxy = yield* sharding.entity(ContextEntity)
- *    yield* proxy.send(contextName, AddEventMessage.make({ event }))
- *    ```
- *
- * 3. Add persistent storage (Postgres/Redis) for event logs
- *
+ * 1. Replace MiniAgent with Entity
+ * 2. Replace AgentRegistry with Sharding
+ * 3. Use persistent EventStore (Postgres/Redis)
  * 4. Configure cluster nodes and discovery
  */

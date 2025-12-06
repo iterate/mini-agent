@@ -2,7 +2,9 @@
 
 ## Overview
 
-Design an actor-based architecture for LLM request handling using Effect. Each context is modeled as an actor with fire-and-forget input and live event streaming output.
+Design an actor-based architecture for LLM request handling using Effect. Each agent is modeled as a MiniAgent with fire-and-forget input and live event streaming output.
+
+Philosophy: **"Agent events are all you need"** - Everything the agent does is driven by events.
 
 ---
 
@@ -10,18 +12,23 @@ Design an actor-based architecture for LLM request handling using Effect. Each c
 
 ### Core Flow
 
-1. **Actor per context**: Each conversation context is a ContextActor with its own mailbox
+1. **Actor per agent**: Each agent is a MiniAgent with its own mailbox
 2. **Fire-and-forget input**: `addEvent` persists immediately and returns void
 3. **Live event stream**: Subscribers receive events published after they subscribe
-4. **Immediate persistence**: Events persist to YAML before entering the processing queue
+4. **Immediate persistence**: Events persist via EventStore before entering the processing queue
 
 ### Event Types
 
-All events share base fields: `id` (EventId), `timestamp` (DateTimeUtc), `contextName` (ContextName), `parentEventId` (optional, for future forking).
+All events share base fields:
+- `id` (EventId)
+- `timestamp` (DateTimeUtc)
+- `agentName` (AgentName)
+- `parentEventId` (optional, for future forking)
+- `triggersAgentTurn` (Boolean) - Whether this event should trigger an LLM request
 
 **Content Events**:
 - `SystemPromptEvent` - Sets AI behavior
-- `UserMessageEvent` - User input
+- `UserMessageEvent` - User input (typically triggersAgentTurn=true)
 - `AssistantMessageEvent` - AI response (final)
 - `FileAttachmentEvent` - Image/file with source and mimeType
 - `TextDeltaEvent` - Streaming chunk (ephemeral, not persisted)
@@ -29,6 +36,7 @@ All events share base fields: `id` (EventId), `timestamp` (DateTimeUtc), `contex
 **Configuration Events**:
 - `SetLlmProviderConfigEvent` - Change LLM provider (primary or fallback)
 - `SetTimeoutEvent` - Change request timeout
+- `SetDebounceEvent` - Change debounce delay
 
 **Lifecycle Events**:
 - `SessionStartedEvent` - Emitted when actor starts
@@ -40,7 +48,7 @@ All events share base fields: `id` (EventId), `timestamp` (DateTimeUtc), `contex
 
 ### Request Interruption (Required)
 
-When new user input arrives while an agent turn is in-flight:
+When a new event with `triggersAgentTurn=true` arrives while an agent turn is in-flight:
 1. Interrupt the running fiber via `Fiber.interrupt`
 2. Emit `AgentTurnInterruptedEvent`
 3. Start new turn with updated context
@@ -51,10 +59,11 @@ Implementation uses Effect's fiber interruption:
 
 ### Debouncing
 
-When events arrive rapidly (file attachment + message):
-- Wait N ms after last event before starting agent turn
-- Default: 100ms (configurable via ActorConfig)
-- Implementation: `Stream.debounce(Duration.millis(config.debounceMs))`
+When events with `triggersAgentTurn=true` arrive rapidly:
+- Wait N ms after last triggering event before starting agent turn
+- Default: 100ms (configurable via SetDebounceEvent)
+- Config comes from events via ReducedContext (no separate AppConfig)
+- Implementation: `Stream.debounce(Duration.millis(reducedContext.config.debounceMs))`
 
 ### Session Lifecycle
 
@@ -78,12 +87,13 @@ MVP supports one LLM request at a time:
 - All services have `testLayer` with mock implementations
 - Actor tests use `Layer.scoped` for lifecycle management
 - Pure functions where possible
+- `EventStore.inMemoryLayer` for tests (no disk I/O)
 
 ### Effect Idioms
 
 - `Context.Tag` for service definitions (not `Effect.Service`)
 - `Effect.fn` for automatic span creation
-- `Schema.TaggedClass` for events with `...BaseEventFields` spread
+- `Schema.TaggedClass` for events with `...BaseEventFields` spread (includes triggersAgentTurn)
 - `Schema.TaggedError` for errors
 - `@effect/ai` Prompt.Message for LLM messages
 - Effect Schedule for retry (not custom RetryConfig)
@@ -108,7 +118,18 @@ MVP supports one LLM request at a time:
 
 ## Eventually (Future Scope)
 
-These are documented for architectural awareness but not implemented in MVP:
+These are documented for architectural awareness but not implemented in MVP.
+
+Philosophy: **"Agent events are all you need"** - Everything should be driven by events.
+
+### Events-Driven Extensions
+
+Future capabilities defined as events:
+- `SetRetryConfigEvent` - Define retry Schedule via event
+- `DefineToolEvent` - Define callable tools (function calling)
+- `DefineWorkflowEvent` - Define multi-step workflows
+- `SetMemoryConfigEvent` - Configure vector store, summarization
+- Dynamic reducers defined as events
 
 ### Parallel LLM Requests
 - Content generation + prompt injection detection
@@ -120,12 +141,11 @@ These are documented for architectural awareness but not implemented in MVP:
 - Summarizing reducer (uses LLM to summarize old context)
 
 ### Distribution
-- Replace ContextActor with @effect/cluster Entity
-- Replace ActorRegistry with Sharding
-- Persistent storage (Postgres/Redis) for event logs
+- Replace MiniAgent with @effect/cluster Entity
+- Replace AgentRegistry with Sharding
+- Persistent EventStore (Postgres/Redis) for event logs
 
 ### Other
 - HTTP API server wrapper
-- Multi-tenant sessions (multiple concurrent contexts per user)
+- Multi-tenant sessions (multiple concurrent agents per user)
 - Full event sourcing replay capability
-- Dynamic reducers defined as events
