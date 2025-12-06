@@ -25,6 +25,12 @@ export default defineConfig({
     // File-level parallelism - run all test files in parallel
     fileParallelism: true,
 
+    // Run tests within each file concurrently
+    // Tests must be independent (each gets unique testDir, ports, etc.)
+    sequence: {
+      concurrent: true
+    },
+
     // Faster test timeouts (fail fast)
     testTimeout: 60000, // 60s default
     hookTimeout: 30000, // 30s for hooks

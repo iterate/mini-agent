@@ -16,9 +16,8 @@ import { expect, test } from "./fixtures.js"
 // Resolve CLI path relative to this file
 const CLI_PATH = new URL("../src/cli/main.ts", import.meta.url).pathname
 
-// Global port counter to avoid conflicts between parallel tests
-let portCounter = 4000 + Math.floor(Math.random() * 1000)
-const getNextPort = () => portCounter++
+/** Get a random port in ephemeral range (49152-65535) for concurrent test safety */
+const getRandomPort = () => 49152 + Math.floor(Math.random() * 16383)
 
 /** Retry a fetch request with exponential backoff */
 const fetchWithRetry = async (
@@ -43,56 +42,61 @@ const fetchWithRetry = async (
 /** Start the server in background and return port + cleanup function */
 const startServer = async (
   cwd: string,
-  subcommand: "serve" | "layercode serve" = "serve"
+  subcommand: "serve" | "layercode serve" = "serve",
+  maxRetries = 3
 ): Promise<{ port: number; cleanup: () => Promise<void> }> => {
-  const port = getNextPort()
-  const args = subcommand === "serve"
-    ? [CLI_PATH, "--cwd", cwd, "serve", "--port", String(port)]
-    : [CLI_PATH, "--cwd", cwd, "layercode", "serve", "--port", String(port), "--no-tunnel"]
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    const port = getRandomPort()
+    const args = subcommand === "serve"
+      ? [CLI_PATH, "--cwd", cwd, "serve", "--port", String(port)]
+      : [CLI_PATH, "--cwd", cwd, "layercode", "serve", "--port", String(port), "--no-tunnel"]
 
-  const proc = spawn("bun", args, {
-    cwd,
-    env: {
-      ...process.env,
-      OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "test-api-key"
-    },
-    stdio: "ignore"
-  })
+    const proc = spawn("bun", args, {
+      cwd,
+      env: {
+        ...process.env,
+        OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "test-api-key"
+      },
+      stdio: "ignore"
+    })
 
-  const cleanup = async () => {
-    if (!proc.killed) {
-      proc.kill("SIGTERM")
-      // Wait for process to actually exit
-      await new Promise<void>((resolve) => {
-        const timeout = setTimeout(() => {
-          proc.kill("SIGKILL")
-          resolve()
-        }, 2000)
-        proc.on("exit", () => {
-          clearTimeout(timeout)
-          resolve()
+    const cleanup = async () => {
+      if (!proc.killed) {
+        proc.kill("SIGTERM")
+        // Wait for process to actually exit
+        await new Promise<void>((resolve) => {
+          const timeout = setTimeout(() => {
+            proc.kill("SIGKILL")
+            resolve()
+          }, 2000)
+          proc.on("exit", () => {
+            clearTimeout(timeout)
+            resolve()
+          })
         })
-      })
-    }
-  }
-
-  // Wait for server to be ready by polling health endpoint
-  for (let i = 0; i < 100; i++) {
-    try {
-      const res = await fetch(`http://localhost:${port}/health`)
-      if (res.ok) {
-        // Small delay to ensure all routes are registered
-        await new Promise((resolve) => setTimeout(resolve, 50))
-        return { port, cleanup }
       }
-    } catch {
-      // Server not ready yet
     }
-    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    // Wait for server to be ready by polling health endpoint
+    for (let i = 0; i < 100; i++) {
+      try {
+        const res = await fetch(`http://localhost:${port}/health`)
+        if (res.ok) {
+          // Small delay to ensure all routes are registered
+          await new Promise((resolve) => setTimeout(resolve, 50))
+          return { port, cleanup }
+        }
+      } catch {
+        // Server not ready yet
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100))
+    }
+
+    // Server didn't start on this port, cleanup and try another
+    await cleanup()
   }
 
-  await cleanup()
-  throw new Error(`Server failed to start on port ${port} after 10 seconds`)
+  throw new Error(`Server failed to start after ${maxRetries} attempts`)
 }
 
 /** Parse SSE stream from response */
