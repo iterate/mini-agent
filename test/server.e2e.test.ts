@@ -6,25 +6,14 @@
  * - LayerCode webhook endpoint
  * - Health check
  *
- * All tests use a mock LLM server for fast, predictable responses.
+ * By default uses mock LLM server. Set USE_REAL_LLM=1 to use real APIs.
  */
 import { Command } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
 import { spawn } from "child_process"
 import { Effect } from "effect"
-import { afterAll, beforeAll, describe } from "vitest"
-import { expect, test } from "./fixtures.js"
-import { type MockLlmServer, startMockLlmServer } from "./mock-llm-server.ts"
-
-let mockLlmServer: MockLlmServer
-
-beforeAll(async () => {
-  mockLlmServer = await startMockLlmServer()
-})
-
-afterAll(async () => {
-  await mockLlmServer?.close()
-})
+import { describe } from "vitest"
+import { expect, type LlmEnv, test } from "./fixtures.js"
 
 // Resolve CLI path relative to this file
 const CLI_PATH = new URL("../src/cli/main.ts", import.meta.url).pathname
@@ -52,19 +41,10 @@ const fetchWithRetry = async (
   throw lastError
 }
 
-const mockLlmEnv = () => ({
-  LLM: JSON.stringify({
-    apiFormat: "openai-responses",
-    model: "mock-model",
-    baseUrl: mockLlmServer.url,
-    apiKeyEnvVar: "MOCK_API_KEY"
-  }),
-  MOCK_API_KEY: "test-key"
-})
-
 /** Start the server in background and return port + cleanup function */
 const startServer = async (
   cwd: string,
+  llmEnv: LlmEnv,
   subcommand: "serve" | "layercode serve" = "serve",
   maxRetries = 3
 ): Promise<{ port: number; cleanup: () => Promise<void> }> => {
@@ -78,7 +58,7 @@ const startServer = async (
       cwd,
       env: {
         ...process.env,
-        ...mockLlmEnv()
+        ...llmEnv
       },
       stdio: "ignore"
     })
@@ -146,8 +126,8 @@ describe("HTTP Server", () => {
       expect(result).toContain("HTTP server")
     })
 
-    test("health endpoint returns ok", { timeout: 30000 }, async ({ testDir }) => {
-      const { cleanup, port } = await startServer(testDir)
+    test("health endpoint returns ok", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
+      const { cleanup, port } = await startServer(testDir, llmEnv)
 
       try {
         const response = await fetchWithRetry(`http://localhost:${port}/health`)
@@ -160,8 +140,8 @@ describe("HTTP Server", () => {
       }
     })
 
-    test("context endpoint processes messages", { timeout: 60000 }, async ({ testDir }) => {
-      const { cleanup, port } = await startServer(testDir)
+    test("context endpoint processes messages", { timeout: 60000 }, async ({ llmEnv, testDir }) => {
+      const { cleanup, port } = await startServer(testDir, llmEnv)
 
       try {
         const response = await fetchWithRetry(`http://localhost:${port}/context/test-context`, {
@@ -184,8 +164,8 @@ describe("HTTP Server", () => {
       }
     })
 
-    test("context endpoint returns 400 for empty body", { timeout: 30000 }, async ({ testDir }) => {
-      const { cleanup, port } = await startServer(testDir)
+    test("context endpoint returns 400 for empty body", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
+      const { cleanup, port } = await startServer(testDir, llmEnv)
 
       try {
         const response = await fetchWithRetry(`http://localhost:${port}/context/test-context`, {
@@ -215,8 +195,8 @@ describe("HTTP Server", () => {
       expect(result).toContain("LayerCode")
     })
 
-    test("health endpoint works with layercode serve", { timeout: 30000 }, async ({ testDir }) => {
-      const { cleanup, port } = await startServer(testDir, "layercode serve")
+    test("health endpoint works with layercode serve", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
+      const { cleanup, port } = await startServer(testDir, llmEnv, "layercode serve")
 
       try {
         const response = await fetchWithRetry(`http://localhost:${port}/health`)
@@ -229,8 +209,8 @@ describe("HTTP Server", () => {
       }
     })
 
-    test("layercode webhook processes message events", { timeout: 60000 }, async ({ testDir }) => {
-      const { cleanup, port } = await startServer(testDir, "layercode serve")
+    test("layercode webhook processes message events", { timeout: 60000 }, async ({ llmEnv, testDir }) => {
+      const { cleanup, port } = await startServer(testDir, llmEnv, "layercode serve")
 
       try {
         const response = await fetchWithRetry(`http://localhost:${port}/layercode/webhook`, {
@@ -260,8 +240,8 @@ describe("HTTP Server", () => {
       }
     })
 
-    test("layercode webhook handles session.start", { timeout: 30000 }, async ({ testDir }) => {
-      const { cleanup, port } = await startServer(testDir, "layercode serve")
+    test("layercode webhook handles session.start", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
+      const { cleanup, port } = await startServer(testDir, llmEnv, "layercode serve")
 
       try {
         const response = await fetchWithRetry(`http://localhost:${port}/layercode/webhook`, {
@@ -284,8 +264,8 @@ describe("HTTP Server", () => {
       }
     })
 
-    test("layercode webhook handles session.end", { timeout: 30000 }, async ({ testDir }) => {
-      const { cleanup, port } = await startServer(testDir, "layercode serve")
+    test("layercode webhook handles session.end", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
+      const { cleanup, port } = await startServer(testDir, llmEnv, "layercode serve")
 
       try {
         const response = await fetchWithRetry(`http://localhost:${port}/layercode/webhook`, {
@@ -303,8 +283,8 @@ describe("HTTP Server", () => {
       }
     })
 
-    test("layercode webhook returns 400 for invalid event", { timeout: 30000 }, async ({ testDir }) => {
-      const { cleanup, port } = await startServer(testDir, "layercode serve")
+    test("layercode webhook returns 400 for invalid event", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
+      const { cleanup, port } = await startServer(testDir, llmEnv, "layercode serve")
 
       try {
         const response = await fetchWithRetry(`http://localhost:${port}/layercode/webhook`, {
@@ -325,23 +305,27 @@ describe("HTTP Server", () => {
 })
 
 describe("Signature Verification", () => {
-  test("accepts request without signature when no secret configured", { timeout: 30000 }, async ({ testDir }) => {
-    const { cleanup, port } = await startServer(testDir, "layercode serve")
+  test(
+    "accepts request without signature when no secret configured",
+    { timeout: 30000 },
+    async ({ llmEnv, testDir }) => {
+      const { cleanup, port } = await startServer(testDir, llmEnv, "layercode serve")
 
-    try {
-      // No layercode-signature header, should still work
-      const response = await fetchWithRetry(`http://localhost:${port}/layercode/webhook`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "session.end",
-          session_id: "test-session"
+      try {
+        // No layercode-signature header, should still work
+        const response = await fetchWithRetry(`http://localhost:${port}/layercode/webhook`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: "session.end",
+            session_id: "test-session"
+          })
         })
-      })
 
-      expect(response.status).toBe(200)
-    } finally {
-      await cleanup()
+        expect(response.status).toBe(200)
+      } finally {
+        await cleanup()
+      }
     }
-  })
+  )
 })

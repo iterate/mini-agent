@@ -3,41 +3,22 @@
  *
  * Uses tuistory to test the interactive TTY mode of the CLI.
  * Tests spawn a real PTY and interact with the CLI like a real terminal.
- * All tests use a mock LLM server for fast, predictable responses.
+ *
+ * By default uses mock LLM server. Set USE_REAL_LLM=1 to use real APIs.
  */
 import { Effect } from "effect"
 import { resolve } from "node:path"
 import { launchTerminal } from "tuistory"
-import { afterAll, beforeAll, describe } from "vitest"
+import { describe } from "vitest"
 
-import { expect, runCli, test } from "./fixtures.ts"
-import { type MockLlmServer, startMockLlmServer } from "./mock-llm-server.ts"
+import { expect, type LlmEnv, runCli, test } from "./fixtures.ts"
 
 const CLI_PATH = resolve(__dirname, "../src/cli/main.ts")
 
-let mockServer: MockLlmServer
-
-beforeAll(async () => {
-  mockServer = await startMockLlmServer()
-})
-
-afterAll(async () => {
-  await mockServer?.close()
-})
-
-const mockLlmEnv = () => ({
-  LLM: JSON.stringify({
-    apiFormat: "openai-responses",
-    model: "mock-model",
-    baseUrl: mockServer.url,
-    apiKeyEnvVar: "MOCK_API_KEY"
-  }),
-  MOCK_API_KEY: "test-key"
-})
-
-const testEnv = () => ({
+/** Build env for TTY session with LLM config and terminal settings */
+const testEnv = (llmEnv: LlmEnv) => ({
   ...process.env,
-  ...mockLlmEnv(),
+  ...llmEnv,
   TERM: "xterm-256color"
 })
 
@@ -46,13 +27,13 @@ describe("TTY Interactive Mode", () => {
   // UI-only tests (no LLM needed, fast)
   // ============================================
 
-  test("shows context selection when no contexts exist", { timeout: 15000 }, async ({ testDir }) => {
+  test("shows context selection when no contexts exist", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat"],
       cols: 100,
       rows: 30,
-      env: testEnv()
+      env: testEnv(llmEnv)
     })
 
     try {
@@ -64,13 +45,13 @@ describe("TTY Interactive Mode", () => {
     }
   })
 
-  test("exits cleanly with Ctrl+C", { timeout: 8000 }, async ({ testDir }) => {
+  test("exits cleanly with Ctrl+C", { timeout: 8000 }, async ({ llmEnv, testDir }) => {
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat", "-n", "exit-test"],
       cols: 100,
       rows: 30,
-      env: testEnv()
+      env: testEnv(llmEnv)
     })
 
     try {
@@ -82,14 +63,14 @@ describe("TTY Interactive Mode", () => {
     }
   })
 
-  test("shows context name in footer", { timeout: 10000 }, async ({ testDir }) => {
+  test("shows context name in footer", { timeout: 10000 }, async ({ llmEnv, testDir }) => {
     const contextName = "my-special-context"
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat", "-n", contextName],
       cols: 100,
       rows: 30,
-      env: testEnv()
+      env: testEnv(llmEnv)
     })
 
     try {
@@ -102,13 +83,13 @@ describe("TTY Interactive Mode", () => {
     }
   })
 
-  test("empty return when idle does nothing", { timeout: 10000 }, async ({ testDir }) => {
+  test("empty return when idle does nothing", { timeout: 10000 }, async ({ llmEnv, testDir }) => {
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat", "-n", "empty-idle-test"],
       cols: 100,
       rows: 30,
-      env: testEnv()
+      env: testEnv(llmEnv)
     })
 
     try {
@@ -127,9 +108,9 @@ describe("TTY Interactive Mode", () => {
   // Tests needing context creation (uses mock LLM)
   // ============================================
 
-  test("shows context selector when contexts exist", { timeout: 15000 }, async ({ testDir }) => {
+  test("shows context selector when contexts exist", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
     await Effect.runPromise(
-      runCli(["chat", "-n", "existing-context", "-m", "hello"], { cwd: testDir, env: mockLlmEnv() })
+      runCli(["chat", "-n", "existing-context", "-m", "hello"], { cwd: testDir, env: llmEnv })
     )
 
     const session = await launchTerminal({
@@ -137,7 +118,7 @@ describe("TTY Interactive Mode", () => {
       args: [CLI_PATH, "--cwd", testDir, "chat"],
       cols: 100,
       rows: 30,
-      env: testEnv()
+      env: testEnv(llmEnv)
     })
 
     try {
@@ -149,16 +130,16 @@ describe("TTY Interactive Mode", () => {
     }
   })
 
-  test("arrow key navigation in context selector", { timeout: 15000 }, async ({ testDir }) => {
-    await Effect.runPromise(runCli(["chat", "-n", "context-alpha", "-m", "hello"], { cwd: testDir, env: mockLlmEnv() }))
-    await Effect.runPromise(runCli(["chat", "-n", "context-beta", "-m", "hello"], { cwd: testDir, env: mockLlmEnv() }))
+  test("arrow key navigation in context selector", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
+    await Effect.runPromise(runCli(["chat", "-n", "context-alpha", "-m", "hello"], { cwd: testDir, env: llmEnv }))
+    await Effect.runPromise(runCli(["chat", "-n", "context-beta", "-m", "hello"], { cwd: testDir, env: llmEnv }))
 
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat"],
       cols: 100,
       rows: 30,
-      env: testEnv()
+      env: testEnv(llmEnv)
     })
 
     try {
@@ -178,13 +159,13 @@ describe("TTY Interactive Mode", () => {
   // Streaming tests (use mock LLM)
   // ============================================
 
-  test("can type and send a message", { timeout: 15000 }, async ({ testDir }) => {
+  test("can type and send a message", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat", "-n", "test-chat"],
       cols: 100,
       rows: 30,
-      env: testEnv()
+      env: testEnv(llmEnv)
     })
 
     try {
@@ -200,13 +181,13 @@ describe("TTY Interactive Mode", () => {
     }
   })
 
-  test("interrupts streaming with return key", { timeout: 15000 }, async ({ testDir }) => {
+  test("interrupts streaming with return key", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat", "-n", "interrupt-test"],
       cols: 100,
       rows: 30,
-      env: testEnv()
+      env: testEnv(llmEnv)
     })
 
     try {
@@ -225,9 +206,9 @@ describe("TTY Interactive Mode", () => {
     }
   })
 
-  test("continues existing conversation with history display", { timeout: 15000 }, async ({ testDir }) => {
+  test("continues existing conversation with history display", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
     await Effect.runPromise(
-      runCli(["chat", "-n", "history-test", "-m", "Say exactly: FIRST_MESSAGE_OK"], { cwd: testDir, env: mockLlmEnv() })
+      runCli(["chat", "-n", "history-test", "-m", "Say exactly: FIRST_MESSAGE_OK"], { cwd: testDir, env: llmEnv })
     )
 
     const session = await launchTerminal({
@@ -235,7 +216,7 @@ describe("TTY Interactive Mode", () => {
       args: [CLI_PATH, "--cwd", testDir, "chat", "-n", "history-test"],
       cols: 100,
       rows: 30,
-      env: testEnv()
+      env: testEnv(llmEnv)
     })
 
     try {
@@ -250,13 +231,13 @@ describe("TTY Interactive Mode", () => {
     }
   })
 
-  test("footer shows 'Return to interrupt' during streaming", { timeout: 15000 }, async ({ testDir }) => {
+  test("footer shows 'Return to interrupt' during streaming", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat", "-n", "footer-test"],
       cols: 100,
       rows: 30,
-      env: testEnv()
+      env: testEnv(llmEnv)
     })
 
     try {
@@ -273,13 +254,13 @@ describe("TTY Interactive Mode", () => {
     }
   })
 
-  test("shows 'Thinking...' before text starts streaming", { timeout: 15000 }, async ({ testDir }) => {
+  test("shows 'Thinking...' before text starts streaming", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat", "-n", "thinking-test"],
       cols: 100,
       rows: 30,
-      env: testEnv()
+      env: testEnv(llmEnv)
     })
 
     try {
@@ -294,13 +275,13 @@ describe("TTY Interactive Mode", () => {
     }
   })
 
-  test("empty return during streaming cancels without new message", { timeout: 15000 }, async ({ testDir }) => {
+  test("empty return during streaming cancels without new message", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat", "-n", "empty-return-test"],
       cols: 100,
       rows: 30,
-      env: testEnv()
+      env: testEnv(llmEnv)
     })
 
     try {

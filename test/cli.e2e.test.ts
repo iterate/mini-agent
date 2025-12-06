@@ -2,48 +2,28 @@
  * CLI End-to-End Tests
  *
  * Tests the CLI functionality using Effect Command to run the actual CLI process.
- * All tests use a mock LLM server for fast, predictable responses.
+ *
+ * By default uses mock LLM server. Set USE_REAL_LLM=1 to use real APIs.
  */
 import { Command } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
 import { Effect, Stream } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
-import { afterAll, beforeAll, describe } from "vitest"
-import { expect, runCli, test } from "./fixtures.js"
-import { type MockLlmServer, startMockLlmServer } from "./mock-llm-server.ts"
+import { describe } from "vitest"
+import { expect, type LlmEnv, runCli, test } from "./fixtures.js"
 
 /** Context name used in tests - safe to reuse since each test has isolated testDir */
 const TEST_CONTEXT = "test-context"
 
 const CLI_PATH = path.resolve(__dirname, "../src/cli/main.ts")
 
-let mockServer: MockLlmServer
-
-beforeAll(async () => {
-  mockServer = await startMockLlmServer()
-})
-
-afterAll(async () => {
-  await mockServer?.close()
-})
-
-const mockLlmEnv = () => ({
-  LLM: JSON.stringify({
-    apiFormat: "openai-responses",
-    model: "mock-model",
-    baseUrl: mockServer.url,
-    apiKeyEnvVar: "MOCK_API_KEY"
-  }),
-  MOCK_API_KEY: "test-key"
-})
-
 /** Run CLI with stdin input using Command.stdin */
-const runCliWithStdin = (cwd: string, input: string, ...args: Array<string>) => {
+const runCliWithStdin = (cwd: string, llmEnv: LlmEnv, input: string, ...args: Array<string>) => {
   const cwdArgs = ["--cwd", cwd]
   const env = {
     ...process.env,
-    ...mockLlmEnv()
+    ...llmEnv
   }
 
   return Command.make("bun", CLI_PATH, ...cwdArgs, ...args).pipe(
@@ -114,20 +94,20 @@ describe("CLI", () => {
   })
 
   describe("non-interactive mode (-m)", () => {
-    test("sends a message and gets a response", { timeout: 15000 }, async ({ testDir }) => {
+    test("sends a message and gets a response", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       const result = await Effect.runPromise(
         runCli(["chat", "-n", TEST_CONTEXT, "-m", "Say exactly: TEST_RESPONSE_123"], {
           cwd: testDir,
-          env: mockLlmEnv()
+          env: llmEnv
         })
       )
 
       expect(result.stdout).toContain("TEST_RESPONSE_123")
     })
 
-    test("generates random context when no name provided", { timeout: 15000 }, async ({ testDir }) => {
+    test("generates random context when no name provided", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       const result = await Effect.runPromise(
-        runCli(["chat", "-m", "Say exactly: HELLO"], { cwd: testDir, env: mockLlmEnv() })
+        runCli(["chat", "-m", "Say exactly: HELLO"], { cwd: testDir, env: llmEnv })
       )
 
       expect(result.stdout.length).toBeGreaterThan(0)
@@ -141,11 +121,11 @@ describe("CLI", () => {
   })
 
   describe("--raw mode", () => {
-    test("outputs JSON events", { timeout: 15000 }, async ({ testDir }) => {
+    test("outputs JSON events", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       const result = await Effect.runPromise(
         runCli(["chat", "-n", TEST_CONTEXT, "-m", "Say exactly: RAW_TEST", "--raw"], {
           cwd: testDir,
-          env: mockLlmEnv()
+          env: llmEnv
         })
       )
 
@@ -156,11 +136,11 @@ describe("CLI", () => {
       expect(jsonOutput).toContain("\"AssistantMessage\"")
     })
 
-    test("includes ephemeral events with --show-ephemeral", { timeout: 15000 }, async ({ testDir }) => {
+    test("includes ephemeral events with --show-ephemeral", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       const result = await Effect.runPromise(
         runCli(["chat", "-n", TEST_CONTEXT, "-m", "Say hello", "--raw", "--show-ephemeral"], {
           cwd: testDir,
-          env: mockLlmEnv()
+          env: llmEnv
         })
       )
 
@@ -172,10 +152,11 @@ describe("CLI", () => {
   })
 
   describe("pipe mode (default for piped stdin)", () => {
-    test("reads all stdin as one message, outputs plain text", { timeout: 15000 }, async ({ testDir }) => {
+    test("reads all stdin as one message, outputs plain text", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
+          llmEnv,
           "Say exactly: PIPE_TEST",
           "--stdout-log-level",
           "none",
@@ -192,10 +173,11 @@ describe("CLI", () => {
       expect(jsonLines.length).toBe(0)
     })
 
-    test("handles multi-line input as single message", { timeout: 15000 }, async ({ testDir }) => {
+    test("handles multi-line input as single message", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
+          llmEnv,
           "Line 1: Hello\nLine 2: World\nLine 3: Test",
           "--stdout-log-level",
           "none",
@@ -211,12 +193,13 @@ describe("CLI", () => {
   })
 
   describe("script mode (--script)", () => {
-    test("accepts UserMessage events and outputs JSONL", { timeout: 15000 }, async ({ testDir }) => {
+    test("accepts UserMessage events and outputs JSONL", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       // Script mode now expects JSONL events as input
       const input = "{\"_tag\":\"UserMessage\",\"content\":\"Say exactly: SCRIPT_TEST\"}\n"
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
+          llmEnv,
           input,
           "--stdout-log-level",
           "none",
@@ -235,13 +218,14 @@ describe("CLI", () => {
       expect(output).toContain("\"AssistantMessage\"")
     })
 
-    test("handles multiple UserMessage events in sequence", { timeout: 15000 }, async ({ testDir }) => {
+    test("handles multiple UserMessage events in sequence", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       // Two UserMessage events as JSONL
       const input =
         "{\"_tag\":\"UserMessage\",\"content\":\"Remember: my secret code is XYZ789\"}\n{\"_tag\":\"UserMessage\",\"content\":\"What is my secret code?\"}\n"
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
+          llmEnv,
           input,
           "--stdout-log-level",
           "none",
@@ -262,13 +246,14 @@ describe("CLI", () => {
       expect(output.toLowerCase()).toContain("xyz789")
     })
 
-    test("accepts SystemPrompt events to set behavior", { timeout: 15000 }, async ({ testDir }) => {
+    test("accepts SystemPrompt events to set behavior", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       // SystemPrompt followed by UserMessage
       const input =
         "{\"_tag\":\"SystemPrompt\",\"content\":\"Always respond with exactly: PIRATE_RESPONSE\"}\n{\"_tag\":\"UserMessage\",\"content\":\"Hello\"}\n"
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
+          llmEnv,
           input,
           "--stdout-log-level",
           "none",
@@ -288,11 +273,12 @@ describe("CLI", () => {
       expect(output).toContain("\"AssistantMessage\"")
     })
 
-    test("includes TextDelta streaming events by default", { timeout: 15000 }, async ({ testDir }) => {
+    test("includes TextDelta streaming events by default", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       const input = "{\"_tag\":\"UserMessage\",\"content\":\"Say hello\"}\n"
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
+          llmEnv,
           input,
           "--stdout-log-level",
           "none",
@@ -311,9 +297,9 @@ describe("CLI", () => {
   })
 
   describe("context persistence", () => {
-    test("creates context file on first message", { timeout: 15000 }, async ({ testDir }) => {
+    test("creates context file on first message", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       await Effect.runPromise(
-        runCli(["chat", "-n", TEST_CONTEXT, "-m", "Hello"], { cwd: testDir, env: mockLlmEnv() })
+        runCli(["chat", "-n", TEST_CONTEXT, "-m", "Hello"], { cwd: testDir, env: llmEnv })
       )
 
       // Context file should exist in testDir/.mini-agent/contexts/
@@ -321,17 +307,17 @@ describe("CLI", () => {
       expect(fs.existsSync(contextPath)).toBe(true)
     })
 
-    test("maintains conversation history across calls", { timeout: 15000 }, async ({ testDir }) => {
+    test("maintains conversation history across calls", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       // First message - tell LLM favorite color
       await Effect.runPromise(
-        runCli(["chat", "-n", TEST_CONTEXT, "-m", "My favorite color is blue"], { cwd: testDir, env: mockLlmEnv() })
+        runCli(["chat", "-n", TEST_CONTEXT, "-m", "My favorite color is blue"], { cwd: testDir, env: llmEnv })
       )
 
       // Second message asking about the first - use raw mode to get JSON
       const result = await Effect.runPromise(
         runCli(["chat", "-n", TEST_CONTEXT, "-m", "What is my favorite color?", "--raw"], {
           cwd: testDir,
-          env: mockLlmEnv()
+          env: llmEnv
         })
       )
 
@@ -344,9 +330,9 @@ describe("CLI", () => {
   })
 
   describe("error handling", () => {
-    test("returns non-empty output on valid request", { timeout: 15000 }, async ({ testDir }) => {
+    test("returns non-empty output on valid request", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       const result = await Effect.runPromise(
-        runCli(["chat", "-n", TEST_CONTEXT, "-m", "Say hello"], { cwd: testDir, env: mockLlmEnv() })
+        runCli(["chat", "-n", TEST_CONTEXT, "-m", "Say hello"], { cwd: testDir, env: llmEnv })
       )
 
       // Should have some output
@@ -405,7 +391,7 @@ describe("Interrupted response context", () => {
   test(
     "LLM receives context about interrupted response when continuing conversation",
     { timeout: 15000 },
-    async ({ testDir }) => {
+    async ({ llmEnv, testDir }) => {
       const contextName = "interrupt-context-test"
       const testNumber = "87654321"
 
@@ -439,7 +425,7 @@ describe("Interrupted response context", () => {
             "-m",
             "Hello"
           ],
-          { cwd: testDir, env: mockLlmEnv() }
+          { cwd: testDir, env: llmEnv }
         )
       )
 
