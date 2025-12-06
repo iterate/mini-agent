@@ -70,21 +70,21 @@ Key insight: `Mailbox.offer` broadcasts to ALL current subscribers via `Stream.b
 
 These are stateless domain services:
 
-**Agent** - LLM execution with retry and fallback
+**MiniAgentTurn** - LLM execution with retry and fallback
 ```typescript
-class Agent extends Effect.Service<Agent>()("@app/Agent", {
+class MiniAgentTurn extends Effect.Service<MiniAgentTurn>()("@mini-agent/MiniAgentTurn", {
   effect: Effect.gen(function*() {
     // Implementation with dependencies
   }),
   dependencies: [/* dependencies */]
 }) {
-  readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError>
+  readonly execute: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError>
 }
 ```
 
 **EventReducer** - Folds events into ReducedContext (including config from events)
 ```typescript
-class EventReducer extends Effect.Service<EventReducer>()("@app/EventReducer", {
+class EventReducer extends Effect.Service<EventReducer>()("@mini-agent/EventReducer", {
   effect: Effect.gen(function*() {
     // Implementation
   }),
@@ -97,7 +97,7 @@ class EventReducer extends Effect.Service<EventReducer>()("@app/EventReducer", {
 
 **EventStore** - Pluggable event persistence
 ```typescript
-class EventStore extends Effect.Service<EventStore>()("@app/EventStore", {
+class EventStore extends Effect.Service<EventStore>()("@mini-agent/EventStore", {
   effect: Effect.gen(function*() {
     // YAML file implementation
   }),
@@ -126,31 +126,32 @@ All actor internal state is derived from events via the reducer. ReducedContext 
 
 The reducer is a pure function: `(events) → ReducedContext`. Actor holds events + reducedContext only.
 
-### Actor Service
+### Actor Interface
 
-**MiniAgent** - Per-agent orchestrator
+**MiniAgent** - Per-agent orchestrator interface
 
 The actor manages a single agent's lifecycle. It uses all core services internally.
 
+MiniAgent is NOT a service - it's an interface returned by `AgentRegistry.getOrCreate()`:
+
 ```typescript
-class MiniAgent extends Effect.Service<MiniAgent>()("@app/MiniAgent", {
-  effect: (agentName: AgentName) => Effect.gen(function*() {
-    const agent = yield* Agent
-    const reducer = yield* EventReducer
-    const store = yield* EventStore
-    // Implementation using dependencies
-  }),
-  dependencies: [Agent, EventReducer, EventStore]
-}) {
+interface MiniAgent {
   readonly agentName: AgentName
   readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentError>
   readonly events: Stream.Stream<ContextEvent, never>  // Live broadcast
   readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>  // Historical
   readonly getReducedContext: Effect.Effect<ReducedContext>  // Current derived state
   readonly shutdown: Effect.Effect<void>
-
-  static readonly make: (agentName: AgentName) => Layer.Layer<MiniAgent, MiniAgentError, Agent | EventReducer | EventStore>
 }
+
+// Created internally by AgentRegistry using:
+const makeMiniAgent = (agentName: AgentName): Effect.Effect<MiniAgent, MiniAgentError, MiniAgentTurn | EventReducer | EventStore> =>
+  Effect.gen(function*() {
+    const turn = yield* MiniAgentTurn
+    const reducer = yield* EventReducer
+    const store = yield* EventStore
+    // Implementation using dependencies
+  })
 ```
 
 Implementation pattern (Mailbox + broadcastDynamic):
@@ -167,11 +168,11 @@ const broadcast = yield* Stream.broadcastDynamic(Mailbox.toStream(mailbox), {
 
 **AgentRegistry** - Manages multiple agents (public API)
 ```typescript
-class AgentRegistry extends Effect.Service<AgentRegistry>()("@app/AgentRegistry", {
+class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/AgentRegistry", {
   effect: Effect.gen(function*() {
     // Implementation manages map of MiniAgent instances
   }),
-  dependencies: [Agent, EventReducer, EventStore]
+  dependencies: [MiniAgentTurn, EventReducer, EventStore]
 }) {
   readonly getOrCreate: (agentName: AgentName) => Effect.Effect<MiniAgent, MiniAgentError>
   readonly get: (agentName: AgentName) => Effect.Effect<MiniAgent, AgentNotFoundError>
@@ -197,7 +198,7 @@ class AgentRegistry extends Effect.Service<AgentRegistry>()("@app/AgentRegistry"
 1. 100ms debounce timer fires (no new triggering events for 100ms)
 2. Emit `AgentTurnStartedEvent` → persist → reduce → broadcast
 3. Read current `reducedContext` (already up-to-date from addEvent flow)
-4. Call `Agent.takeTurn(reducedContext)`
+4. Call `MiniAgentTurn.execute(reducedContext)`
 5. Stream `TextDeltaEvent` → broadcast (each chunk, not persisted)
 6. On completion: emit `AssistantMessageEvent` → persist → reduce → broadcast
 7. Emit `AgentTurnCompletedEvent` → persist → reduce → broadcast
@@ -268,7 +269,7 @@ Layer.scoped(MiniAgent, Effect.gen(function*() {
 ```typescript
 // Production - Effect.Service auto-generates .Default layer with dependencies
 const MainLayer = AgentRegistry.Default
-// Includes: AgentRegistry + Agent + EventReducer + EventStore (YAML)
+// Includes: AgentRegistry + MiniAgentTurn + EventReducer + EventStore (YAML)
 
 // Tests - Replace EventStore with in-memory implementation
 const TestLayer = Layer.provide(
@@ -276,8 +277,8 @@ const TestLayer = Layer.provide(
   EventStoreInMemory
 )
 // Alternative test layers use Layer.succeed for mocks:
-const MockAgentLayer = Layer.succeed(Agent, {
-  takeTurn: (ctx) => Stream.make(/* mock events */)
+const MockTurnLayer = Layer.succeed(MiniAgentTurn, {
+  execute: (ctx) => Stream.make(/* mock events */)
 })
 ```
 

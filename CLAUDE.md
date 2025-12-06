@@ -65,7 +65,7 @@ Also make sure to amend the pull request description using the `gh` utility each
 Use `Effect.Service` for service definitions. It combines tag, implementation, and layer generation:
 
 ```typescript
-class MyService extends Effect.Service<MyService>()("@app/MyService", {
+class MyService extends Effect.Service<MyService>()("@mini-agent/MyService", {
   effect: Effect.gen(function*() {
     const dep = yield* SomeDependency
     return {
@@ -83,7 +83,7 @@ Effect.provide(program, MyService.Default)
 For simple services without dependencies:
 
 ```typescript
-class Config extends Effect.Service<Config>()("@app/Config", {
+class Config extends Effect.Service<Config>()("@mini-agent/Config", {
   sync: () => ({
     logLevel: "info",
     apiUrl: "https://api.example.com"
@@ -99,7 +99,7 @@ const MyServiceTest = Layer.succeed(MyService, {
 })
 ```
 
-**Tag identifiers** use package-scoped names: `@app/ServiceName` or `@app/path/ServiceName`
+**Tag identifiers** use package-scoped names: `@mini-agent/ServiceName`
 
 ## Prefer Schema Over Plain Types
 

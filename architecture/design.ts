@@ -1,15 +1,13 @@
 /**
  * Complete type definitions for the MiniAgent Architecture.
- * Service interfaces only - no implementations.
  *
- * Uses Effect.Service pattern for service definitions with placeholder implementations.
- * Real implementations provide Service.Default layers in their respective modules.
+ * Uses Effect.Service pattern for singleton services.
+ * MiniAgent is NOT a service - it's an interface for agent instances managed by AgentRegistry.
  *
  * Philosophy: "Agent events are all you need"
  * - Everything the agent does is driven by events
  * - Events reduce to state, state drives the agent
  * - Configuration comes from events (SetLlmConfigEvent, etc.)
- * - Future: tools, workflows, everything defined via events
  *
  * Key design decisions:
  * - All events share BaseEventFields (id, timestamp, agentName, triggersAgentTurn, parentEventId)
@@ -18,34 +16,46 @@
  * - Uses @effect/ai Prompt.Message for LLM messages (not custom types)
  * - Single ContextEvent union - no InputEvent/StreamEvent distinction
  *
- * Conceptual Model:
- * - ContextEvent: An event in a context (unit of state change)
- * - Context: A list of ContextEvents (the event log)
- * - ReducedContext: ALL actor state derived from events (messages, config, internal state)
- * - MiniAgent: Has agentName, stores events, runs reducer, calls Agent when needed
+ * Services (Effect.Service singletons):
+ * - MiniAgentTurn: Executes LLM requests
+ * - EventReducer: Folds events into ReducedContext
+ * - EventStore: Persists events
+ * - AgentRegistry: Creates/manages MiniAgent instances
+ *
+ * MiniAgent (interface, not service):
+ * - Represents a single agent instance with its own event log
+ * - Created by AgentRegistry.getOrCreate()
+ * - Has agentName, addEvent, events stream, getEvents, shutdown
  */
 
 import type { Prompt } from "@effect/ai"
-import { Context, Duration, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { Duration, Effect, Fiber, Option, Schema, Stream } from "effect"
 
+/** Identity of an agent (e.g., "chat", "assistant") */
 export const AgentName = Schema.String.pipe(Schema.brand("AgentName"))
 export type AgentName = typeof AgentName.Type
+
+/**
+ * Identity of an event log (e.g., "chat-v1", "chat-2024-01-15").
+ * A Context is a named, ordered list of events.
+ * Agents can switch contexts without callers knowing (see future: context bricking).
+ */
+export const ContextName = Schema.String.pipe(Schema.brand("ContextName"))
+export type ContextName = typeof ContextName.Type
 
 export const LlmProviderId = Schema.String.pipe(Schema.brand("LlmProviderId"))
 export type LlmProviderId = typeof LlmProviderId.Type
 
 /**
- * Globally unique event identifier with format: {agentName}:{counter}
- * Examples: "chat:0001", "chat:0002", "assistant:0001"
- *
- * This enables globally unique event references across all agents.
- * The counter is sequential within each agent.
+ * Globally unique event identifier with format: {contextName}:{counter}
+ * Examples: "chat-v1:0001", "chat-v1:0002"
+ * Counter is sequential within each context.
  */
 export const EventId = Schema.String.pipe(Schema.brand("EventId"))
 export type EventId = typeof EventId.Type
 
-export const makeEventId = (agentName: AgentName, counter: number): EventId =>
-  `${agentName}:${String(counter).padStart(4, "0")}` as EventId
+export const makeEventId = (contextName: ContextName, counter: number): EventId =>
+  `${contextName}:${String(counter).padStart(4, "0")}` as EventId
 
 export const AgentTurnNumber = Schema.Number.pipe(Schema.brand("AgentTurnNumber"))
 export type AgentTurnNumber = typeof AgentTurnNumber.Type
@@ -109,9 +119,9 @@ export const ReducedContext = {
   isAgentTurnInProgress: (ctx: ReducedContext): boolean =>
     Option.isSome(ctx.agentTurnStartedAtEventId),
 
-  /** Get the next EventId for this agent */
-  nextEventId: (ctx: ReducedContext, agentName: AgentName): EventId =>
-    makeEventId(agentName, ctx.nextEventNumber),
+  /** Get the next EventId for this context */
+  nextEventId: (ctx: ReducedContext, contextName: ContextName): EventId =>
+    makeEventId(contextName, ctx.nextEventNumber),
 
   /** Get parent event ID for new events (links to turn start) */
   parentEventId: (ctx: ReducedContext): Option.Option<EventId> =>
@@ -293,38 +303,37 @@ export class AgentNotFoundError extends Schema.TaggedError<AgentNotFoundError>()
   }
 ) {}
 
-export class AgentLoadError extends Schema.TaggedError<AgentLoadError>()(
-  "AgentLoadError",
+export class ContextLoadError extends Schema.TaggedError<ContextLoadError>()(
+  "ContextLoadError",
   {
-    agentName: AgentName,
+    contextName: ContextName,
     message: Schema.String,
     cause: Schema.optionalWith(Schema.Defect, { as: "Option" })
   }
 ) {}
 
-export class AgentSaveError extends Schema.TaggedError<AgentSaveError>()(
-  "AgentSaveError",
+export class ContextSaveError extends Schema.TaggedError<ContextSaveError>()(
+  "ContextSaveError",
   {
-    agentName: AgentName,
+    contextName: ContextName,
     message: Schema.String,
     cause: Schema.optionalWith(Schema.Defect, { as: "Option" })
   }
 ) {}
 
-export const MiniAgentError = Schema.Union(AgentNotFoundError, AgentLoadError, AgentSaveError)
+export const MiniAgentError = Schema.Union(AgentNotFoundError, ContextLoadError, ContextSaveError)
 export type MiniAgentError = typeof MiniAgentError.Type
 
 /**
- * Agent service - makes LLM requests with retry and fallback.
- * Executes agent turns using config from ReducedContext, returns event stream.
- *
- * Real implementation provides Agent.Default layer.
+ * MiniAgentTurn executes a single agent turn (LLM request).
+ * Takes ReducedContext, returns stream of events (TextDelta, AssistantMessage).
+ * Handles retry with exponential backoff and fallback to secondary provider.
  */
-export class Agent extends Effect.Service<Agent>()("@app/Agent", {
+export class MiniAgentTurn extends Effect.Service<MiniAgentTurn>()("@mini-agent/MiniAgentTurn", {
   effect: Effect.die("Not implemented"),
   accessors: true
 }) {
-  readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError> =
+  readonly execute: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError> =
     undefined as never
 }
 
@@ -339,7 +348,7 @@ export class Agent extends Effect.Service<Agent>()("@app/Agent", {
  *
  * Real implementation provides EventReducer.Default layer.
  */
-export class EventReducer extends Effect.Service<EventReducer>()("@app/EventReducer", {
+export class EventReducer extends Effect.Service<EventReducer>()("@mini-agent/EventReducer", {
   effect: Effect.die("Not implemented"),
   accessors: true
 }) {
@@ -352,84 +361,59 @@ export class EventReducer extends Effect.Service<EventReducer>()("@app/EventRedu
 }
 
 /**
- * EventStore persists agent events.
+ * EventStore persists context events.
+ * A context is a named list of events - the store deals in ContextName, not AgentName.
  * Pluggable: YamlFileStore (disk), InMemoryStore (tests), PostgresStore (future).
- *
- * Real implementations provide:
- * - EventStore.YamlFile layer (disk persistence)
- * - EventStore.InMemory layer (tests)
- * - EventStore.Default layer (defaults to YamlFile)
  */
-export class EventStore extends Effect.Service<EventStore>()("@app/EventStore", {
+export class EventStore extends Effect.Service<EventStore>()("@mini-agent/EventStore", {
   effect: Effect.die("Not implemented"),
   accessors: true
 }) {
-  readonly load: (name: AgentName) => Effect.Effect<ReadonlyArray<ContextEvent>, AgentLoadError> =
+  readonly load: (contextName: ContextName) => Effect.Effect<ReadonlyArray<ContextEvent>, ContextLoadError> =
     undefined as never
-  readonly append: (name: AgentName, events: ReadonlyArray<ContextEvent>) => Effect.Effect<void, AgentSaveError> =
+  readonly append: (contextName: ContextName, events: ReadonlyArray<ContextEvent>) => Effect.Effect<void, ContextSaveError> =
     undefined as never
-  readonly exists: (name: AgentName) => Effect.Effect<boolean> = undefined as never
+  readonly exists: (contextName: ContextName) => Effect.Effect<boolean> = undefined as never
 }
 
 /**
- * MiniAgent represents a single agent as an actor.
+ * MiniAgent is a single agent instance (NOT a service).
+ * Created and managed by AgentRegistry.getOrCreate().
  *
- * State: agentName + events (event log) + reducedContext (derived via reducer)
+ * Has agentName (identity) and contextName (where events are stored).
+ * These are separate so agents can switch contexts (see future: context bricking).
  *
- * Behavior:
- * - Stores events, runs reducer to derive state
- * - Calls Agent service when event has triggersAgentTurn=true (100ms debounce)
- * - Broadcasts events to subscribers (Mailbox + Stream.broadcastDynamic)
- *
- * Implementation: Mailbox for input, Stream.broadcastDynamic for fan-out.
+ * Implementation uses: Mailbox for input, Stream.broadcastDynamic for fan-out.
  * Late subscribers miss historical events (use getEvents for history).
- * Scoped lifecycle - shutdown when scope closes.
  */
-export class MiniAgent extends Context.Tag("@app/MiniAgent")<
-  MiniAgent,
-  {
-    readonly agentName: AgentName
+export interface MiniAgent {
+  readonly agentName: AgentName
+  readonly contextName: ContextName
 
-    /**
-     * Add event: persist → update state → broadcast → maybe trigger agent turn (100ms debounce).
-     */
-    readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentError>
+  /** Add event: persist → update state → broadcast → maybe trigger turn (100ms debounce) */
+  readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentError>
 
-    /**
-     * LIVE event stream - each execution creates new subscriber.
-     * Late subscribers miss historical events (use getEvents for history).
-     */
-    readonly events: Stream.Stream<ContextEvent, never>
+  /** LIVE event stream - each call creates new subscriber. Late subscribers miss history. */
+  readonly events: Stream.Stream<ContextEvent, never>
 
-    /** Get all events from in-memory state (for historical events) */
-    readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
+  /** Get all events from in-memory state (for historical events) */
+  readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
 
-    /** Get current derived state */
-    readonly getReducedContext: Effect.Effect<ReducedContext>
+  /** Get current derived state */
+  readonly getReducedContext: Effect.Effect<ReducedContext>
 
-    /** Gracefully shutdown: complete in-flight work, emit SessionEndedEvent, close streams */
-    readonly shutdown: Effect.Effect<void>
-  }
->() {
-  /**
-   * Create agent instance (scoped layer, manages lifecycle).
-   * EventStore injected: yamlFileLayer (prod), inMemoryLayer (tests).
-   */
-  static readonly make: (
-    agentName: AgentName
-  ) => Layer.Layer<MiniAgent, MiniAgentError, Agent | EventReducer | EventStore> =
-    undefined as never
+  /** Gracefully shutdown: complete in-flight work, emit SessionEndedEvent, close streams */
+  readonly shutdown: Effect.Effect<void>
 }
 
 /**
- * AgentRegistry manages multiple MiniAgent instances.
- * Lazy creation, caching, routing, graceful shutdown.
+ * AgentRegistry manages MiniAgent instances.
+ * Creates agents on demand, caches them, handles graceful shutdown.
  * Future: replace with @effect/cluster Sharding.
  *
- * Real implementation provides AgentRegistry.Default layer.
- * Dependencies: Agent | EventReducer | EventStore
+ * Dependencies: MiniAgentTurn, EventReducer, EventStore
  */
-export class AgentRegistry extends Effect.Service<AgentRegistry>()("@app/AgentRegistry", {
+export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/AgentRegistry", {
   effect: Effect.die("Not implemented"),
   accessors: true
 }) {

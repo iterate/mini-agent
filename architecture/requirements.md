@@ -8,11 +8,14 @@ Philosophy: **"Agent events are all you need"** - Everything the agent does is d
 
 ### Conceptual Model
 
+- **AgentName**: Identity of an agent (e.g., "chat") - stable reference for callers
+- **ContextName**: Identity of an event log (e.g., "chat-v1") - where events are stored
 - **ContextEvent**: An event in a context (user message, assistant response, config change, lifecycle event)
-- **Context**: A list of ContextEvents - the event log that records everything that happened
+- **Context**: A named list of ContextEvents - identified by ContextName
 - **ReducedContext**: ALL derived state computed by the reducer from Context events
 - **Reducer**: Pure function that derives everything from events (messages, config, counters, flags)
-- **MiniAgent**: The actor - state = events (context) + reducedContext. External interface: `addEvent`, event stream
+- **MiniAgent**: Agent instance with agentName + contextName. Interface: `addEvent`, event stream
+  - Implementation note: MiniAgent is an interface managed by AgentRegistry, not an Effect service
 
 ---
 
@@ -170,6 +173,13 @@ Future capabilities defined as events:
 - Replace MiniAgent with @effect/cluster Entity
 - Replace AgentRegistry with Sharding
 - Persistent EventStore (Postgres/Redis) for event logs
+
+### Context Bricking
+- AgentName and ContextName are separate: agent identity vs event storage location
+- When a context becomes corrupt/poisoned/full, switch agent to fresh context
+- Callers reference AgentName (stable) - they don't know about ContextName changes
+- Enables "safely bricking a defunct context" without updating callers
+- Old context remains for debugging/auditing but agent moves on
 
 ### Other
 - HTTP API server wrapper

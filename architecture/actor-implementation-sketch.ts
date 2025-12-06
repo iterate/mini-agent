@@ -62,14 +62,14 @@ interface ActorState {
  */
 const makeMiniAgent = (agentName: AgentName) =>
   Layer.scoped(
-    // MiniAgent service - would be defined with Effect.Service in design.ts
+    // MiniAgent interface - would be defined in design.ts
     Context.GenericTag<{
       readonly agentName: AgentName
       readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentError>
       readonly events: Stream.Stream<ContextEvent, never>
       readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
       readonly shutdown: Effect.Effect<void>
-    }>("@app/MiniAgent"),
+    }>("@mini-agent/MiniAgent"),
     Effect.gen(function*() {
       // Dependencies (would be Effect.Service in actual implementation)
       const reducer = yield* EventReducer
@@ -78,7 +78,7 @@ const makeMiniAgent = (agentName: AgentName) =>
           agentName: AgentName,
           events: ReadonlyArray<ContextEvent>
         ) => Effect.Effect<void>
-      }>("@app/EventStore")
+      }>("@mini-agent/EventStore")
 
       // Initial reduced context (would come from EventReducer.init)
       const initialReducedContext = {
