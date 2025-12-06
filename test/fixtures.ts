@@ -2,6 +2,13 @@
  * Test Fixtures
  *
  * Vitest 3.x fixtures for isolated test environments with temp directories.
+ *
+ * LLM Mode:
+ * - Default: Uses mock LLM server for fast (~31s), predictable responses
+ * - Set USE_REAL_LLM=1 to use real LLM APIs:
+ *   - Requires valid API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+ *   - Optionally set LLM env var to specify provider (e.g., LLM=anthropic:claude-haiku-4-5)
+ *   - Example: USE_REAL_LLM=1 doppler run -- bun vitest run
  */
 import { Command } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
@@ -12,6 +19,10 @@ import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
 import { expect, test as baseTest } from "vitest"
 import { AppConfig, type MiniAgentConfig } from "../src/config.ts"
+import { type MockLlmServer, startMockLlmServer } from "./mock-llm-server.ts"
+
+/** Whether to use real LLM APIs instead of mock server */
+export const useRealLlm = process.env.USE_REAL_LLM === "1"
 
 const CLI_PATH = resolve(__dirname, "../src/cli/main.ts")
 
@@ -82,9 +93,14 @@ export const testAppConfigLayer = Layer.succeed(
   } satisfies MiniAgentConfig
 )
 
+/** LLM environment variables for tests - compatible with Record<string, string> */
+export type LlmEnv = Record<string, string>
+
 export interface TestFixtures {
   suiteDir: string
   testDir: string
+  /** LLM config env vars - empty when USE_REAL_LLM=1, mock server config otherwise */
+  llmEnv: LlmEnv
 }
 
 const sanitizeName = (name: string): string => {
@@ -128,7 +144,38 @@ export const test = baseTest.extend<TestFixtures>({
     if (task.result?.state === "fail") {
       console.log(`Failed test directory: ${dir}`)
     }
-  }
+  },
+
+  // eslint-disable-next-line no-empty-pattern
+  llmEnv: [async ({}, use) => {
+    if (useRealLlm) {
+      // Use real LLM - no overrides needed, inherit from environment
+      console.log("Using real LLM (USE_REAL_LLM=1)")
+      await use({})
+      return
+    }
+
+    // Start mock LLM server for this test file
+    let mockServer: MockLlmServer | undefined
+    try {
+      mockServer = await startMockLlmServer()
+      console.log(`Mock LLM server: ${mockServer.url}`)
+
+      const env: LlmEnv = {
+        LLM: JSON.stringify({
+          apiFormat: "openai-responses",
+          model: "mock-model",
+          baseUrl: mockServer.url,
+          apiKeyEnvVar: "MOCK_API_KEY"
+        }),
+        MOCK_API_KEY: "test-key"
+      }
+
+      await use(env)
+    } finally {
+      await mockServer?.close()
+    }
+  }, { scope: "file" as const }]
 })
 
 export { expect }
