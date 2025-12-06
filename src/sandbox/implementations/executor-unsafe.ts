@@ -5,7 +5,7 @@
  * Use only for development/testing where speed matters more than security.
  * User code runs in the same V8 context as the host.
  */
-import { Duration, Effect, Layer } from "effect"
+import { Effect, Layer } from "effect"
 
 import { ExecutionError, TimeoutError } from "../errors.ts"
 import { SandboxExecutor } from "../services.ts"
@@ -19,8 +19,17 @@ export const UnsafeExecutorLive = Layer.succeed(
       parentContext: ParentContext<TCallbacks, TData>,
       config: SandboxConfig
     ): Effect.Effect<ExecutionResult<TResult>, ExecutionError | TimeoutError> =>
-      Effect.gen(function*() {
+      Effect.async<ExecutionResult<TResult>, ExecutionError | TimeoutError>((resume) => {
         const start = performance.now()
+        let completed = false
+        let timeoutId: ReturnType<typeof setTimeout> | undefined
+
+        const safeResume = (effect: Effect.Effect<ExecutionResult<TResult>, ExecutionError | TimeoutError>) => {
+          if (completed) return
+          completed = true
+          if (timeoutId) clearTimeout(timeoutId)
+          resume(effect)
+        }
 
         // Wrap user code to extract and call the default export
         const wrappedCode = `
@@ -38,38 +47,61 @@ export const UnsafeExecutorLive = Layer.succeed(
           })
         `
 
-        // Create the function (may throw on syntax error)
-        const fn = yield* Effect.try({
-          try: () => eval(wrappedCode) as (ctx: ParentContext<TCallbacks, TData>) => unknown,
-          catch: (e) =>
-            new ExecutionError({
-              message: (e as Error).message,
-              stack: (e as Error).stack,
-              cause: e as Error
-            })
-        })
+        try {
+          const fn = eval(wrappedCode) as (ctx: ParentContext<TCallbacks, TData>) => unknown
 
-        // Execute with timeout (handles both sync and async results)
-        const value = yield* Effect.tryPromise({
-          try: () => Promise.resolve(fn(parentContext)),
-          catch: (e) =>
-            new ExecutionError({
-              message: (e as Error).message,
-              stack: (e as Error).stack,
-              cause: e as Error
-            })
-        }).pipe(
-          Effect.timeoutFail({
-            duration: Duration.millis(config.timeoutMs),
-            onTimeout: () => new TimeoutError({ timeoutMs: config.timeoutMs })
+          // Timeout promise
+          const timeoutPromise = new Promise<never>((_, reject) => {
+            timeoutId = setTimeout(() => {
+              reject(new TimeoutError({ timeoutMs: config.timeoutMs }))
+            }, config.timeoutMs)
           })
-        )
 
-        return {
-          value: value as TResult,
-          durationMs: performance.now() - start,
-          metadata: { executor: "unsafe-eval", isolated: false }
+          // Race execution against timeout
+          Promise.race([Promise.resolve(fn(parentContext)), timeoutPromise])
+            .then((value) => {
+              safeResume(
+                Effect.succeed({
+                  value: value as TResult,
+                  durationMs: performance.now() - start,
+                  metadata: { executor: "unsafe-eval", isolated: false }
+                })
+              )
+            })
+            .catch((err) => {
+              if (err instanceof TimeoutError) {
+                safeResume(Effect.fail(err))
+              } else {
+                const e = err as Error
+                safeResume(
+                  Effect.fail(
+                    new ExecutionError({
+                      message: e.message,
+                      stack: e.stack,
+                      cause: e
+                    })
+                  )
+                )
+              }
+            })
+        } catch (e) {
+          const err = e as Error
+          safeResume(
+            Effect.fail(
+              new ExecutionError({
+                message: err.message,
+                stack: err.stack,
+                cause: err
+              })
+            )
+          )
         }
+
+        // Cleanup for Effect interruption
+        return Effect.sync(() => {
+          completed = true
+          if (timeoutId) clearTimeout(timeoutId)
+        })
       })
   })
 )
