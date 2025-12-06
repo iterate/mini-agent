@@ -313,6 +313,7 @@ const makeMiniAgent = (agentName: AgentName) =>
  * ```
  *
  * SHUTDOWN
- * Coordinated: end → await(5s timeout) → shutdown.
- * Ensures SessionEndedEvent is received before forced termination.
+ * Coordinated: end → race(await, 5s) → shutdown.
+ * Effect.race returns when EITHER completes (up to 5s, not always 5s).
+ * Fast drain = fast shutdown. Timeout only if subscribers stuck.
  */
