@@ -29,7 +29,7 @@
  */
 
 import type { Prompt } from "@effect/ai"
-import { Duration, Effect, Fiber, Option, Schema, Stream } from "effect"
+import { Duration, Effect, Fiber, Option, Redacted, Schema, Stream } from "effect"
 
 /** Identity of an agent (e.g., "chat", "assistant") */
 export const AgentName = Schema.String.pipe(Schema.brand("AgentName"))
@@ -330,11 +330,33 @@ export type MiniAgentError = typeof MiniAgentError.Type
  * Handles retry with exponential backoff and fallback to secondary provider.
  */
 export class MiniAgentTurn extends Effect.Service<MiniAgentTurn>()("@mini-agent/MiniAgentTurn", {
-  effect: Effect.die("Not implemented"),
+  succeed: {
+    execute: (_ctx: ReducedContext): Stream.Stream<ContextEvent, AgentError> =>
+      Stream.fail(new AgentError({ message: "MiniAgentTurn not implemented", provider: "none" as LlmProviderId, cause: Option.none() }))
+  },
   accessors: true
-}) {
-  readonly execute: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError> =
-    undefined as never
+}) {}
+
+/** Default stub config for design-time type checking */
+const stubLlmProviderConfig = new LlmProviderConfig({
+  providerId: "stub" as LlmProviderId,
+  model: "stub-model",
+  apiKey: Redacted.make("stub-api-key"),
+  baseUrl: Option.none()
+})
+
+const stubAgentConfig = new AgentConfig({
+  primary: stubLlmProviderConfig,
+  fallback: Option.none(),
+  timeoutMs: 30000
+})
+
+const stubReducedContext: ReducedContext = {
+  messages: [],
+  config: stubAgentConfig,
+  nextEventNumber: 0,
+  currentTurnNumber: 1 as AgentTurnNumber,
+  agentTurnStartedAtEventId: Option.none()
 }
 
 /**
@@ -349,16 +371,15 @@ export class MiniAgentTurn extends Effect.Service<MiniAgentTurn>()("@mini-agent/
  * Real implementation provides EventReducer.Default layer.
  */
 export class EventReducer extends Effect.Service<EventReducer>()("@mini-agent/EventReducer", {
-  effect: Effect.die("Not implemented"),
+  succeed: {
+    reduce: (
+      current: ReducedContext,
+      _newEvents: ReadonlyArray<ContextEvent>
+    ): Effect.Effect<ReducedContext, ReducerError> => Effect.succeed(current),
+    initialReducedContext: stubReducedContext
+  },
   accessors: true
-}) {
-  readonly reduce: (
-    current: ReducedContext,
-    newEvents: ReadonlyArray<ContextEvent>
-  ) => Effect.Effect<ReducedContext, ReducerError> = undefined as never
-
-  readonly initialReducedContext: ReducedContext = undefined as never
-}
+}) {}
 
 /**
  * EventStore persists context events.
@@ -366,15 +387,16 @@ export class EventReducer extends Effect.Service<EventReducer>()("@mini-agent/Ev
  * Pluggable: YamlFileStore (disk), InMemoryStore (tests), PostgresStore (future).
  */
 export class EventStore extends Effect.Service<EventStore>()("@mini-agent/EventStore", {
-  effect: Effect.die("Not implemented"),
+  succeed: {
+    load: (_contextName: ContextName): Effect.Effect<ReadonlyArray<ContextEvent>, ContextLoadError> =>
+      Effect.succeed([]),
+    append: (_contextName: ContextName, _events: ReadonlyArray<ContextEvent>): Effect.Effect<void, ContextSaveError> =>
+      Effect.void,
+    exists: (_contextName: ContextName): Effect.Effect<boolean> =>
+      Effect.succeed(false)
+  },
   accessors: true
-}) {
-  readonly load: (contextName: ContextName) => Effect.Effect<ReadonlyArray<ContextEvent>, ContextLoadError> =
-    undefined as never
-  readonly append: (contextName: ContextName, events: ReadonlyArray<ContextEvent>) => Effect.Effect<void, ContextSaveError> =
-    undefined as never
-  readonly exists: (contextName: ContextName) => Effect.Effect<boolean> = undefined as never
-}
+}) {}
 
 /**
  * MiniAgent is a single agent instance (NOT a service).
@@ -414,33 +436,28 @@ export interface MiniAgent {
  * Dependencies: MiniAgentTurn, EventReducer, EventStore
  */
 export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/AgentRegistry", {
-  effect: Effect.die("Not implemented"),
+  succeed: {
+    getOrCreate: (agentName: AgentName): Effect.Effect<MiniAgent, MiniAgentError> =>
+      Effect.fail(new ContextLoadError({
+        contextName: `${agentName}-v1` as ContextName,
+        message: "AgentRegistry stub - not implemented",
+        cause: Option.none()
+      })),
+    get: (agentName: AgentName): Effect.Effect<MiniAgent, AgentNotFoundError> =>
+      Effect.fail(new AgentNotFoundError({ agentName })),
+    list: Effect.succeed([]),
+    shutdownAgent: (agentName: AgentName): Effect.Effect<void, AgentNotFoundError> =>
+      Effect.fail(new AgentNotFoundError({ agentName })),
+    shutdownAll: Effect.void
+  },
   accessors: true
-}) {
-  /** Get or create agent (cached) */
-  readonly getOrCreate: (agentName: AgentName) => Effect.Effect<MiniAgent, MiniAgentError> =
-    undefined as never
-
-  /** Get existing agent (fails if not found) */
-  readonly get: (agentName: AgentName) => Effect.Effect<MiniAgent, AgentNotFoundError> =
-    undefined as never
-
-  /** List all active agent names */
-  readonly list: Effect.Effect<ReadonlyArray<AgentName>> = undefined as never
-
-  /** Shutdown specific agent */
-  readonly shutdownAgent: (agentName: AgentName) => Effect.Effect<void, AgentNotFoundError> =
-    undefined as never
-
-  /** Shutdown all agents gracefully */
-  readonly shutdownAll: Effect.Effect<void> = undefined as never
-}
+}) {}
 
 export const sampleProgram = Effect.gen(function*() {
   const registry = yield* AgentRegistry
-  const agentName = AgentName.make("chat")
+  const agentName = "chat" as AgentName
 
-  // Get or create agent
+  // Get or create agent - contextName is assigned by registry (e.g., "chat-v1")
   const agent = yield* registry.getOrCreate(agentName)
 
   // Subscribe to event stream
@@ -450,9 +467,9 @@ export const sampleProgram = Effect.gen(function*() {
     Effect.fork
   )
 
-  // First event has no parent
+  // First event has no parent, uses agent's contextName for EventId
   const firstEvent = new UserMessageEvent({
-    id: makeEventId(agentName, 0),
+    id: makeEventId(agent.contextName, 0),
     timestamp: new Date() as never, // DateTime.unsafeNow() in real code
     agentName,
     parentEventId: Option.none(),
@@ -470,7 +487,7 @@ export const sampleProgram = Effect.gen(function*() {
 
   // Add another message - links to previous message for context
   const secondEvent = new UserMessageEvent({
-    id: makeEventId(agentName, 5), // Assuming events 1-4 were generated by agent
+    id: makeEventId(agent.contextName, 5), // Assuming events 1-4 were generated by agent
     timestamp: new Date() as never,
     agentName,
     parentEventId: Option.some(firstEvent.id), // Links to what we're responding to
@@ -482,7 +499,7 @@ export const sampleProgram = Effect.gen(function*() {
   yield* Effect.sleep(Duration.seconds(5))
 
   // Graceful shutdown
-  yield* registry.shutdownAll()
+  yield* registry.shutdownAll
   yield* Fiber.await(streamFiber)
 })
 
