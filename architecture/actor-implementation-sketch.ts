@@ -9,6 +9,13 @@
  * - Context: A list of ContextEvents
  * - MiniAgent: Has agentName, context (list of events), and external interface
  *
+ * Key Simplification: Actor state = events + reducedContext
+ * - ActorState contains only: events (the full list) and reducedContext (derived state)
+ * - ALL internal state (counters, flags, tracking) lives in reducedContext
+ * - EventReducer derives reducedContext from events
+ * - No manual counter management, no separate refs for processing state
+ * - Parent event linking is automatic via reducedContext.lastTriggeringEventId
+ *
  * Key Pattern: Mailbox + broadcastDynamic
  * - Mailbox for actor mailbox semantics (offer, end, toStream)
  * - Stream.broadcastDynamic for fan-out to multiple subscribers
@@ -42,7 +49,9 @@ import type {
   AgentTurnFailedEvent,
   AgentTurnStartedEvent,
   EventId,
+  EventReducer,
   MiniAgentError,
+  ReducedContext,
   SessionEndedEvent,
   SessionStartedEvent
 } from "./design.ts"
@@ -53,8 +62,20 @@ import type {
 
 interface ActorState {
   readonly events: ReadonlyArray<ContextEvent>
-  readonly isProcessing: boolean
-  readonly lastTriggeringEventId: Option.Option<EventId>
+  readonly reducedContext: ReducedContext
+}
+
+// =============================================================================
+// Helper Functions
+// =============================================================================
+
+/**
+ * Generate next event ID using agent name and counter from reduced context.
+ * Format: {agentName}:{counter}
+ */
+const getNextEventId = (reducedContext: ReducedContext, agentName: AgentName): EventId => {
+  const counter = reducedContext.nextEventNumber
+  return `${agentName}:${String(counter).padStart(4, "0")}` as EventId
 }
 
 // =============================================================================
@@ -81,36 +102,46 @@ const makeMiniAgent = (agentName: AgentName) =>
       readonly shutdown: Effect.Effect<void>
     }>("@app/MiniAgent"),
     Effect.gen(function*() {
-      // Internal state
+      // Dependencies
+      const reducer = yield* EventReducer
+      const eventStore = yield* Context.GenericTag<{
+        readonly append: (
+          agentName: AgentName,
+          events: ReadonlyArray<ContextEvent>
+        ) => Effect.Effect<void>
+      }>("@app/EventStore")
+
+      // Initial reduced context (would come from EventReducer.init)
+      const initialReducedContext = {
+        nextEventNumber: 0,
+        currentTurnNumber: 0,
+        isAgentTurnInProgress: false,
+        lastTriggeringEventId: Option.none() as Option.Option<EventId>,
+        debounceMs: 100
+        // ... other reducer state
+      } as ReducedContext
+
+      // Internal state: just events + reducedContext
       const stateRef = yield* Ref.make<ActorState>({
         events: [],
-        isProcessing: false,
-        lastTriggeringEventId: Option.none()
+        reducedContext: initialReducedContext
       })
-
-      // Counters for event IDs and turn tracking
-      const eventCounterRef = yield* Ref.make(0)
-      const turnCounterRef = yield* Ref.make(0)
 
       // Mailbox for actor input
       const mailbox = yield* Mailbox.make<ContextEvent>()
 
-      // Default debounce (would come from ReducedContext in real impl)
-      const debounceMs = 100
-
       // Helper to generate event metadata with agent-prefixed IDs
-      const makeEventMeta = (triggersAgentTurn = false) =>
-        Effect.gen(function*() {
-          const counter = yield* Ref.getAndUpdate(eventCounterRef, (n) => n + 1)
-          const id = `${agentName}:${String(counter).padStart(4, "0")}` as EventId
-          return {
-            id,
-            timestamp: DateTime.unsafeNow(),
-            agentName,
-            parentEventId: Option.none(),
-            triggersAgentTurn
-          }
-        })
+      // Uses reducedContext for counter and parent linking
+      const makeEventMeta = (state: ActorState, triggersAgentTurn = false) => {
+        const id = getNextEventId(state.reducedContext, agentName)
+        return {
+          id,
+          timestamp: DateTime.unsafeNow(),
+          agentName,
+          parentEventId: state.reducedContext.lastTriggeringEventId, // Link to parent!
+          triggersAgentTurn
+        }
+      }
 
       // Convert mailbox to broadcast stream
       // KEY: broadcastDynamic creates internal PubSub, returns Stream
@@ -123,53 +154,89 @@ const makeMiniAgent = (agentName: AgentName) =>
       // Only processes when an event with triggersAgentTurn=true has been added
       const processBatch = Effect.gen(function*() {
         const state = yield* Ref.get(stateRef)
-        const hasTriggeringEvent = state.events.some((e) => e.triggersAgentTurn)
-        if (!hasTriggeringEvent) return
 
-        yield* Ref.update(stateRef, (s) => ({ ...s, isProcessing: true }))
+        // Check if we should process (from reduced state)
+        if (state.reducedContext.isAgentTurnInProgress) return
+        if (Option.isNone(state.reducedContext.lastTriggeringEventId)) return
 
-        // Increment turn counter for this agent turn
-        const turnNumber = yield* Ref.getAndUpdate(turnCounterRef, (n) => n + 1)
+        // Get turn number from reduced context
+        const turnNumber = state.reducedContext.currentTurnNumber
 
         const startTime = Date.now()
         try {
-          const startMeta = yield* makeEventMeta()
-          yield* mailbox.offer({
+          // Create and add AgentTurnStartedEvent
+          const startMeta = makeEventMeta(state)
+          const startEvent = {
             _tag: "AgentTurnStartedEvent",
             ...startMeta,
             turnNumber
-          } as unknown as AgentTurnStartedEvent)
+          } as unknown as AgentTurnStartedEvent
 
-          // TODO: Call reducer and agent here
-          // Reducer derives config from events (SetLlmProviderConfigEvent, etc.)
+          // Add start event through normal flow (updates reducer)
+          yield* addEventInternal(startEvent)
+
+          // TODO: Call agent with reduced context here
+          // Reducer has already derived config from events (SetLlmProviderConfigEvent, etc.)
           yield* Effect.logInfo("Processing events (agent turn would happen here)")
 
+          // Create and add AgentTurnCompletedEvent
+          const updatedState = yield* Ref.get(stateRef)
           const durationMs = Date.now() - startTime
-          const completeMeta = yield* makeEventMeta()
-          yield* mailbox.offer({
+          const completeMeta = makeEventMeta(updatedState)
+          const completeEvent = {
             _tag: "AgentTurnCompletedEvent",
             ...completeMeta,
             turnNumber,
             durationMs
-          } as unknown as AgentTurnCompletedEvent)
+          } as unknown as AgentTurnCompletedEvent
+
+          yield* addEventInternal(completeEvent)
         } catch (error) {
-          const failMeta = yield* makeEventMeta()
-          yield* mailbox.offer({
+          // Create and add AgentTurnFailedEvent
+          const updatedState = yield* Ref.get(stateRef)
+          const failMeta = makeEventMeta(updatedState)
+          const failEvent = {
             _tag: "AgentTurnFailedEvent",
             ...failMeta,
             turnNumber,
             error: String(error)
-          } as unknown as AgentTurnFailedEvent)
-        } finally {
-          yield* Ref.update(stateRef, (s) => ({ ...s, isProcessing: false }))
+          } as unknown as AgentTurnFailedEvent
+
+          yield* addEventInternal(failEvent)
         }
       })
+
+      // Internal helper to add event (used by both public API and internal flows)
+      const addEventInternal = (event: ContextEvent) =>
+        Effect.gen(function*() {
+          const state = yield* Ref.get(stateRef)
+
+          // 1. Add to events list
+          const newEvents = [...state.events, event]
+
+          // 2. Run reducer to get new reduced context
+          const newReducedContext = yield* reducer.reduce(state.reducedContext, [event])
+
+          // 3. Update state atomically
+          yield* Ref.set(stateRef, { events: newEvents, reducedContext: newReducedContext })
+
+          // 4. Broadcast to subscribers
+          yield* mailbox.offer(event)
+
+          // 5. Persist to event store
+          yield* eventStore.append(agentName, [event])
+        })
 
       // Start background processing fiber
       // Only debounce events with triggersAgentTurn=true
       const processingFiber = yield* broadcast.pipe(
         Stream.filter((e) => e.triggersAgentTurn),
-        Stream.debounce(Duration.millis(debounceMs)),
+        Stream.debounce(
+          Effect.gen(function*() {
+            const state = yield* Ref.get(stateRef)
+            return Duration.millis(state.reducedContext.debounceMs)
+          })
+        ),
         Stream.mapEffect(() => processBatch),
         Stream.catchAll((error) =>
           Stream.fromEffect(
@@ -181,20 +248,24 @@ const makeMiniAgent = (agentName: AgentName) =>
       )
 
       // Emit session started
-      const sessionStartMeta = yield* makeEventMeta()
-      yield* mailbox.offer({
+      const initialState = yield* Ref.get(stateRef)
+      const sessionStartMeta = makeEventMeta(initialState)
+      const sessionStartEvent = {
         _tag: "SessionStartedEvent",
         ...sessionStartMeta
-      } as unknown as SessionStartedEvent)
+      } as unknown as SessionStartedEvent
+      yield* addEventInternal(sessionStartEvent)
 
       // Cleanup on scope close
       yield* Effect.addFinalizer((_exit) =>
         Effect.gen(function*() {
-          const sessionEndMeta = yield* makeEventMeta()
-          yield* mailbox.offer({
+          const state = yield* Ref.get(stateRef)
+          const sessionEndMeta = makeEventMeta(state)
+          const sessionEndEvent = {
             _tag: "SessionEndedEvent",
             ...sessionEndMeta
-          } as unknown as SessionEndedEvent)
+          } as unknown as SessionEndedEvent
+          yield* mailbox.offer(sessionEndEvent)
           yield* mailbox.end
           yield* Fiber.interrupt(processingFiber)
         })
@@ -204,22 +275,7 @@ const makeMiniAgent = (agentName: AgentName) =>
       return {
         agentName,
 
-        addEvent: (event: ContextEvent) =>
-          Effect.gen(function*() {
-            // 1. Update in-memory state
-            yield* Ref.update(stateRef, (s) => ({
-              ...s,
-              events: [...s.events, event],
-              lastTriggeringEventId: event.triggersAgentTurn
-                ? Option.some(event.id)
-                : s.lastTriggeringEventId
-            }))
-
-            // 2. Offer to mailbox - broadcasts to all subscribers
-            yield* mailbox.offer(event)
-
-            // 3. TODO: Persist to EventStore (not shown)
-          }),
+        addEvent: addEventInternal,
 
         // KEY: `events` is the broadcast stream
         // Each execution creates a new subscriber to internal PubSub
@@ -228,11 +284,13 @@ const makeMiniAgent = (agentName: AgentName) =>
         getEvents: Ref.get(stateRef).pipe(Effect.map((s) => s.events)),
 
         shutdown: Effect.gen(function*() {
-          const shutdownMeta = yield* makeEventMeta()
-          yield* mailbox.offer({
+          const state = yield* Ref.get(stateRef)
+          const shutdownMeta = makeEventMeta(state)
+          const shutdownEvent = {
             _tag: "SessionEndedEvent",
             ...shutdownMeta
-          } as unknown as SessionEndedEvent)
+          } as unknown as SessionEndedEvent
+          yield* mailbox.offer(shutdownEvent)
           yield* mailbox.end
           yield* Fiber.interrupt(processingFiber)
         })
@@ -245,43 +303,78 @@ const makeMiniAgent = (agentName: AgentName) =>
 // =============================================================================
 
 /**
- * 1. EVENT ID FORMAT
+ * 1. ACTOR STATE SIMPLIFICATION
+ *
+ *    ActorState contains ONLY:
+ *    - events: The full event list
+ *    - reducedContext: Derived state from EventReducer
+ *
+ *    ALL internal state lives in reducedContext:
+ *    - nextEventNumber: Counter for generating event IDs
+ *    - currentTurnNumber: Current agent turn number
+ *    - isAgentTurnInProgress: Processing flag
+ *    - lastTriggeringEventId: Parent event for linking
+ *    - debounceMs: Configurable debounce delay
+ *
+ *    This eliminates manual counter management and separate refs.
+ *
+ * 2. EVENT ID FORMAT
  *
  *    EventIds use format: {agentName}:{counter}
  *    Example: "chat:0001", "chat:0002", etc.
+ *
+ *    Generated using reducedContext.nextEventNumber via getNextEventId helper.
  *
  *    This allows:
  *    - Easy identification of which agent created the event
  *    - Sequential ordering within an agent's context
  *    - Debugging and tracing across multiple agents
  *
- * 2. TURN NUMBERING
+ * 3. TURN NUMBERING
  *
- *    Each agent turn (LLM request) has a turnNumber that increments.
+ *    Each agent turn (LLM request) has a turnNumber from reducedContext.currentTurnNumber.
  *    Turn events (AgentTurnStartedEvent, AgentTurnCompletedEvent, AgentTurnFailedEvent)
  *    include the turnNumber for tracking and correlation.
+ *
+ *    EventReducer increments currentTurnNumber when AgentTurnStartedEvent is reduced.
  *
  *    This enables:
  *    - Correlating all events within a single agent turn
  *    - Measuring turn duration and performance
  *    - Debugging multi-turn conversations
  *
- * 3. PARENT EVENT ID
+ * 4. PARENT EVENT ID (AUTOMATIC LINKING)
  *
- *    All events have parentEventId (currently unused, always Option.none()).
- *    This enables future forking:
- *    - Branch contexts from specific events
- *    - Create alternative histories ("what if" scenarios)
- *    - Build event trees rather than linear lists
+ *    All events have parentEventId populated from reducedContext.lastTriggeringEventId.
+ *    When an event with triggersAgentTurn=true is added, reducer updates lastTriggeringEventId.
+ *    Subsequent events (AgentTurnStartedEvent, model messages, AgentTurnCompletedEvent)
+ *    automatically link to that triggering event as their parent.
  *
- * 4. LIVE STREAM BEHAVIOR
+ *    This enables:
+ *    - Automatic causal relationship tracking
+ *    - Future branching/forking from specific events
+ *    - Building event trees rather than linear lists
+ *    - No manual parent tracking needed
+ *
+ * 5. REDUCER-DRIVEN ARCHITECTURE
+ *
+ *    EventReducer is the single source of truth for derived state.
+ *    Flow: events → reducer → reducedContext → behavior
+ *
+ *    Benefits:
+ *    - Deterministic state (same events = same state)
+ *    - Easy testing (pure function)
+ *    - Replay capability
+ *    - No state synchronization bugs
+ *
+ * 6. LIVE STREAM BEHAVIOR
  *
  *    broadcastDynamic doesn't replay events to late subscribers.
  *    Subscribers only receive events published AFTER they subscribe.
  *
  *    For historical events, use getEvents which returns from in-memory state.
  *
- * 5. TRIGGERSAGENTTURN PROPERTY
+ * 7. TRIGGERSAGENTTURN PROPERTY
  *
  *    Processing is triggered by event.triggersAgentTurn=true, not by event type.
  *    This allows any event type to optionally trigger an LLM request.
@@ -290,7 +383,7 @@ const makeMiniAgent = (agentName: AgentName) =>
  *    - FileAttachmentEvent: triggersAgentTurn=false (attached before user sends)
  *    - SystemPromptEvent: triggersAgentTurn=false (setup phase)
  *
- * 6. SUBSCRIPTION TIMING
+ * 8. SUBSCRIPTION TIMING
  *
  *    For tests or code that needs to ensure a subscriber is connected
  *    before events are added, either:
@@ -310,17 +403,18 @@ const makeMiniAgent = (agentName: AgentName) =>
  *    yield* agent.addEvent(event)
  *    ```
  *
- * 7. CLEAN SHUTDOWN
+ * 9. CLEAN SHUTDOWN
  *
  *    - Emit SessionEndedEvent before ending mailbox
  *    - mailbox.end completes the broadcast stream
  *    - Interrupt processing fiber
  *    - Use Effect.addFinalizer for automatic cleanup on scope close
  *
- * 8. TESTING
+ * 10. TESTING
  *
- *    - Tests work well for synchronous subscription scenarios
- *    - Concurrent tests (fork + add events) require careful timing
- *    - Use Deferred for coordination, not sleep/delays
- *    - Use EventStore.inMemoryLayer for tests (no disk I/O)
+ *     - Tests work well for synchronous subscription scenarios
+ *     - Concurrent tests (fork + add events) require careful timing
+ *     - Use Deferred for coordination, not sleep/delays
+ *     - Use EventStore.inMemoryLayer for tests (no disk I/O)
+ *     - Test EventReducer independently as pure function
  */

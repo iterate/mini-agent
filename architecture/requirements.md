@@ -10,8 +10,9 @@ Philosophy: **"Agent events are all you need"** - Everything the agent does is d
 
 - **ContextEvent**: An event in a context (user message, assistant response, config change, lifecycle event)
 - **Context**: A list of ContextEvents - the event log that records everything that happened
-- **ReducedContext**: The reduced state ready for agent turn - derived from Context by the reducer
-- **MiniAgent**: The actor with an `agentName`, `context` (event log), and external interface (`addEvent`, event stream)
+- **ReducedContext**: ALL derived state computed by the reducer from Context events
+- **Reducer**: Pure function that derives everything from events (messages, config, counters, flags)
+- **MiniAgent**: The actor - state = events (context) + reducedContext. External interface: `addEvent`, event stream
 
 ---
 
@@ -24,13 +25,29 @@ Philosophy: **"Agent events are all you need"** - Everything the agent does is d
 3. **Live event stream**: Subscribers receive events published after they subscribe
 4. **Immediate persistence**: Events persist via EventStore before entering the processing queue
 
+### ReducedContext (Derived State)
+
+The reducer derives ALL actor internal state from events:
+- `messages` - Prompt.Message array for LLM
+- `config` - AgentConfig from SetLlmProviderConfigEvent, SetTimeoutEvent, SetDebounceEvent
+- `nextEventNumber` - Counter for EventId generation
+- `currentTurnNumber` - Sequential turn counter
+- `isAgentTurnInProgress` - Boolean flag
+- `lastTriggeringEventId` - For automatic parent linking
+
+No separate counters or flags in actor - everything from reducer.
+
 ### Event Types
 
 All events share base fields:
 - `id` (EventId) - Format: `{agentName}:{counter}` - globally unique within an agent's event log
 - `timestamp` (DateTimeUtc)
 - `agentName` (AgentName)
-- `parentEventId` (optional EventId) - Enables future agent forking by linking to a parent event in another agent's context
+- `parentEventId` (Option<EventId>) - REQUIRED field linking to causal parent event
+  - Every event (except first) links to the event that caused it
+  - New events automatically link to `lastTriggeringEventId` from ReducedContext
+  - First event in context has `parentEventId = Option.none()`
+  - Enables causal chains and future forking capabilities
 - `triggersAgentTurn` (Boolean) - Whether this event should trigger an LLM request
 
 **Content Events**:
@@ -148,10 +165,11 @@ Future capabilities defined as events:
 - Summarizing reducer (uses LLM to summarize old context)
 
 ### Agent Forking
-- **parentEventId** enables branching: create a new agent from a specific event in another agent's context
+- Uses **parentEventId** (MVP field) for branching: create a new agent from a specific event in another agent's context
 - Both agents share history up to the fork point
 - Each continues independently with its own event log after the fork
 - Use cases: exploring alternate conversation paths, A/B testing different responses, parallel problem-solving
+- Note: parentEventId is implemented in MVP for causal chains; forking is the future USE of that field
 
 ### Distribution
 - Replace MiniAgent with @effect/cluster Entity

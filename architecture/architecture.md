@@ -8,8 +8,9 @@ Philosophy: **"Agent events are all you need"** - Everything the agent does is d
 
 - **ContextEvent**: An event in a context (the fundamental unit)
 - **Context**: A list of ContextEvents (the event log for an agent)
-- **ReducedContext**: The reduced state ready for an agent turn (messages + config)
-- **MiniAgent**: Has agentName, context (list of ContextEvents), and external interface
+- **ReducedContext**: All derived state from events (messages, config, counters, flags)
+- **MiniAgent**: Actor with internal state = events + reducedContext (nothing else)
+- **Reducer**: Pure function `(events) → ReducedContext`
 - **EventId**: Globally unique identifier with format `{agentName}:{counter}`
 - **Turn Numbering**: Agent turns are numbered sequentially within each agent
 
@@ -23,30 +24,40 @@ Philosophy: **"Agent events are all you need"** - Everything the agent does is d
 ## Overview
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         MiniAgent                                │
-│                                                                  │
-│  INPUT PATH:                                                     │
-│  addEvent(event) ──▶ persist to EventStore ──▶ Mailbox.offer    │
-│                                                    │             │
-│  BROADCAST:                                        ▼             │
-│  agent.events ◀── Stream.broadcastDynamic ◀───────┘             │
-│       │                                                          │
-│  PROCESSING (triggered by event.triggersAgentTurn=true):         │
-│       └──▶ debounce ──▶ reduce ──▶ Agent.takeTurn               │
-│                                        │                         │
-│                                        ▼                         │
-│                              Stream<TextDeltaEvent>              │
-│                                        │                         │
-│                                        ▼                         │
-│                              AssistantMessageEvent               │
-│                                        │                         │
-│                                        ▼                         │
-│                              persist ──▶ Mailbox.offer           │
-│                                              │                   │
-│                                              ▼                   │
-│                              (broadcasts to all subscribers)     │
-└─────────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                         MiniAgent                                 │
+│                                                                   │
+│  INTERNAL STATE:                                                  │
+│  ┌─────────────────────────────────────────────────────────────┐ │
+│  │ events: ContextEvent[]                                       │ │
+│  │ reducedContext: ReducedContext  ◀── reduce(events)          │ │
+│  └─────────────────────────────────────────────────────────────┘ │
+│                                                                   │
+│  INPUT PATH:                                                      │
+│  addEvent(event) ──▶ persist ──▶ add to events ──▶ reduce ──▶   │
+│                                                    update ctx     │
+│                                                        │          │
+│                                                        ▼          │
+│                                                  Mailbox.offer    │
+│                                                        │          │
+│  BROADCAST:                                            ▼          │
+│  agent.events ◀── Stream.broadcastDynamic ◀───────────┘          │
+│       │                                                           │
+│  PROCESSING (triggered by event.triggersAgentTurn=true):          │
+│       └──▶ debounce ──▶ read reducedContext ──▶ Agent.takeTurn   │
+│                                                        │          │
+│                                                        ▼          │
+│                                          Stream<TextDeltaEvent>   │
+│                                                        │          │
+│                                                        ▼          │
+│                                          AssistantMessageEvent    │
+│                                                        │          │
+│                                                        ▼          │
+│                        persist ──▶ reduce ──▶ Mailbox.offer      │
+│                                                        │          │
+│                                                        ▼          │
+│                                    (broadcasts to all)            │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
 Key insight: `Mailbox.offer` broadcasts to ALL current subscribers via `Stream.broadcastDynamic`. Late subscribers miss events (live stream).
@@ -88,6 +99,23 @@ class EventStore extends Context.Tag("@app/EventStore")<EventStore, {
 
 Note: No AppConfig service. All config derives from events via ReducedContext (SetLlmProviderConfigEvent, SetTimeoutEvent, SetDebounceEvent).
 
+### ReducedContext (Derived State)
+
+All actor internal state is derived from events via the reducer. ReducedContext contains:
+
+- `messages` - Content for LLM (from content events)
+- `config` - LLM settings (from config events)
+- `nextEventNumber` - For generating EventId
+- `currentTurnNumber` - Current or next turn number
+- `isAgentTurnInProgress` - True between Started and Completed/Failed
+- `lastTriggeringEventId` - For parent event linking
+
+Utility functions:
+- `getNextEventId(ctx, agentName)` - Generate next EventId
+- `isAgentTurnInProgress(ctx)` - Check if turn in progress
+
+The reducer is a pure function: `(events) → ReducedContext`. Actor holds events + reducedContext only.
+
 ### Actor Service
 
 **MiniAgent** - Per-agent orchestrator
@@ -100,6 +128,7 @@ class MiniAgent extends Context.Tag("@app/MiniAgent")<MiniAgent, {
   readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentError>
   readonly events: Stream.Stream<ContextEvent, never>  // Live broadcast
   readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>  // Historical
+  readonly getReducedContext: Effect.Effect<ReducedContext>  // Current derived state
   readonly shutdown: Effect.Effect<void>
 }>() {
   static readonly make: (agentName: AgentName) => Layer.Layer<MiniAgent, MiniAgentError, Agent | EventReducer | EventStore>
@@ -146,19 +175,25 @@ class MiniAgentApp extends Context.Tag("@app/MiniAgentApp")<MiniAgentApp, {
 ### addEvent Flow
 
 1. Persist event via EventStore (immediate durability)
-2. Update in-memory state (Ref)
-3. `Mailbox.offer(event)` → broadcasts to all current subscribers
-4. If `event.triggersAgentTurn=true`: starts debounce timer for processing
+2. Add to events array (Ref)
+3. Run reducer: `reducedContext = reduce(events)` → update reducedContext (Ref)
+4. `Mailbox.offer(event)` → broadcasts to all current subscribers
+5. If `event.triggersAgentTurn=true`: starts debounce timer for processing
+
+**Parent Event Linking**: New events automatically link to `lastTriggeringEventId` from reducedContext. This enables:
+- Event causality tracking (every event knows its parent)
+- Future agent forking (multiple events can share same parent)
+- Execution tree visualization
 
 ### Agent Turn Flow
 
 1. Debounce timer fires (no new events with `triggersAgentTurn=true` for N ms)
-2. Emit `AgentTurnStartedEvent` → broadcast
-3. Reduce all events to `ReducedContext` (includes config from events)
+2. Emit `AgentTurnStartedEvent` → persist → reduce → broadcast
+3. Read current `reducedContext` (already up-to-date from addEvent flow)
 4. Call `Agent.takeTurn(reducedContext)`
-5. Stream `TextDeltaEvent` → broadcast (each chunk)
-6. On completion: emit `AssistantMessageEvent` → persist → broadcast
-7. Emit `AgentTurnCompletedEvent` → broadcast
+5. Stream `TextDeltaEvent` → broadcast (each chunk, not persisted)
+6. On completion: emit `AssistantMessageEvent` → persist → reduce → broadcast
+7. Emit `AgentTurnCompletedEvent` → persist → reduce → broadcast
 
 ### Request Interruption Flow
 
@@ -244,15 +279,6 @@ const MiniAgentTestLayer = MiniAgentApp.testLayer.pipe(
 ---
 
 ## Future Considerations
-
-### Agent Forking
-
-The `parentEventId` field on every event enables **agent forking** - branching into parallel execution paths:
-
-- Events reference their causal parent via `parentEventId`
-- Multiple events can share the same parent, creating a fork
-- Each fork can evolve independently while maintaining lineage
-- Future: visualize execution trees, merge forks, explore alternative paths
 
 ### @effect/cluster Distribution
 

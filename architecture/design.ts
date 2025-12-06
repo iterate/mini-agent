@@ -9,16 +9,17 @@
  * - Future: tools, workflows, everything defined via events
  *
  * Key design decisions:
- * - All events share BaseEventFields (id, timestamp, agentName, triggersAgentTurn)
+ * - All events share BaseEventFields (id, timestamp, agentName, triggersAgentTurn, parentEventId)
  * - triggersAgentTurn property on ALL events determines if LLM request should happen
+ * - parentEventId enables proper event linking (MVP feature, not future)
  * - Uses @effect/ai Prompt.Message for LLM messages (not custom types)
  * - Single ContextEvent union - no InputEvent/StreamEvent distinction
  *
  * Conceptual Model:
  * - ContextEvent: An event in a context (unit of state change)
  * - Context: A list of ContextEvents (the event log)
- * - ReducedContext: The reduced state ready for agent turn (derived from events)
- * - MiniAgent: Has agentName, context (events), and external interface
+ * - ReducedContext: ALL actor state derived from events (messages, config, internal state)
+ * - MiniAgent: Has agentName, stores events, runs reducer, calls Agent when needed
  */
 
 import type { Prompt } from "@effect/ai"
@@ -44,6 +45,15 @@ export type LlmProviderId = typeof LlmProviderId.Type
 export const EventId = Schema.String.pipe(Schema.brand("EventId"))
 export type EventId = typeof EventId.Type
 
+export namespace EventId {
+  /**
+   * Create an EventId from agent name and counter.
+   * Counter should be zero-padded to 4 digits.
+   */
+  export const make = (agentName: AgentName, counter: number): EventId =>
+    EventId.make(`${agentName}:${String(counter).padStart(4, "0")}`)
+}
+
 export const AgentTurnNumber = Schema.Number.pipe(Schema.brand("AgentTurnNumber"))
 export type AgentTurnNumber = typeof AgentTurnNumber.Type
 
@@ -58,8 +68,9 @@ export type AgentTurnNumber = typeof AgentTurnNumber.Type
  * triggersAgentTurn: Whether this event should trigger an LLM request.
  * This is a property of EVERY event - not hardcoded to specific event types.
  *
- * parentEventId: Enables future agent forking - events can reference their causal parent.
- * This allows an agent to branch into multiple parallel execution paths.
+ * parentEventId: Links events causally (MVP feature).
+ * Used to track which event triggered a response or workflow.
+ * First events have Option.none(), responses link to their triggering event.
  */
 export const BaseEventFields = {
   id: EventId,
@@ -97,16 +108,55 @@ export class AgentConfig extends Schema.Class<AgentConfig>("AgentConfig")({
 // =============================================================================
 
 /**
- * The reduced state ready for an agent turn.
- * Uses @effect/ai Prompt.Message for messages.
+ * ALL actor state derived from events.
+ * The reducer derives this from the event log - no separate refs needed in the actor.
  *
- * ALL configuration comes from events via the reducer.
- * There is no separate AppConfig service.
+ * This includes:
+ * - Content for LLM (messages)
+ * - Configuration from events (config)
+ * - Actor internal state (counters, flags, etc.)
+ *
+ * The actor only needs:
+ * 1. events (the event log)
+ * 2. reducedContext (derived from events via reducer)
+ *
+ * No separate counters, flags, or state refs.
  */
 export interface ReducedContext {
+  // Content for LLM
   readonly messages: ReadonlyArray<Prompt.Message>
+
+  // Config derived from events
   readonly config: AgentConfig
+
+  // Actor internal state - ALL derived from events
+  readonly nextEventNumber: number // for generating EventId counter
+  readonly currentTurnNumber: AgentTurnNumber // current or next turn
+  readonly isAgentTurnInProgress: boolean // true between Started and Completed/Failed
+  readonly lastTriggeringEventId: Option.Option<EventId> // last event with triggersAgentTurn=true
 }
+
+// =============================================================================
+// ReducedContext Utilities
+// =============================================================================
+
+/**
+ * Check if an agent turn is currently in progress.
+ */
+export const isAgentTurnInProgress = (ctx: ReducedContext): boolean =>
+  ctx.isAgentTurnInProgress
+
+/**
+ * Get the next EventId for this agent.
+ */
+export const getNextEventId = (ctx: ReducedContext, agentName: AgentName): EventId =>
+  EventId.make(agentName, ctx.nextEventNumber)
+
+/**
+ * Get the last event that triggered an agent turn.
+ */
+export const getLastTriggeringEventId = (ctx: ReducedContext): Option.Option<EventId> =>
+  ctx.lastTriggeringEventId
 
 // =============================================================================
 // Content Events
@@ -349,11 +399,20 @@ export class Agent extends Context.Tag("@app/Agent")<
 /**
  * EventReducer folds events into a ReducedContext ready for an agent turn.
  *
- * The reducer derives ALL configuration from events:
+ * The reducer derives ALL actor state from events - no separate refs needed.
+ *
+ * It looks at event types to update state:
  * - SetLlmProviderConfigEvent → config.primary or config.fallback
  * - SetTimeoutEvent → config.timeoutMs
  * - SetDebounceEvent → config.debounceMs
  * - SystemPromptEvent, UserMessageEvent, etc. → messages array
+ * - AgentTurnStartedEvent → isAgentTurnInProgress=true, increment currentTurnNumber
+ * - AgentTurnCompletedEvent/FailedEvent → isAgentTurnInProgress=false
+ * - Any event → increment nextEventNumber
+ * - Event with triggersAgentTurn=true → update lastTriggeringEventId
+ *
+ * Everything the actor needs is in ReducedContext.
+ * The actor just stores events, runs reducer, calls Agent when needed.
  */
 export class EventReducer extends Context.Tag("@app/EventReducer")<
   EventReducer,
@@ -410,11 +469,16 @@ export class EventStore extends Context.Tag("@app/EventStore")<
  *
  * Each agent encapsulates:
  * - agentName: The agent's unique identifier
- * - context: List of ContextEvents (the event log)
- * - Mailbox for incoming events (actor mailbox pattern)
- * - broadcastDynamic for fan-out to multiple subscribers
- * - Background fiber for processing events
- * - State refs for events and reduced state
+ * - Internal state is ONLY:
+ *   1. events (context): List of ContextEvents (the event log)
+ *   2. reducedContext: ALL derived state from reducer
+ * - No separate counters or flags - all derived via reducer
+ *
+ * Actor behavior:
+ * - Stores events (event log)
+ * - Runs reducer to get current state
+ * - Calls Agent service when event has triggersAgentTurn=true
+ * - Broadcasts events to subscribers
  *
  * The agent is scoped - when the scope closes, the agent shuts down gracefully.
  *
@@ -438,9 +502,10 @@ export class MiniAgent extends Context.Tag("@app/MiniAgent")<
      *
      * Flow:
      * 1. Persist event immediately via EventStore
-     * 2. Update in-memory state
-     * 3. Offer to mailbox (broadcasts to all subscribers)
-     * 4. If event.triggersAgentTurn, starts debounce timer for processing
+     * 2. Update in-memory events list
+     * 3. Run reducer to update reducedContext
+     * 4. Offer to mailbox (broadcasts to all subscribers)
+     * 5. If event.triggersAgentTurn, starts debounce timer for processing
      */
     readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentError>
 
@@ -627,20 +692,35 @@ export const sampleProgram = Effect.gen(function*() {
     Effect.fork
   )
 
-  // Add a user message - triggersAgentTurn=true will start LLM request
-  yield* app.addEvent(
+  // First event has no parent
+  const firstEvent = new UserMessageEvent({
+    id: EventId.make(agentName, 0),
+    timestamp: new Date() as never, // DateTime.unsafeNow() in real code
     agentName,
-    new UserMessageEvent({
-      id: EventId.make(crypto.randomUUID()),
-      timestamp: new Date() as never, // DateTime.unsafeNow() in real code
-      agentName,
-      parentEventId: Option.none(),
-      triggersAgentTurn: true, // This triggers the LLM request
-      content: "Hello, how are you?"
-    })
-  )
+    parentEventId: Option.none(),
+    triggersAgentTurn: true, // This triggers the LLM request
+    content: "Hello, how are you?"
+  })
+  yield* app.addEvent(agentName, firstEvent)
+
+  // Agent will respond with events linking back to the first event
+  // For example, the AssistantMessageEvent would have:
+  // parentEventId: Option.some(firstEvent.id)
 
   // Wait for response events...
+  yield* Effect.sleep(Duration.seconds(5))
+
+  // Add another message - links to previous message for context
+  const secondEvent = new UserMessageEvent({
+    id: EventId.make(agentName, 5), // Assuming events 1-4 were generated by agent
+    timestamp: new Date() as never,
+    agentName,
+    parentEventId: Option.some(firstEvent.id), // Links to what we're responding to
+    triggersAgentTurn: true,
+    content: "Tell me more"
+  })
+  yield* app.addEvent(agentName, secondEvent)
+
   yield* Effect.sleep(Duration.seconds(5))
 
   // Graceful shutdown
