@@ -120,8 +120,12 @@ const getSuiteChain = (task: { suite?: { name?: string; suite?: unknown } }): Ar
 
 export const test = baseTest.extend<TestFixtures>({
   suiteDir: [async ({ task: _task }, use) => {
-    const base = await realpath(tmpdir())
-    const dir = await mkdtemp(join(base, "mini-agent-e2e-"))
+    // Use TEST_ARTIFACTS_DIR if set (for CI artifact collection), otherwise use system temp
+    const baseDir = process.env.TEST_ARTIFACTS_DIR ?? await realpath(tmpdir())
+    if (process.env.TEST_ARTIFACTS_DIR) {
+      await mkdir(baseDir, { recursive: true })
+    }
+    const dir = await mkdtemp(join(baseDir, "mini-agent-e2e-"))
     console.log(`Suite temp directory: ${dir}`)
     await use(dir)
   }, { scope: "file" as const }],

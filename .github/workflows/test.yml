@@ -26,3 +26,22 @@ jobs:
         run: doppler run -- bun run test
         env:
           DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          TEST_ARTIFACTS_DIR: ${{ runner.temp }}/test-artifacts
+
+      - name: Archive test artifacts on failure
+        if: failure()
+        run: |
+          if [ -d "${{ runner.temp }}/test-artifacts" ] && [ "$(ls -A ${{ runner.temp }}/test-artifacts)" ]; then
+            tar -czvf test-artifacts.tar.gz -C "${{ runner.temp }}/test-artifacts" .
+          else
+            echo "No test artifacts to archive"
+          fi
+
+      - name: Upload test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-failure-artifacts
+          path: test-artifacts.tar.gz
+          if-no-files-found: ignore
+          retention-days: 7
