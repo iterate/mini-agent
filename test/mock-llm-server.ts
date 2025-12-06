@@ -105,7 +105,7 @@ const generateResponse = (prompt: string): GeneratedResponse => {
     return {
       text:
         "Once upon a time in a land far away, there lived mighty dragons who soared through crystal skies. These magnificent creatures breathed fire that could melt mountains and ice that could freeze oceans. The dragons were ancient beings, wise beyond measure, who had witnessed the rise and fall of countless civilizations.",
-      chunkDelay: 150
+      chunkDelay: 500
     }
   }
 
