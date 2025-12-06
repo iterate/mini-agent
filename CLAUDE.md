@@ -6,6 +6,8 @@ alwaysApply: true
 # General
 
 - Sacrifice grammar in favour of concision. Write like a good software engineer would write to another.
+- Comments and documentation must be standalone - readable without knowledge of prior versions. Never write "now simplified to X", "previously was Y", "changed from Z". Describe what IS, not what changed.
+- Never give time estimates for how long tasks would take humans. Focus on implementation steps and actions, not timelines.
 
 # What we're building
 
