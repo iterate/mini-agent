@@ -5,7 +5,7 @@
  */
 import { type AiError, LanguageModel, Prompt } from "@effect/ai"
 import { type Error as PlatformError, FileSystem } from "@effect/platform"
-import { Effect, Option, pipe, Ref, Schema, Stream } from "effect"
+import { Clock, Effect, Option, pipe, Ref, Schema, Stream } from "effect"
 import {
   AssistantMessageEvent,
   type ContextEvent,
@@ -138,21 +138,33 @@ export const streamLLMResponse = (
       const model = yield* LanguageModel.LanguageModel
       const llmConfig = yield* CurrentLlmConfig
       const fullResponseRef = yield* Ref.make("")
+      const firstTokenReceivedRef = yield* Ref.make(false)
+
+      yield* Effect.annotateCurrentSpan("gen_ai.base_url", llmConfig.baseUrl)
+
       yield* Effect.logDebug(`Streaming LLM response`, {
         model: llmConfig.model,
         apiFormat: llmConfig.apiFormat
       })
 
-      // Convert events to @effect/ai Prompt format
       const prompt = yield* eventsToPrompt(events)
+      const startTime = yield* Clock.currentTimeMillis
 
       return pipe(
         model.streamText({ prompt }),
         Stream.filterMap((part) => part.type === "text-delta" ? Option.some(part.delta) : Option.none()),
         Stream.mapEffect((delta) =>
-          Ref.update(fullResponseRef, (t) => t + delta).pipe(
-            Effect.as(new TextDeltaEvent({ delta }) as ContextEvent)
-          )
+          Effect.gen(function*() {
+            const alreadyRecorded = yield* Ref.get(firstTokenReceivedRef)
+            if (!alreadyRecorded) {
+              yield* Ref.set(firstTokenReceivedRef, true)
+              const now = yield* Clock.currentTimeMillis
+              const ttft = now - startTime
+              yield* Effect.annotateCurrentSpan("gen_ai.time_to_first_token_ms", ttft)
+            }
+            yield* Ref.update(fullResponseRef, (t) => t + delta)
+            return new TextDeltaEvent({ delta }) as ContextEvent
+          })
         ),
         Stream.concat(
           Stream.fromEffect(
