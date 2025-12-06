@@ -10,18 +10,21 @@
  * Tests focus on synchronous state checks to avoid stream timing complexity.
  */
 import { describe, expect, it } from "@effect/vitest"
-import { Effect, Layer, Stream } from "effect"
+import { Effect, Layer, Option, Ref, Stream } from "effect"
 import {
+  type AgentTurnNumber,
   type AgentName,
+  AgentError,
   type ContextEvent,
   type ContextName,
   EventBuilder,
+  LlmProviderId,
   MiniAgentTurn,
   type ReducedContext
 } from "./domain.ts"
 import { EventReducer } from "./event-reducer.ts"
 import { EventStore } from "./event-store.ts"
-import { makeMiniAgent } from "./mini-agent.ts"
+import { makeExecuteTurn, makeMiniAgent, type ActorState } from "./mini-agent.ts"
 
 const testAgentName = "test-agent" as AgentName
 const testContextName = "test-context" as ContextName
@@ -38,6 +41,12 @@ const TestLayer = Layer.mergeAll(
   EventStore.InMemory,
   MockTurn
 )
+
+const failingAgentError = new AgentError({
+  message: "test turn failure",
+  provider: "test-provider" as LlmProviderId,
+  cause: Option.none()
+})
 
 describe("MiniAgent", () => {
   describe("creation", () => {
@@ -199,6 +208,44 @@ describe("MiniAgent", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(TestLayer)
+      ))
+  })
+
+  describe("executeTurn", () => {
+    it.effect("emits AgentTurnFailedEvent when MiniAgentTurn fails", () =>
+      Effect.gen(function*() {
+        const reducer = yield* EventReducer
+        const stateRef = yield* Ref.make<ActorState>({
+          events: [],
+          reducedContext: reducer.initialReducedContext
+        })
+
+        const addEvent = (event: ContextEvent) =>
+          Effect.gen(function*() {
+            const state = yield* Ref.get(stateRef)
+            const newEvents = [...state.events, event]
+            const newReducedContext = yield* reducer.reduce(state.reducedContext, [event])
+            yield* Ref.set(stateRef, { events: newEvents, reducedContext: newReducedContext })
+          })
+
+        const executeTurn = makeExecuteTurn({
+          agentName: testAgentName,
+          contextName: testContextName,
+          stateRef,
+          addEvent,
+          turnService: {
+            execute: (_ctx: ReducedContext) => Stream.fail(failingAgentError)
+          } as unknown as MiniAgentTurn
+        })
+
+        yield* executeTurn(1 as AgentTurnNumber)
+
+        const events = yield* Ref.get(stateRef).pipe(Effect.map((s) => s.events))
+        expect(events.some((event) => event._tag === "AgentTurnFailedEvent")).toBe(true)
+        expect(events.some((event) => event._tag === "AgentTurnCompletedEvent")).toBe(false)
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(EventReducer.Default)
       ))
   })
 })
