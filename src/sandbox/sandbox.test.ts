@@ -193,6 +193,109 @@ const edgeCases = {
   `
 }
 
+// TypeScript-specific test cases - type errors should transpile but runtime behavior varies
+const typeScriptCases = {
+  // Valid TypeScript with explicit types
+  validWithTypes: `
+    interface Context {
+      callbacks: { add: (a: number, b: number) => number }
+      data: { value: number }
+    }
+
+    export default (ctx: Context): number => {
+      const result: number = ctx.callbacks.add(ctx.data.value, 100)
+      return result
+    }
+  `,
+
+  // TypeScript with generics
+  withGenerics: `
+    function identity<T>(arg: T): T {
+      return arg
+    }
+
+    export default (ctx) => {
+      const num = identity<number>(42)
+      const str = identity<string>("hello")
+      return { num, str }
+    }
+  `,
+
+  // TypeScript with type assertions
+  withTypeAssertions: `
+    export default (ctx) => {
+      const value = ctx.data.value as number
+      const result = (value * 2) as const
+      return result
+    }
+  `,
+
+  // TypeScript with enums (transpiled to JS objects)
+  withEnums: `
+    enum Status {
+      Pending = "pending",
+      Active = "active",
+      Done = "done"
+    }
+
+    export default (ctx) => {
+      const status: Status = Status.Active
+      return { status, allStatuses: Object.values(Status) }
+    }
+  `,
+
+  // TypeScript with decorators syntax (should handle gracefully)
+  withClassTypes: `
+    class Calculator {
+      private value: number
+
+      constructor(initial: number) {
+        this.value = initial
+      }
+
+      add(n: number): this {
+        this.value += n
+        return this
+      }
+
+      getValue(): number {
+        return this.value
+      }
+    }
+
+    export default (ctx) => {
+      const calc = new Calculator(ctx.data.value)
+      return calc.add(10).add(20).getValue()
+    }
+  `,
+
+  // TypeScript with complex union types
+  withUnionTypes: `
+    type Result<T> = { success: true; data: T } | { success: false; error: string }
+
+    function processValue(value: number): Result<number> {
+      if (value < 0) {
+        return { success: false, error: "Negative value" }
+      }
+      return { success: true, data: value * 2 }
+    }
+
+    export default (ctx) => {
+      const result = processValue(ctx.data.value)
+      return result
+    }
+  `,
+
+  // Invalid TypeScript that should fail at transpilation
+  invalidTypeSyntax: `
+    export default (ctx) => {
+      // Invalid: missing closing brace in type definition
+      type Broken = {
+        name: string
+    }
+  `
+}
+
 // Security bypass attempts - these should ALL be blocked
 const securityBypasses = {
   // Constructor chain bypass: Access Function via prototype chain
@@ -351,6 +454,101 @@ for (const { layer, name: layerName } of layers) {
           expect(result.value.arr).toEqual([0, 1, 2])
           expect(result.value.obj).toContain("value")
           expect(result.value.math).toBe(2)
+        }).pipe(Effect.provide(layer)))
+    })
+
+    describe("TypeScript Features", () => {
+      it.effect("handles TypeScript generics", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const result = yield* sandbox.run<TestCallbacks, TestData, { num: number; str: string }>(
+            typeScriptCases.withGenerics,
+            ctx
+          )
+
+          expect(result.value.num).toBe(42)
+          expect(result.value.str).toBe("hello")
+        }).pipe(Effect.provide(layer)))
+
+      it.effect("handles TypeScript type assertions", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const result = yield* sandbox.run<TestCallbacks, TestData, number>(
+            typeScriptCases.withTypeAssertions,
+            ctx
+          )
+
+          expect(result.value).toBe(84) // 42 * 2
+        }).pipe(Effect.provide(layer)))
+
+      it.effect("handles TypeScript enums", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const result = yield* sandbox.run<
+            TestCallbacks,
+            TestData,
+            { status: string; allStatuses: Array<string> }
+          >(
+            typeScriptCases.withEnums,
+            ctx
+          )
+
+          expect(result.value.status).toBe("active")
+          expect(result.value.allStatuses).toContain("pending")
+          expect(result.value.allStatuses).toContain("active")
+          expect(result.value.allStatuses).toContain("done")
+        }).pipe(Effect.provide(layer)))
+
+      it.effect("handles TypeScript classes with private fields", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const result = yield* sandbox.run<TestCallbacks, TestData, number>(
+            typeScriptCases.withClassTypes,
+            ctx
+          )
+
+          expect(result.value).toBe(72) // 42 + 10 + 20
+        }).pipe(Effect.provide(layer)))
+
+      it.effect("handles TypeScript union types", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const result = yield* sandbox.run<
+            TestCallbacks,
+            TestData,
+            { success: boolean; data?: number; error?: string }
+          >(
+            typeScriptCases.withUnionTypes,
+            ctx
+          )
+
+          expect(result.value.success).toBe(true)
+          expect(result.value.data).toBe(84) // 42 * 2
+        }).pipe(Effect.provide(layer)))
+
+      it.effect("produces useful error for invalid TypeScript syntax", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const exit = yield* sandbox.run(typeScriptCases.invalidTypeSyntax, ctx).pipe(Effect.exit)
+
+          expect(Exit.isFailure(exit)).toBe(true)
+          if (Exit.isFailure(exit)) {
+            const error = Cause.failureOption(exit.cause)
+            expect(error._tag).toBe("Some")
+            if (error._tag === "Some") {
+              // Should be a transpilation or syntax error with useful message
+              const err = error.value
+              expect(err._tag === "TranspilationError" || err._tag === "SecurityViolation").toBe(true)
+              expect(err.message).toBeTruthy()
+              expect(err.message.length).toBeGreaterThan(10) // Should have meaningful message
+            }
+          }
         }).pipe(Effect.provide(layer)))
     })
 

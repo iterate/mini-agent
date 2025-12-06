@@ -2,6 +2,7 @@
  * TypeScript Sandbox Composite Service
  *
  * Orchestrates validation, transpilation, and execution into a single API.
+ * Uses Effect.fn for automatic tracing and span creation.
  */
 import { Effect, Layer } from "effect"
 
@@ -32,47 +33,48 @@ export const TypeScriptSandboxLive = Layer.effect(
     const validator = yield* CodeValidator
     const executor = yield* SandboxExecutor
 
-    const compile = <
+    // Wrapped with Effect.fn for automatic tracing spans
+    const compile = Effect.fn("TypeScriptSandbox.compile")(function*<
       TCallbacks extends CallbackRecord,
       TData
     >(
       typescript: string,
       config?: Partial<SandboxConfig>
-    ) =>
-      Effect.gen(function*() {
-        const fullConfig = { ...defaultSandboxConfig, ...config }
+    ) {
+      const fullConfig = { ...defaultSandboxConfig, ...config }
 
-        // Transpile TypeScript to JavaScript first
-        // (Acorn validator can only parse JavaScript, not TypeScript)
-        const javascript = yield* transpiler.transpile(typescript)
+      // Transpile TypeScript to JavaScript first
+      // (Acorn validator can only parse JavaScript, not TypeScript)
+      const javascript = yield* transpiler.transpile(typescript)
 
-        // Validate transpiled JavaScript for security
-        const validation = yield* validator.validate(javascript, fullConfig)
-        if (!validation.valid) {
-          return yield* Effect.fail(
-            new SecurityViolation({
-              violation: "validation_failed",
-              details: validation.errors.map((e) => `${e.type}: ${e.message}`).join("; ")
-            })
+      // Validate transpiled JavaScript for security
+      const validation = yield* validator.validate(javascript, fullConfig)
+      if (!validation.valid) {
+        return yield* Effect.fail(
+          new SecurityViolation({
+            violation: "validation_failed",
+            details: validation.errors.map((e) => `${e.type}: ${e.message}`).join("; ")
+          })
+        )
+      }
+
+      // Compute hash for caching
+      const hash = computeHash(javascript)
+
+      return {
+        javascript,
+        hash,
+        execute: <TResult>(parentContext: ParentContext<TCallbacks, TData>) =>
+          executor.execute<TCallbacks, TData, TResult>(
+            javascript,
+            parentContext,
+            fullConfig
           )
-        }
+      } as CompiledModule<TCallbacks, TData>
+    })
 
-        // Compute hash for caching
-        const hash = computeHash(javascript)
-
-        return {
-          javascript,
-          hash,
-          execute: <TResult>(parentContext: ParentContext<TCallbacks, TData>) =>
-            executor.execute<TCallbacks, TData, TResult>(
-              javascript,
-              parentContext,
-              fullConfig
-            )
-        } as CompiledModule<TCallbacks, TData>
-      })
-
-    const run = <
+    // Wrapped with Effect.fn for automatic tracing spans
+    const run = Effect.fn("TypeScriptSandbox.run")(function*<
       TCallbacks extends CallbackRecord,
       TData,
       TResult
@@ -80,11 +82,10 @@ export const TypeScriptSandboxLive = Layer.effect(
       typescript: string,
       parentContext: ParentContext<TCallbacks, TData>,
       config?: Partial<SandboxConfig>
-    ) =>
-      Effect.gen(function*() {
-        const compiled = yield* compile<TCallbacks, TData>(typescript, config)
-        return yield* compiled.execute<TResult>(parentContext)
-      })
+    ) {
+      const compiled = yield* compile<TCallbacks, TData>(typescript, config)
+      return yield* compiled.execute<TResult>(parentContext)
+    })
 
     return TypeScriptSandbox.of({ run, compile })
   })

@@ -2,8 +2,10 @@
  * TypeScript Sandbox Layer Compositions
  *
  * Pre-composed layers for different runtime environments and use cases.
+ * Uses Layer.mergeAll to combine independent implementation layers,
+ * then Layer.provide to satisfy TypeScriptSandboxLive's dependencies.
  */
-import { Layer, pipe } from "effect"
+import { Layer } from "effect"
 
 import { TypeScriptSandboxLive } from "./composite.ts"
 import { BunWorkerExecutorLive } from "./implementations/executor-bun-worker.ts"
@@ -21,11 +23,12 @@ import { AcornValidatorLive } from "./implementations/validator-acorn.ts"
  * Use for: Unit tests, rapid iteration
  * DO NOT use for: Production, untrusted code
  */
-export const DevFastLayer = pipe(
-  TypeScriptSandboxLive,
-  Layer.provide(SucraseTranspilerLive),
-  Layer.provide(AcornValidatorLive),
-  Layer.provide(UnsafeExecutorLive)
+export const DevFastLayer = TypeScriptSandboxLive.pipe(
+  Layer.provide(Layer.mergeAll(
+    SucraseTranspilerLive,
+    AcornValidatorLive,
+    UnsafeExecutorLive
+  ))
 )
 
 /**
@@ -36,11 +39,12 @@ export const DevFastLayer = pipe(
  *
  * Use for: Integration tests, staging with some isolation
  */
-export const DevSafeLayer = pipe(
-  TypeScriptSandboxLive,
-  Layer.provide(SucraseTranspilerLive),
-  Layer.provide(AcornValidatorLive),
-  Layer.provide(BunWorkerExecutorLive)
+export const DevSafeLayer = TypeScriptSandboxLive.pipe(
+  Layer.provide(Layer.mergeAll(
+    SucraseTranspilerLive,
+    AcornValidatorLive,
+    BunWorkerExecutorLive
+  ))
 )
 
 /**
@@ -51,11 +55,12 @@ export const DevSafeLayer = pipe(
  *
  * Use for: Production Bun servers
  */
-export const BunProductionLayer = pipe(
-  TypeScriptSandboxLive,
-  Layer.provide(BunTranspilerLive),
-  Layer.provide(AcornValidatorLive),
-  Layer.provide(BunWorkerExecutorLive)
+export const BunProductionLayer = TypeScriptSandboxLive.pipe(
+  Layer.provide(Layer.mergeAll(
+    BunTranspilerLive,
+    AcornValidatorLive,
+    BunWorkerExecutorLive
+  ))
 )
 
 /**
@@ -67,9 +72,10 @@ export const BunProductionLayer = pipe(
  * Use for: Trusted code execution where speed matters
  * DO NOT use for: Untrusted user code
  */
-export const BunFastLayer = pipe(
-  TypeScriptSandboxLive,
-  Layer.provide(BunTranspilerLive),
-  Layer.provide(AcornValidatorLive),
-  Layer.provide(UnsafeExecutorLive)
+export const BunFastLayer = TypeScriptSandboxLive.pipe(
+  Layer.provide(Layer.mergeAll(
+    BunTranspilerLive,
+    AcornValidatorLive,
+    UnsafeExecutorLive
+  ))
 )
