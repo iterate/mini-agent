@@ -5,10 +5,10 @@
  */
 import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
-import { type Error as PlatformError, HttpServer, Terminal } from "@effect/platform"
+import { type Error as PlatformError, FileSystem, HttpServer, Terminal } from "@effect/platform"
 import { BunHttpServer, BunStream } from "@effect/platform-bun"
 import { Chunk, Console, Effect, Layer, Option, Schema, Stream } from "effect"
-import { AppConfig } from "../config.ts"
+import { AppConfig, resolveBaseDir } from "../config.ts"
 import {
   AssistantMessageEvent,
   type ContextEvent,
@@ -454,6 +454,26 @@ const traceTestCommand = Command.make(
     }).pipe(Effect.withSpan("trace-test-command"))
 ).pipe(Command.withDescription("Simple command for testing tracing"))
 
+const clearCommand = Command.make(
+  "clear",
+  {},
+  () =>
+    Effect.gen(function*() {
+      const config = yield* AppConfig
+      const baseDir = resolveBaseDir(config)
+      const fs = yield* FileSystem.FileSystem
+
+      const exists = yield* fs.exists(baseDir)
+      if (!exists) {
+        yield* Console.log(`No data directory found at ${baseDir}`)
+        return
+      }
+
+      yield* fs.remove(baseDir, { recursive: true })
+      yield* Console.log(`Deleted ${baseDir}`)
+    })
+).pipe(Command.withDescription("Delete the .mini-agent data directory"))
+
 const portOption = Options.integer("port").pipe(
   Options.withAlias("p"),
   Options.withDescription("Port to listen on"),
@@ -523,7 +543,14 @@ const rootCommand = Command.make(
     llm: llmOption
   }
 ).pipe(
-  Command.withSubcommands([chatCommand, serveCommand, layercodeCommand, logTestCommand, traceTestCommand]),
+  Command.withSubcommands([
+    chatCommand,
+    serveCommand,
+    layercodeCommand,
+    logTestCommand,
+    traceTestCommand,
+    clearCommand
+  ]),
   Command.withDescription("AI assistant with persistent context and comprehensive configuration")
 )
 
