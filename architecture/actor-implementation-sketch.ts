@@ -1,33 +1,20 @@
 /**
  * Actor Implementation Sketch
  *
- * This file shows key implementation patterns for the MiniAgent service.
- * NOT runnable code - aspirational design reference only.
+ * Implementation patterns for the MiniAgent service.
+ * NOT runnable code - design reference only.
  *
- * Conceptual Model:
- * - ContextEvent: An event in a context (messages, config changes, lifecycle events)
- * - Context: A list of ContextEvents
- * - MiniAgent: Has agentName, context (list of events), and external interface
- *
- * Key Simplification: Actor state = events + reducedContext
- * - ActorState contains only: events (the full list) and reducedContext (derived state)
- * - ALL internal state (counters, flags, tracking) lives in reducedContext
- * - EventReducer derives reducedContext from events
- * - No manual counter management, no separate refs for processing state
- * - Parent event linking is automatic via reducedContext.agentTurnStartedAtEventId
+ * Actor State:
+ * - events: The full event list (the context)
+ * - reducedContext: All derived state from EventReducer
  *
  * Key Pattern: Mailbox + broadcastDynamic
- * - Mailbox for actor mailbox semantics (offer, end, toStream)
- * - Stream.broadcastDynamic for fan-out to multiple subscribers
- * - Each execution of the `events` stream = new subscriber to internal PubSub
+ * - Mailbox for actor input (offer, end, toStream)
+ * - Stream.broadcastDynamic for fan-out to subscribers
+ * - Each execution of `events` stream = new subscriber
  *
- * IMPORTANT: broadcastDynamic is a LIVE stream:
- * - Late subscribers only receive events published AFTER they subscribe
- * - For historical events, use getEvents (reads from in-memory state)
- *
- * Philosophy: "Agent events are all you need"
- * - triggersAgentTurn property on events determines if LLM request should happen
- * - All config comes from events via ReducedContext (no separate AppConfig)
+ * IMPORTANT: broadcastDynamic is a LIVE stream.
+ * Late subscribers miss events. Use getEvents for historical access.
  */
 
 import {
@@ -43,11 +30,11 @@ import {
   Stream
 } from "effect"
 import type {
-  AgentEvent as ContextEvent,
   AgentName,
   AgentTurnCompletedEvent,
   AgentTurnFailedEvent,
   AgentTurnStartedEvent,
+  ContextEvent,
   EventId,
   EventReducer,
   MiniAgentError,
@@ -270,134 +257,39 @@ const makeMiniAgent = (agentName: AgentName) =>
   )
 
 /**
- * KEY LEARNINGS
+ * Implementation Notes
  *
- * 1. ACTOR STATE SIMPLIFICATION
+ * ACTOR STATE
+ * ActorState = { events, reducedContext }. All derived state lives in reducedContext
+ * (nextEventNumber, currentTurnNumber, agentTurnStartedAtEventId). The reducer
+ * computes reducedContext from events - deterministic and testable.
  *
- *    ActorState contains ONLY:
- *    - events: The full event list
- *    - reducedContext: Derived state from EventReducer
+ * EVENT IDS
+ * Format: {agentName}:{counter} e.g. "chat:0001". Counter from reducedContext.nextEventNumber.
  *
- *    ALL internal state lives in reducedContext:
- *    - nextEventNumber: Counter for generating event IDs
- *    - currentTurnNumber: Current agent turn number
- *    - agentTurnStartedAtEventId: Option<EventId> - tracks if turn is in progress
- *                                 and serves as parent event for linking
+ * TURN TRACKING
+ * agentTurnStartedAtEventId: Option<EventId> serves dual purpose:
+ * - Option.isSome = turn in progress
+ * - The EventId = parent for new events (automatic causal linking)
+ * Reducer sets to Some on AgentTurnStartedEvent, resets to None on Completed/Failed.
  *
- *    This eliminates manual counter management and separate refs.
+ * LIVE STREAMS
+ * broadcastDynamic doesn't replay. Late subscribers miss events.
+ * Use getEvents for historical access.
  *
- * 2. EVENT ID FORMAT
+ * SUBSCRIPTION TIMING
+ * For tests: subscribe before adding events, or use Deferred for coordination.
+ * ```typescript
+ * const ready = yield* Deferred.make<void>()
+ * const fiber = yield* agent.events.pipe(
+ *   Stream.tap(() => Deferred.succeed(ready, void 0)),
+ *   Stream.runCollect, Effect.fork
+ * )
+ * yield* Deferred.await(ready)
+ * yield* agent.addEvent(event)
+ * ```
  *
- *    EventIds use format: {agentName}:{counter}
- *    Example: "chat:0001", "chat:0002", etc.
- *
- *    Generated inline using reducedContext.nextEventNumber:
- *    `${agentName}:${String(state.reducedContext.nextEventNumber).padStart(4, "0")}`
- *
- *    This allows:
- *    - Easy identification of which agent created the event
- *    - Sequential ordering within an agent's context
- *    - Debugging and tracing across multiple agents
- *
- * 3. TURN NUMBERING
- *
- *    Each agent turn (LLM request) has a turnNumber from reducedContext.currentTurnNumber.
- *    Turn events (AgentTurnStartedEvent, AgentTurnCompletedEvent, AgentTurnFailedEvent)
- *    include the turnNumber for tracking and correlation.
- *
- *    EventReducer increments currentTurnNumber when AgentTurnStartedEvent is reduced.
- *
- *    This enables:
- *    - Correlating all events within a single agent turn
- *    - Measuring turn duration and performance
- *    - Debugging multi-turn conversations
- *
- * 4. AGENT TURN TRACKING (SINGLE FIELD)
- *
- *    agentTurnStartedAtEventId: Option<EventId> serves dual purpose:
- *    - Option.isSome = agent turn is in progress
- *    - The EventId value = parent event for automatic linking
- *
- *    When an event with triggersAgentTurn=true is added, reducer sets this to Option.some(eventId).
- *    When AgentTurnStartedEvent is added, reducer stores its ID here.
- *    When AgentTurnCompletedEvent/AgentTurnFailedEvent is added, reducer resets to Option.none().
- *
- *    All events have parentEventId populated from this field, creating automatic causal chains.
- *
- *    This enables:
- *    - Single field for turn state + parent linking (no redundancy)
- *    - Automatic causal relationship tracking
- *    - Future branching/forking from specific events
- *    - Building event trees rather than linear lists
- *    - No manual parent tracking needed
- *
- * 5. REDUCER-DRIVEN ARCHITECTURE
- *
- *    EventReducer is the single source of truth for derived state.
- *    Flow: events → reducer → reducedContext → behavior
- *
- *    Benefits:
- *    - Deterministic state (same events = same state)
- *    - Easy testing (pure function)
- *    - Replay capability
- *    - No state synchronization bugs
- *
- * 6. LIVE STREAM BEHAVIOR
- *
- *    broadcastDynamic doesn't replay events to late subscribers.
- *    Subscribers only receive events published AFTER they subscribe.
- *
- *    For historical events, use getEvents which returns from in-memory state.
- *
- * 7. TRIGGERSAGENTTURN PROPERTY
- *
- *    Processing is triggered by event.triggersAgentTurn=true, not by event type.
- *    This allows any event type to optionally trigger an LLM request.
- *    Typical usage:
- *    - UserMessageEvent: triggersAgentTurn=true
- *    - FileAttachmentEvent: triggersAgentTurn=false (attached before user sends)
- *    - SystemPromptEvent: triggersAgentTurn=false (setup phase)
- *
- * 8. HARD-CODED DEBOUNCE
- *
- *    Debounce is hard-coded to 100ms for simplicity.
- *    Stream.debounce(Duration.millis(100)) delays processing until 100ms after
- *    the last triggering event.
- *
- *    This prevents multiple rapid-fire events from triggering multiple agent turns.
- *
- * 9. SUBSCRIPTION TIMING
- *
- *    For tests or code that needs to ensure a subscriber is connected
- *    before events are added, either:
- *    - Subscribe synchronously (in same Effect.gen block) before adding events
- *    - Use a Deferred to signal when subscription is ready
- *
- *    Example with Deferred:
- *    ```typescript
- *    const ready = yield* Deferred.make<void>()
- *    const fiber = yield* agent.events.pipe(
- *      Stream.tap(() => Deferred.succeed(ready, void 0)),
- *      Stream.take(2),
- *      Stream.runCollect,
- *      Effect.fork
- *    )
- *    yield* Deferred.await(ready)
- *    yield* agent.addEvent(event)
- *    ```
- *
- * 10. CLEAN SHUTDOWN
- *
- *     - Emit SessionEndedEvent before ending mailbox
- *     - mailbox.end completes the broadcast stream
- *     - Interrupt processing fiber
- *     - Use Effect.addFinalizer for automatic cleanup on scope close
- *
- * 11. TESTING
- *
- *     - Tests work well for synchronous subscription scenarios
- *     - Concurrent tests (fork + add events) require careful timing
- *     - Use Deferred for coordination, not sleep/delays
- *     - Use EventStore.inMemoryLayer for tests (no disk I/O)
- *     - Test EventReducer independently as pure function
+ * SHUTDOWN
+ * Emit SessionEndedEvent → mailbox.end → Fiber.interrupt(processingFiber).
+ * Effect.addFinalizer handles cleanup on scope close.
  */
