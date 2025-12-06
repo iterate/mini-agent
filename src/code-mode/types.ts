@@ -2,21 +2,9 @@
  * Code Mode Core Types
  */
 import type { Effect } from "effect"
+import type { CompilerOptions } from "typescript"
 
-import type { ExecutionError, TimeoutError, ValidationError, ValidationWarning } from "./errors.ts"
-
-/**
- * Callbacks the parent provides to user code
- */
-export type CallbackRecord = Record<string, (...args: Array<any>) => any>
-
-/**
- * Context passed to user code
- */
-export interface ParentContext<TCallbacks extends CallbackRecord, TData> {
-  readonly callbacks: TCallbacks
-  readonly data: TData
-}
+import type { ExecutionError, TimeoutError, TypeCheckDiagnostic, ValidationError, ValidationWarning } from "./errors.ts"
 
 /**
  * Result of code execution
@@ -36,14 +24,34 @@ export interface ValidationResult {
 }
 
 /**
+ * Result of type checking
+ */
+export interface TypeCheckResult {
+  readonly valid: boolean
+  readonly diagnostics: ReadonlyArray<TypeCheckDiagnostic>
+}
+
+/**
  * Pre-compiled module for repeated execution
  */
-export interface CompiledModule<TCallbacks extends CallbackRecord, TData> {
+export interface CompiledModule<TCtx extends object> {
   readonly javascript: string
   readonly hash: string
   readonly execute: <TResult>(
-    parentContext: ParentContext<TCallbacks, TData>
+    ctx: TCtx
   ) => Effect.Effect<ExecutionResult<TResult>, ExecutionError | TimeoutError>
+}
+
+/**
+ * Type checking configuration
+ */
+export interface TypeCheckConfig {
+  /** Enable type checking (default: false) */
+  readonly enabled: boolean
+  /** TypeScript compiler options */
+  readonly compilerOptions: CompilerOptions
+  /** Type definitions prepended to user code for type checking only */
+  readonly preamble: string
 }
 
 /**
@@ -53,6 +61,7 @@ export interface CodeModeConfig {
   readonly timeoutMs: number
   readonly allowedGlobals: ReadonlyArray<string>
   readonly forbiddenPatterns: ReadonlyArray<RegExp>
+  readonly typeCheck: TypeCheckConfig
 }
 
 export const defaultConfig: CodeModeConfig = {
@@ -128,5 +137,24 @@ export const defaultConfig: CodeModeConfig = {
     /self\s*[.[\]]/,
     /Deno\s*[.[\]]/,
     /Bun\s*[.[\]]/
-  ]
+  ],
+  typeCheck: {
+    enabled: false,
+    compilerOptions: {
+      strict: true,
+      noEmit: true,
+      skipLibCheck: true
+    },
+    preamble: ""
+  }
+}
+
+export const defaultTypeCheckConfig: TypeCheckConfig = {
+  enabled: false,
+  compilerOptions: {
+    strict: true,
+    noEmit: true,
+    skipLibCheck: true
+  },
+  preamble: ""
 }

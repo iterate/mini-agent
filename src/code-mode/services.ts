@@ -4,13 +4,13 @@
 import type { Effect } from "effect"
 import { Context } from "effect"
 
-import type { ExecutionError, SecurityViolation, TimeoutError, TranspilationError } from "./errors.ts"
+import type { ExecutionError, SecurityViolation, TimeoutError, TranspilationError, TypeCheckError } from "./errors.ts"
 import type {
-  CallbackRecord,
   CodeModeConfig,
   CompiledModule,
   ExecutionResult,
-  ParentContext,
+  TypeCheckConfig,
+  TypeCheckResult,
   ValidationResult
 } from "./types.ts"
 
@@ -38,37 +38,50 @@ export class Validator extends Context.Tag("@app/code-mode/Validator")<
 >() {}
 
 /**
+ * Type-checks TypeScript code using the compiler API
+ */
+export class TypeChecker extends Context.Tag("@app/code-mode/TypeChecker")<
+  TypeChecker,
+  {
+    readonly check: (
+      typescript: string,
+      config: TypeCheckConfig
+    ) => Effect.Effect<TypeCheckResult, TypeCheckError>
+  }
+>() {}
+
+/**
  * Executes validated JavaScript
  */
 export class Executor extends Context.Tag("@app/code-mode/Executor")<
   Executor,
   {
-    readonly execute: <TCallbacks extends CallbackRecord, TData, TResult>(
+    readonly execute: <TCtx extends object, TResult>(
       javascript: string,
-      parentContext: ParentContext<TCallbacks, TData>,
+      ctx: TCtx,
       config: CodeModeConfig
     ) => Effect.Effect<ExecutionResult<TResult>, ExecutionError | TimeoutError | SecurityViolation>
   }
 >() {}
 
 /**
- * Main API: transpile → validate → execute
+ * Main API: type-check → transpile → validate → execute
  */
 export class CodeMode extends Context.Tag("@app/code-mode/CodeMode")<
   CodeMode,
   {
-    readonly run: <TCallbacks extends CallbackRecord, TData, TResult>(
+    readonly run: <TCtx extends object, TResult>(
       typescript: string,
-      parentContext: ParentContext<TCallbacks, TData>,
+      ctx: TCtx,
       config?: Partial<CodeModeConfig>
     ) => Effect.Effect<
       ExecutionResult<TResult>,
-      TranspilationError | ExecutionError | TimeoutError | SecurityViolation
+      TranspilationError | TypeCheckError | ExecutionError | TimeoutError | SecurityViolation
     >
 
-    readonly compile: <TCallbacks extends CallbackRecord, TData>(
+    readonly compile: <TCtx extends object>(
       typescript: string,
       config?: Partial<CodeModeConfig>
-    ) => Effect.Effect<CompiledModule<TCallbacks, TData>, TranspilationError | SecurityViolation>
+    ) => Effect.Effect<CompiledModule<TCtx>, TranspilationError | TypeCheckError | SecurityViolation>
   }
 >() {}

@@ -42,6 +42,21 @@ export class TranspilationError extends Schema.TaggedError<TranspilationError>()
   }
 ) {}
 
+const TypeCheckDiagnostic = Schema.Struct({
+  message: Schema.String,
+  line: Schema.optional(Schema.Number),
+  column: Schema.optional(Schema.Number),
+  code: Schema.optional(Schema.Number)
+})
+export type TypeCheckDiagnostic = typeof TypeCheckDiagnostic.Type
+
+export class TypeCheckError extends Schema.TaggedError<TypeCheckError>()(
+  "TypeCheckError",
+  {
+    diagnostics: Schema.Array(TypeCheckDiagnostic)
+  }
+) {}
+
 export class ExecutionError extends Schema.TaggedError<ExecutionError>()(
   "ExecutionError",
   {
@@ -69,6 +84,7 @@ export class SecurityViolation extends Schema.TaggedError<SecurityViolation>()(
 export const CodeModeError = Schema.Union(
   ValidationError,
   TranspilationError,
+  TypeCheckError,
   ExecutionError,
   TimeoutError,
   SecurityViolation
