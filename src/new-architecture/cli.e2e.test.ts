@@ -2,6 +2,7 @@
  * CLI E2E Tests for new architecture.
  *
  * Tests the new actor-based CLI functionality.
+ * NOTE: Tests requiring LLM calls will skip if OPENAI_API_KEY is not available.
  */
 import { Command } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
@@ -12,6 +13,9 @@ import { describe } from "vitest"
 import { expect, test } from "../../test/fixtures.js"
 
 const CLI_PATH = path.resolve(__dirname, "./cli.ts")
+
+/** Check if API keys are available for LLM tests */
+const hasApiKeys = () => Boolean(process.env.OPENAI_API_KEY)
 
 interface CliResult {
   stdout: string
@@ -24,14 +28,14 @@ const runCli = (
   args: Array<string>,
   options: { cwd?: string; env?: Record<string, string> } = {}
 ): Effect.Effect<CliResult, never, never> => {
-  const cwdArgs = options.cwd ? ["--cwd", options.cwd] : []
+  // Inherit all parent env vars (including API keys from Doppler)
   const env = {
     ...process.env,
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "test-api-key",
     ...options.env
   }
 
-  let cmd = Command.make("bun", CLI_PATH, ...cwdArgs, ...args)
+  // Build command - use workingDirectory instead of --cwd arg
+  let cmd = Command.make("bun", CLI_PATH, ...args)
   if (options.cwd) cmd = Command.workingDirectory(cmd, options.cwd)
   cmd = Command.env(cmd, env)
 
@@ -93,7 +97,7 @@ describe("New Architecture CLI", () => {
   })
 
   describe("chat command", () => {
-    test("sends a message and gets a response", { timeout: 60000 }, async ({ testDir }) => {
+    test.skipIf(!hasApiKeys())("sends a message and gets a response", { timeout: 60000 }, async ({ testDir }) => {
       const result = await Effect.runPromise(
         runCli(["chat", "-n", "test-context", "-m", "Say exactly: TEST_V2_RESPONSE"], { cwd: testDir })
       )
@@ -102,7 +106,7 @@ describe("New Architecture CLI", () => {
       expect(result.exitCode).toBe(0)
     })
 
-    test("outputs JSON in raw mode", { timeout: 60000 }, async ({ testDir }) => {
+    test.skipIf(!hasApiKeys())("outputs JSON in raw mode", { timeout: 60000 }, async ({ testDir }) => {
       const result = await Effect.runPromise(
         runCli(["chat", "-n", "raw-test", "-m", "Say exactly: RAW_TEST", "--raw"], { cwd: testDir })
       )
@@ -113,7 +117,7 @@ describe("New Architecture CLI", () => {
       expect(jsonOutput).toContain("\"AssistantMessageEvent\"")
     })
 
-    test("creates context file", { timeout: 60000 }, async ({ testDir }) => {
+    test.skipIf(!hasApiKeys())("creates context file", { timeout: 60000 }, async ({ testDir }) => {
       await Effect.runPromise(
         runCli(["chat", "-n", "persist-test", "-m", "Hello"], { cwd: testDir })
       )
@@ -126,7 +130,7 @@ describe("New Architecture CLI", () => {
       expect(files.some((f) => f.includes("persist-test"))).toBe(true)
     })
 
-    test("maintains conversation history", { timeout: 90000 }, async ({ testDir }) => {
+    test.skipIf(!hasApiKeys())("maintains conversation history", { timeout: 90000 }, async ({ testDir }) => {
       // First message
       await Effect.runPromise(
         runCli(["chat", "-n", "history-test", "-m", "Remember: my secret code is ABC123"], { cwd: testDir })
@@ -150,7 +154,7 @@ describe("Multi-LLM", () => {
   ] as const
 
   describe.each(llms)("LLM: $llm", ({ llm }) => {
-    test(
+    test.skipIf(!hasApiKeys())(
       "basic chat works",
       { timeout: 60000 },
       async ({ testDir }) => {

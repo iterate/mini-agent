@@ -2,6 +2,7 @@
  * Server E2E Tests for new architecture.
  *
  * Tests the HTTP server functionality.
+ * NOTE: Tests requiring LLM calls will skip if OPENAI_API_KEY is not available.
  */
 import { spawn } from "child_process"
 import * as path from "node:path"
@@ -9,6 +10,9 @@ import { describe } from "vitest"
 import { expect, test } from "../../test/fixtures.js"
 
 const SERVER_PATH = path.resolve(__dirname, "./server.ts")
+
+/** Check if API keys are available for LLM tests */
+const hasApiKeys = () => Boolean(process.env.OPENAI_API_KEY)
 
 // Port counter to avoid conflicts
 let portCounter = 5000 + Math.floor(Math.random() * 1000)
@@ -23,8 +27,7 @@ const startServer = async (
   const proc = spawn("bun", [SERVER_PATH, "--port", String(port)], {
     cwd,
     env: {
-      ...process.env,
-      OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "test-api-key"
+      ...process.env
     },
     stdio: "ignore"
   })
@@ -87,7 +90,7 @@ describe("New Architecture Server", () => {
     }
   })
 
-  test("agent endpoint processes message", { timeout: 60000 }, async ({ testDir }) => {
+  test.skipIf(!hasApiKeys())("agent endpoint processes message", { timeout: 60000 }, async ({ testDir }) => {
     const { cleanup, port } = await startServer(testDir)
 
     try {
@@ -143,30 +146,34 @@ describe("New Architecture Server", () => {
     }
   })
 
-  test("maintains conversation history across requests", { timeout: 90000 }, async ({ testDir }) => {
-    const { cleanup, port } = await startServer(testDir)
+  test.skipIf(!hasApiKeys())(
+    "maintains conversation history across requests",
+    { timeout: 90000 },
+    async ({ testDir }) => {
+      const { cleanup, port } = await startServer(testDir)
 
-    try {
-      // First message
-      await fetch(`http://localhost:${port}/agent/history-agent`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ _tag: "UserMessage", content: "Remember: my code is XYZ789" })
-      })
+      try {
+        // First message
+        await fetch(`http://localhost:${port}/agent/history-agent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ _tag: "UserMessage", content: "Remember: my code is XYZ789" })
+        })
 
-      // Second message
-      const response = await fetch(`http://localhost:${port}/agent/history-agent`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ _tag: "UserMessage", content: "What is my code?" })
-      })
+        // Second message
+        const response = await fetch(`http://localhost:${port}/agent/history-agent`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ _tag: "UserMessage", content: "What is my code?" })
+        })
 
-      const events = await parseSSE(response)
-      const fullResponse = events.join("")
+        const events = await parseSSE(response)
+        const fullResponse = events.join("")
 
-      expect(fullResponse.toLowerCase()).toContain("xyz789")
-    } finally {
-      await cleanup()
+        expect(fullResponse.toLowerCase()).toContain("xyz789")
+      } finally {
+        await cleanup()
+      }
     }
-  })
+  )
 })
