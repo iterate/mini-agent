@@ -11,20 +11,12 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer, Option, Ref, Stream } from "effect"
-import {
-  type AgentTurnNumber,
-  type AgentName,
-  AgentError,
-  type ContextEvent,
-  type ContextName,
-  EventBuilder,
-  LlmProviderId,
-  MiniAgentTurn,
-  type ReducedContext
-} from "./domain.ts"
+import type { AgentName, AgentTurnNumber, ContextEvent, ContextName, LlmProviderId, ReducedContext } from "./domain.ts"
+import { AgentError, EventBuilder, MiniAgentTurn } from "./domain.ts"
 import { EventReducer } from "./event-reducer.ts"
 import { EventStore } from "./event-store.ts"
-import { makeExecuteTurn, makeMiniAgent, type ActorState } from "./mini-agent.ts"
+import type { ActorState } from "./mini-agent.ts"
+import { makeExecuteTurn, makeMiniAgent } from "./mini-agent.ts"
 
 const testAgentName = "test-agent" as AgentName
 const testContextName = "test-context" as ContextName

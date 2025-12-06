@@ -46,7 +46,7 @@ export interface ExecuteTurnDeps {
 
 export const makeExecuteTurn = (deps: ExecuteTurnDeps) => (turnNumber: AgentTurnNumber) =>
   Effect.gen(function*() {
-    const { agentName, contextName, stateRef, addEvent, turnService } = deps
+    const { addEvent, agentName, contextName, stateRef, turnService } = deps
     const state = yield* Ref.get(stateRef)
 
     const startEvent = new AgentTurnStartedEvent({
