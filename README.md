@@ -159,14 +159,3 @@ See [`src/tracing.ts`](src/tracing.ts) for configuration. Set provider-specific 
 See [`architecture/architecture.md`](architecture/architecture.md) for design overview and [`architecture/design.ts`](architecture/design.ts) for complete type definitions.
 
 Core concept: A **Context** is a named, ordered list of events representing a conversation. Events reduce to state, state drives the agent.
-
-## Development
-
-```bash
-bun install
-bun run check        # typecheck + lint
-bun run check:fix    # with auto-fix
-doppler run -- bun run test
-```
-
-See [CLAUDE.md](CLAUDE.md) for detailed conventions.
