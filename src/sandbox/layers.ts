@@ -2,8 +2,7 @@
  * TypeScript Sandbox Layer Compositions
  *
  * Pre-composed layers for different runtime environments and use cases.
- * Uses Layer.mergeAll to combine independent implementation layers,
- * then Layer.provide to satisfy TypeScriptSandboxLive's dependencies.
+ * Pattern: TypeScriptSandboxLive.pipe(Layer.provide(deps)) - consumer receives deps.
  */
 import { Layer } from "effect"
 

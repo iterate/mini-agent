@@ -5,7 +5,7 @@
  * Use only for development/testing where speed matters more than security.
  * User code runs in the same V8 context as the host.
  */
-import { Effect, Layer } from "effect"
+import { Duration, Effect, Layer } from "effect"
 
 import { ExecutionError, TimeoutError } from "../errors.ts"
 import { SandboxExecutor } from "../services.ts"
@@ -14,27 +14,13 @@ import type { CallbackRecord, ExecutionResult, ParentContext, SandboxConfig } fr
 export const UnsafeExecutorLive = Layer.succeed(
   SandboxExecutor,
   SandboxExecutor.of({
-    execute: <
-      TCallbacks extends CallbackRecord,
-      TData,
-      TResult
-    >(
+    execute: <TCallbacks extends CallbackRecord, TData, TResult>(
       javascript: string,
       parentContext: ParentContext<TCallbacks, TData>,
       config: SandboxConfig
-    ) =>
-      Effect.async<ExecutionResult<TResult>, ExecutionError | TimeoutError>((resume) => {
+    ): Effect.Effect<ExecutionResult<TResult>, ExecutionError | TimeoutError> =>
+      Effect.gen(function*() {
         const start = performance.now()
-        let completed = false
-        let timeoutId: ReturnType<typeof setTimeout> | undefined
-
-        // Safe resume that prevents double-calling
-        const safeResume = (effect: Effect.Effect<ExecutionResult<TResult>, ExecutionError | TimeoutError>) => {
-          if (completed) return
-          completed = true
-          if (timeoutId) clearTimeout(timeoutId)
-          resume(effect)
-        }
 
         // Wrap user code to extract and call the default export
         const wrappedCode = `
@@ -52,68 +38,38 @@ export const UnsafeExecutorLive = Layer.succeed(
           })
         `
 
-        try {
-          // Create the function (this is essentially eval)
-          const fn = eval(wrappedCode) as (ctx: ParentContext<TCallbacks, TData>) => unknown
-
-          // Set up timeout
-          const timeoutPromise = new Promise<never>((_, reject) => {
-            timeoutId = setTimeout(() => {
-              reject(new TimeoutError({ timeoutMs: config.timeoutMs }))
-            }, config.timeoutMs)
-          })
-
-          // Execute with context
-          const resultOrPromise = fn(parentContext)
-
-          // Handle both sync and async results with timeout
-          Promise.race([
-            Promise.resolve(resultOrPromise),
-            timeoutPromise
-          ])
-            .then((value) => {
-              safeResume(
-                Effect.succeed({
-                  value: value as TResult,
-                  durationMs: performance.now() - start,
-                  metadata: { executor: "unsafe-eval", isolated: false }
-                })
-              )
+        // Create the function (may throw on syntax error)
+        const fn = yield* Effect.try({
+          try: () => eval(wrappedCode) as (ctx: ParentContext<TCallbacks, TData>) => unknown,
+          catch: (e) =>
+            new ExecutionError({
+              message: (e as Error).message,
+              stack: (e as Error).stack,
+              cause: e as Error
             })
-            .catch((err) => {
-              if (err instanceof TimeoutError) {
-                safeResume(Effect.fail(err))
-              } else {
-                const e = err as Error
-                safeResume(
-                  Effect.fail(
-                    new ExecutionError({
-                      _message: e.message,
-                      stack: e.stack,
-                      cause: e
-                    })
-                  )
-                )
-              }
-            })
-        } catch (e) {
-          const err = e as Error
-          safeResume(
-            Effect.fail(
-              new ExecutionError({
-                _message: err.message,
-                stack: err.stack,
-                cause: err
-              })
-            )
-          )
-        }
-
-        // Return cleanup function for Effect interruption
-        return Effect.sync(() => {
-          completed = true
-          if (timeoutId) clearTimeout(timeoutId)
         })
+
+        // Execute with timeout (handles both sync and async results)
+        const value = yield* Effect.tryPromise({
+          try: () => Promise.resolve(fn(parentContext)),
+          catch: (e) =>
+            new ExecutionError({
+              message: (e as Error).message,
+              stack: (e as Error).stack,
+              cause: e as Error
+            })
+        }).pipe(
+          Effect.timeoutFail({
+            duration: Duration.millis(config.timeoutMs),
+            onTimeout: () => new TimeoutError({ timeoutMs: config.timeoutMs })
+          })
+        )
+
+        return {
+          value: value as TResult,
+          durationMs: performance.now() - start,
+          metadata: { executor: "unsafe-eval", isolated: false }
+        }
       })
   })
 )

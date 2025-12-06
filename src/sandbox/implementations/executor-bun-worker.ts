@@ -33,11 +33,7 @@ interface WorkerMessage {
 export const BunWorkerExecutorLive = Layer.succeed(
   SandboxExecutor,
   SandboxExecutor.of({
-    execute: <
-      TCallbacks extends CallbackRecord,
-      TData,
-      TResult
-    >(
+    execute: <TCallbacks extends CallbackRecord, TData, TResult>(
       javascript: string,
       parentContext: ParentContext<TCallbacks, TData>,
       config: SandboxConfig
@@ -46,7 +42,6 @@ export const BunWorkerExecutorLive = Layer.succeed(
         const start = performance.now()
         let completed = false
 
-        // Safe resume that prevents double-calling
         const safeResume = (effect: Effect.Effect<ExecutionResult<TResult>, ExecutionError | TimeoutError>) => {
           if (completed) return
           completed = true
@@ -120,19 +115,25 @@ export const BunWorkerExecutorLive = Layer.succeed(
         // Create blob URL for worker
         const blob = new Blob([workerCode], { type: "application/javascript" })
         const url = URL.createObjectURL(blob)
-
-        // Prepare callback names (functions can't be serialized)
+        const worker = new Worker(url)
         const callbackNames = Object.keys(parentContext.callbacks)
 
-        // Create worker
-        const worker = new Worker(url)
+        // Centralized cleanup
+        const cleanup = () => {
+          worker.terminate()
+          URL.revokeObjectURL(url)
+        }
 
         // Timeout handling
         const timeoutId = setTimeout(() => {
-          worker.terminate()
-          URL.revokeObjectURL(url)
+          cleanup()
           safeResume(Effect.fail(new TimeoutError({ timeoutMs: config.timeoutMs })))
         }, config.timeoutMs)
+
+        const cleanupAll = () => {
+          clearTimeout(timeoutId)
+          cleanup()
+        }
 
         // Message handling
         worker.onmessage = async (event: MessageEvent<WorkerMessage>) => {
@@ -140,7 +141,6 @@ export const BunWorkerExecutorLive = Layer.succeed(
 
           switch (type) {
             case "callback": {
-              // Proxy callback invocation to parent
               const { args, callId, name } = payload
               if (!name || !callId) return
 
@@ -168,9 +168,7 @@ export const BunWorkerExecutorLive = Layer.succeed(
             }
 
             case "success": {
-              clearTimeout(timeoutId)
-              worker.terminate()
-              URL.revokeObjectURL(url)
+              cleanupAll()
               safeResume(
                 Effect.succeed({
                   value: payload.value as TResult,
@@ -182,13 +180,11 @@ export const BunWorkerExecutorLive = Layer.succeed(
             }
 
             case "error": {
-              clearTimeout(timeoutId)
-              worker.terminate()
-              URL.revokeObjectURL(url)
+              cleanupAll()
               safeResume(
                 Effect.fail(
                   new ExecutionError({
-                    _message: payload.message || "Unknown error",
+                    message: payload.message || "Unknown error",
                     stack: payload.stack
                   })
                 )
@@ -199,13 +195,11 @@ export const BunWorkerExecutorLive = Layer.succeed(
         }
 
         worker.onerror = (error) => {
-          clearTimeout(timeoutId)
-          worker.terminate()
-          URL.revokeObjectURL(url)
+          cleanupAll()
           safeResume(
             Effect.fail(
               new ExecutionError({
-                _message: error.message || "Worker error",
+                message: error.message || "Worker error",
                 stack: undefined
               })
             )
@@ -223,9 +217,7 @@ export const BunWorkerExecutorLive = Layer.succeed(
         // Return cleanup function for Effect interruption
         return Effect.sync(() => {
           completed = true
-          clearTimeout(timeoutId)
-          worker.terminate()
-          URL.revokeObjectURL(url)
+          cleanupAll()
         })
       })
   })
