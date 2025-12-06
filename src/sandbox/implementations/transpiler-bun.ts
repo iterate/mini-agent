@@ -27,7 +27,7 @@ export const BunTranspilerLive = Layer.succeed(
           const err = e as Error
           return new TranspilationError({
             source: "bun",
-            _message: err.message,
+            message: err.message,
             location: undefined,
             cause: err
           })
