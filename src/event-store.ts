@@ -3,7 +3,7 @@
  *
  * Pluggable implementations:
  * - InMemory: For tests (fresh state per layer creation)
- * - Future: Yaml files, Postgres, Redis
+ * - FileSystem: For production (YAML files)
  */
 
 import { Effect, Layer } from "effect"

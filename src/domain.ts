@@ -165,6 +165,27 @@ export class AgentTurnFailedEvent extends Schema.TaggedClass<AgentTurnFailedEven
 ) {}
 
 // -----------------------------------------------------------------------------
+// File Attachment Event
+// -----------------------------------------------------------------------------
+
+/** Attachment source - local file path or remote URL */
+export const AttachmentSource = Schema.Union(
+  Schema.Struct({ type: Schema.Literal("file"), path: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("url"), url: Schema.String })
+)
+export type AttachmentSource = typeof AttachmentSource.Type
+
+export class FileAttachmentEvent extends Schema.TaggedClass<FileAttachmentEvent>()(
+  "FileAttachmentEvent",
+  {
+    ...BaseEventFields,
+    source: AttachmentSource,
+    mediaType: Schema.String,
+    fileName: Schema.optionalWith(Schema.String, { as: "Option" })
+  }
+) {}
+
+// -----------------------------------------------------------------------------
 // Event Union
 // -----------------------------------------------------------------------------
 
@@ -180,7 +201,8 @@ export const ContextEvent = Schema.Union(
   AgentTurnStartedEvent,
   AgentTurnCompletedEvent,
   AgentTurnInterruptedEvent,
-  AgentTurnFailedEvent
+  AgentTurnFailedEvent,
+  FileAttachmentEvent
 )
 export type ContextEvent = typeof ContextEvent.Type
 
@@ -385,5 +407,40 @@ export const EventBuilder = {
       ...EventBuilder.makeBase(agentName, contextName, nextEventNumber, false, parentEventId),
       turnNumber,
       durationMs
+    }),
+
+  textDelta: (
+    agentName: AgentName,
+    contextName: ContextName,
+    nextEventNumber: number,
+    delta: string,
+    parentEventId: Option.Option<EventId> = Option.none()
+  ) =>
+    new TextDeltaEvent({
+      ...EventBuilder.makeBase(agentName, contextName, nextEventNumber, false, parentEventId),
+      delta
+    }),
+
+  fileAttachment: (
+    agentName: AgentName,
+    contextName: ContextName,
+    nextEventNumber: number,
+    source: AttachmentSource,
+    mediaType: string,
+    fileName: Option.Option<string> = Option.none()
+  ) =>
+    new FileAttachmentEvent({
+      ...EventBuilder.makeBase(agentName, contextName, nextEventNumber, false),
+      source,
+      mediaType,
+      fileName
     })
 }
+
+// -----------------------------------------------------------------------------
+// Default System Prompt
+// -----------------------------------------------------------------------------
+
+export const DEFAULT_SYSTEM_PROMPT = `You are a helpful, friendly assistant.
+Keep your responses concise but informative.
+Use markdown formatting when helpful.`

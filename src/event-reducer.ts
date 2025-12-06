@@ -76,6 +76,11 @@ export class EventReducer extends Effect.Service<EventReducer>()("@mini-agent/Ev
           return { ...ctx, nextEventNumber }
         }
 
+        case "FileAttachmentEvent": {
+          // File attachments are handled during LLM request, not stored in messages
+          return { ...ctx, nextEventNumber }
+        }
+
         case "SetLlmConfigEvent": {
           const providerConfig = new LlmProviderConfig({
             providerId: event.providerId,

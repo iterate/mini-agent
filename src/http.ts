@@ -1,94 +1,81 @@
 /**
  * HTTP Server for Agent
  *
- * Provides HTTP endpoints that mirror the CLI interface:
- * - POST /context/:contextName - Send events, receive SSE stream of responses
+ * Endpoints:
+ * - POST /agent/:agentName - Send message, receive SSE stream of events
+ * - GET /health - Health check
  */
-import { LanguageModel } from "@effect/ai"
-import { FileSystem, HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Effect, Schema, Stream } from "effect"
-import type { ContextEvent } from "./context.model.ts"
-import { CurrentLlmConfig } from "./llm-config.ts"
-import { AgentServer, ScriptInputEvent } from "./server.service.ts"
+
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
+import { Effect, Fiber, Runtime, Schema, Stream } from "effect"
+import { AgentRegistry } from "./agent-registry.ts"
+import { type AgentName, type ContextEvent, EventBuilder } from "./domain.ts"
 
 /** Encode a ContextEvent as an SSE data line */
 const encodeSSE = (event: ContextEvent): Uint8Array => new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`)
 
-/** Error for JSONL parsing failures */
-class JsonParseError extends Error {
-  readonly _tag = "JsonParseError"
-  constructor(readonly line: number, readonly rawLine: string, readonly originalError: unknown) {
-    super(
-      `Invalid JSON at line ${line}: ${originalError instanceof Error ? originalError.message : String(originalError)}`
-    )
-  }
-}
+/** Input message schema */
+const InputMessage = Schema.Struct({
+  _tag: Schema.Literal("UserMessage"),
+  content: Schema.String
+})
+type InputMessage = typeof InputMessage.Type
 
-/** Parse JSONL body into ScriptInputEvents */
-const parseJsonlBody = (body: string) =>
+/** Parse JSON body into InputMessage */
+const parseBody = (body: string) =>
   Effect.gen(function*() {
-    const lines = body.split("\n").filter((line) => line.trim() !== "")
-    const events: Array<ScriptInputEvent> = []
-
-    for (const [i, line] of lines.entries()) {
-      const json = yield* Effect.try({
-        try: () => JSON.parse(line) as unknown,
-        catch: (e) => new JsonParseError(i + 1, line, e)
-      })
-      const event = yield* Schema.decodeUnknown(ScriptInputEvent)(json)
-      events.push(event)
-    }
-
-    return events
+    const json = yield* Effect.try({
+      try: () => JSON.parse(body) as unknown,
+      catch: (e) => new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
+    })
+    return yield* Schema.decodeUnknown(InputMessage)(json)
   })
 
-/** Handler for POST /context/:contextName */
-const contextHandler = Effect.gen(function*() {
+/** Handler for POST /agent/:agentName */
+const agentHandler = Effect.gen(function*() {
   const request = yield* HttpServerRequest.HttpServerRequest
-  const agentServer = yield* AgentServer
+  const registry = yield* AgentRegistry
   const params = yield* HttpRouter.params
 
-  // Get context services to provide to the stream
-  const langModel = yield* LanguageModel.LanguageModel
-  const fs = yield* FileSystem.FileSystem
-  const llmConfig = yield* CurrentLlmConfig
+  // Capture the runtime to use in the Stream.async callback
+  const runtime = yield* Effect.runtime<AgentRegistry>()
 
-  const contextName = params.contextName
-  if (!contextName) {
-    return HttpServerResponse.text("Missing contextName", { status: 400 })
+  const agentName = params.agentName
+  if (!agentName) {
+    return HttpServerResponse.text("Missing agentName", { status: 400 })
   }
 
-  yield* Effect.logDebug("POST /context/:contextName", { contextName })
+  yield* Effect.logDebug("POST /agent/:agentName", { agentName })
 
-  // Read body as text and parse JSONL
+  // Read body
   const body = yield* request.text
 
   if (body.trim() === "") {
     return HttpServerResponse.text("Empty request body", { status: 400 })
   }
 
-  const parseResult = yield* parseJsonlBody(body).pipe(Effect.either)
+  const parseResult = yield* parseBody(body).pipe(Effect.either)
 
   if (parseResult._tag === "Left") {
-    const error = parseResult.left
-    const message = error instanceof JsonParseError
-      ? error.message
-      : `Invalid event format: ${error instanceof Error ? error.message : String(error)}`
-    return HttpServerResponse.text(message, { status: 400 })
+    return HttpServerResponse.text(parseResult.left.message, { status: 400 })
   }
 
-  const events = parseResult.right
-  if (events.length === 0) {
-    return HttpServerResponse.text("No valid events in body", { status: 400 })
-  }
+  const message = parseResult.right
 
-  // Stream SSE events directly - provide services to remove context requirements
-  const sseStream = agentServer.handleRequest(contextName, events).pipe(
-    Stream.map(encodeSSE),
-    Stream.provideService(LanguageModel.LanguageModel, langModel),
-    Stream.provideService(FileSystem.FileSystem, fs),
-    Stream.provideService(CurrentLlmConfig, llmConfig)
+  // Get or create agent
+  const agent = yield* registry.getOrCreate(agentName as AgentName)
+  const ctx = yield* agent.getReducedContext
+
+  // Prepare user event
+  const userEvent = EventBuilder.userMessage(
+    agentName as AgentName,
+    agent.contextName,
+    ctx.nextEventNumber,
+    message.content
   )
+
+  // Create SSE stream using the captured runtime
+  const sseStream = makeSseStream(runtime, agent, userEvent)
 
   return HttpServerResponse.stream(sseStream, {
     contentType: "text/event-stream",
@@ -99,20 +86,56 @@ const contextHandler = Effect.gen(function*() {
   })
 })
 
+/** Create SSE stream that emits events until turn completes */
+const makeSseStream = (
+  runtime: Runtime.Runtime<AgentRegistry>,
+  agent: {
+    events: Stream.Stream<ContextEvent, never>
+    addEvent: (e: ContextEvent) => Effect.Effect<void, unknown>
+  },
+  userEvent: ContextEvent
+): Stream.Stream<Uint8Array, never> =>
+  Stream.async<Uint8Array, never>((emit) => {
+    // Create the effect that will:
+    // 1. Subscribe to events
+    // 2. Add user event (triggering LLM turn)
+    // 3. Stream events until turn completes
+    const runStream = Effect.gen(function*() {
+      // Fork the event subscription first - it will receive all events including userEvent
+      const streamFiber = yield* agent.events.pipe(
+        Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
+        Stream.tap((e) =>
+          Effect.sync(() => {
+            emit.single(encodeSSE(e))
+          })
+        ),
+        Stream.runDrain,
+        Effect.fork
+      )
+
+      // Small delay to ensure the subscription fiber is actually consuming
+      yield* Effect.sleep("10 millis")
+
+      // Add user event to agent (it will be broadcast to the subscriber)
+      yield* agent.addEvent(userEvent)
+
+      // Wait for stream to complete
+      yield* Fiber.join(streamFiber)
+      emit.end()
+    })
+
+    // Run with the captured runtime
+    Runtime.runFork(runtime)(runStream)
+  })
+
 /** Health check endpoint */
 const healthHandler = Effect.gen(function*() {
   yield* Effect.logDebug("GET /health")
   return yield* HttpServerResponse.json({ status: "ok" })
 })
 
-/** Create the HTTP router - context requirements will be inferred */
+/** HTTP router */
 export const makeRouter = HttpRouter.empty.pipe(
-  HttpRouter.post("/context/:contextName", contextHandler),
+  HttpRouter.post("/agent/:agentName", agentHandler),
   HttpRouter.get("/health", healthHandler)
 )
-
-/** Run the server and log the address - for standalone use */
-export const runServer = Effect.gen(function*() {
-  yield* Effect.log("Server started")
-  return yield* Effect.never
-})

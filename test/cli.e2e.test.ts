@@ -133,7 +133,7 @@ describe("CLI", () => {
       const jsonOutput = extractJsonOutput(result.stdout)
       // Should contain JSON with _tag field
       expect(jsonOutput).toContain("\"_tag\"")
-      expect(jsonOutput).toContain("\"AssistantMessage\"")
+      expect(jsonOutput).toContain("\"AssistantMessageEvent\"")
     })
 
     test("includes ephemeral events with --show-ephemeral", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
@@ -147,7 +147,7 @@ describe("CLI", () => {
       expect(result.exitCode).toBe(0)
       const jsonOutput = extractJsonOutput(result.stdout)
       // Should contain TextDelta events when showing ephemeral
-      expect(jsonOutput).toContain("\"TextDelta\"")
+      expect(jsonOutput).toContain("\"TextDeltaEvent\"")
     })
   })
 
@@ -215,7 +215,7 @@ describe("CLI", () => {
 
       // Should echo the input event and have AssistantMessage response
       expect(output).toContain("\"UserMessage\"")
-      expect(output).toContain("\"AssistantMessage\"")
+      expect(output).toContain("\"AssistantMessageEvent\"")
     })
 
     test("handles multiple UserMessage events in sequence", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
@@ -239,7 +239,7 @@ describe("CLI", () => {
       const jsonLines = extractJsonLines(output)
 
       // Should have at least two AssistantMessage events (one per input)
-      const assistantMessages = jsonLines.filter((line) => line.includes("\"AssistantMessage\""))
+      const assistantMessages = jsonLines.filter((line) => line.includes("\"AssistantMessageEvent\""))
       expect(assistantMessages.length).toBeGreaterThanOrEqual(2)
 
       // Second response should mention the secret code
@@ -270,7 +270,7 @@ describe("CLI", () => {
       // Should echo both events
       expect(output).toContain("\"SystemPrompt\"")
       expect(output).toContain("\"UserMessage\"")
-      expect(output).toContain("\"AssistantMessage\"")
+      expect(output).toContain("\"AssistantMessageEvent\"")
     })
 
     test("includes TextDelta streaming events by default", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
@@ -290,9 +290,9 @@ describe("CLI", () => {
       )
 
       // Script mode should include TextDelta events (streaming chunks) by default
-      expect(output).toContain("\"TextDelta\"")
+      expect(output).toContain("\"TextDeltaEvent\"")
       expect(output).toContain("\"delta\"")
-      expect(output).toContain("\"AssistantMessage\"")
+      expect(output).toContain("\"AssistantMessageEvent\"")
     })
   })
 
@@ -324,7 +324,7 @@ describe("CLI", () => {
       expect(result.exitCode).toBe(0)
       const jsonOutput = extractJsonOutput(result.stdout)
       // Response should be JSON with AssistantMessage containing "blue"
-      expect(jsonOutput).toContain("\"AssistantMessage\"")
+      expect(jsonOutput).toContain("\"AssistantMessageEvent\"")
       expect(jsonOutput.toLowerCase()).toContain("blue")
     })
   })
@@ -400,13 +400,28 @@ describe("Interrupted response context", () => {
       const contextsDir = path.join(testDir, ".mini-agent", "contexts")
       fs.mkdirSync(contextsDir, { recursive: true })
 
+      // New architecture uses full event format with all required fields
+      // parentEventId is omitted when None (Schema.optionalWith encodes None as undefined)
+      // partialResponse is just a string when present
       const contextContent = `events:
-  - _tag: SystemPrompt
+  - _tag: SystemPromptEvent
+    id: "${contextName}:0000"
+    timestamp: "2024-01-01T00:00:00.000Z"
+    agentName: "${contextName}"
+    triggersAgentTurn: false
     content: You are a helpful assistant.
-  - _tag: UserMessage
+  - _tag: UserMessageEvent
+    id: "${contextName}:0001"
+    timestamp: "2024-01-01T00:00:01.000Z"
+    agentName: "${contextName}"
+    triggersAgentTurn: true
     content: Tell me a random 8-digit number followed by a long story.
-  - _tag: LLMRequestInterrupted
-    requestId: test-request-123
+  - _tag: AgentTurnInterruptedEvent
+    id: "${contextName}:0002"
+    timestamp: "2024-01-01T00:00:02.000Z"
+    agentName: "${contextName}"
+    triggersAgentTurn: false
+    turnNumber: 1
     reason: user_cancel
     partialResponse: "${testNumber}! Once upon a time in a faraway land, there lived a wise old wizard who..."
 `
@@ -414,7 +429,7 @@ describe("Interrupted response context", () => {
 
       // Now make a follow-up request asking about the number.
       // The LLM should know the number because:
-      // 1. The LLMRequestInterruptedEvent's partialResponse is included as an assistant message
+      // 1. The AgentTurnInterruptedEvent's partialResponse is included as an assistant message
       // 2. A user message explains the interruption happened
       const result = await Effect.runPromise(
         runCli(

@@ -1,14 +1,16 @@
 /**
  * Domain Error Types
  *
- * Uses Schema.TaggedError for serializable, type-safe error handling.
- * See: https://www.effect.solutions/error-handling
+ * Re-exports error types from domain.ts for backward compatibility.
  */
 import { Schema } from "effect"
-import { ContextName } from "./context.model.ts"
+import { ContextName } from "./domain.ts"
+
+// Re-export errors from domain
+export { AgentError, AgentNotFoundError, ContextLoadError, ContextSaveError, ReducerError } from "./domain.ts"
 
 // =============================================================================
-// Context Errors
+// Legacy Error Types (for backward compatibility)
 // =============================================================================
 
 /** Error when a context is not found */
@@ -17,30 +19,8 @@ export class ContextNotFound extends Schema.TaggedError<ContextNotFound>()(
   { name: ContextName }
 ) {}
 
-/** Error when loading a context fails */
-export class ContextLoadError extends Schema.TaggedError<ContextLoadError>()(
-  "ContextLoadError",
-  {
-    name: ContextName,
-    cause: Schema.Defect
-  }
-) {}
-
-/** Error when saving a context fails */
-export class ContextSaveError extends Schema.TaggedError<ContextSaveError>()(
-  "ContextSaveError",
-  {
-    name: ContextName,
-    cause: Schema.Defect
-  }
-) {}
-
 /** Union of all context-related errors */
-export const ContextError = Schema.Union(
-  ContextNotFound,
-  ContextLoadError,
-  ContextSaveError
-)
+export const ContextError = Schema.Union(ContextNotFound)
 export type ContextError = typeof ContextError.Type
 
 // =============================================================================

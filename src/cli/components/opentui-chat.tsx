@@ -2,7 +2,7 @@
  * OpenTUI Chat Component
  *
  * Architecture:
- * - ContextEvent[] dispatched via controller.addEvent()
+ * - Event objects dispatched via controller.addEvent()
  * - feedReducer folds each event into FeedItem[] (accumulated state)
  * - Feed component renders feedItems (pure render, knows nothing about events)
  *
@@ -15,8 +15,22 @@ import { Option, Schema } from "effect"
 import { createCliRenderer, TextAttributes } from "@opentui/core"
 import { createRoot } from "@opentui/react/renderer"
 import { memo, useCallback, useMemo, useReducer, useRef, useState } from "react"
-import type { ContextEvent, PersistedEvent } from "../../context.model.ts"
-import { AttachmentSource } from "../../context.model.ts"
+import { AttachmentSource } from "../../domain.ts"
+
+/**
+ * Simplified event interface for the chat UI.
+ * This decouples the TUI from the full ContextEvent structure.
+ */
+export interface ChatEvent {
+  _tag: string
+  content?: string
+  delta?: string
+  partialResponse?: string
+  reason?: string
+  source?: { type: "file"; path: string } | { type: "url"; url: string }
+  fileName?: string
+  requestId?: string
+}
 
 /** User's message in the conversation */
 class UserMessageItem extends Schema.TaggedClass<UserMessageItem>()("UserMessageItem", {
@@ -71,7 +85,7 @@ const FeedItem = Schema.Union(
 )
 type FeedItem = typeof FeedItem.Type
 
-type FeedAction = { event: ContextEvent; isHistory: boolean }
+type FeedAction = { event: ChatEvent; isHistory: boolean }
 
 /**
  * Folds a context event into accumulated feed items.
@@ -83,38 +97,39 @@ function feedReducer(items: FeedItem[], action: FeedAction): FeedItem[] {
   switch (event._tag) {
     case "TextDelta": {
       const last = items.at(-1)
-      if (last?._tag === "InProgressAssistantItem") {
+      if (last && "_tag" in last && last._tag === "InProgressAssistantItem") {
+        const lastItem = last as InProgressAssistantItem
         return [
           ...items.slice(0, -1),
-          new InProgressAssistantItem({ ...last, text: last.text + event.delta })
+          new InProgressAssistantItem({ ...lastItem, text: lastItem.text + (event.delta ?? "") })
         ]
       }
       return [
         ...items,
-        new InProgressAssistantItem({ id: crypto.randomUUID(), text: event.delta })
+        new InProgressAssistantItem({ id: crypto.randomUUID(), text: event.delta ?? "" })
       ]
     }
 
     case "AssistantMessage": {
-      const filtered = items.filter((i) => i._tag !== "InProgressAssistantItem")
+      const filtered = items.filter((i) => "_tag" in i && i._tag !== "InProgressAssistantItem")
       return [
         ...filtered,
         new AssistantMessageItem({
           id: crypto.randomUUID(),
-          content: event.content,
+          content: event.content ?? "",
           isHistory
         })
       ]
     }
 
     case "LLMRequestInterrupted": {
-      const filtered = items.filter((i) => i._tag !== "InProgressAssistantItem")
+      const filtered = items.filter((i) => "_tag" in i && i._tag !== "InProgressAssistantItem")
       return [
         ...filtered,
         new LLMInterruptionItem({
           id: crypto.randomUUID(),
-          partialResponse: event.partialResponse,
-          reason: event.reason,
+          partialResponse: event.partialResponse ?? "",
+          reason: event.reason ?? "unknown",
           isHistory
         })
       ]
@@ -125,7 +140,7 @@ function feedReducer(items: FeedItem[], action: FeedAction): FeedItem[] {
         ...items,
         new UserMessageItem({
           id: crypto.randomUUID(),
-          content: event.content,
+          content: event.content ?? "",
           isHistory
         })
       ]
@@ -135,7 +150,7 @@ function feedReducer(items: FeedItem[], action: FeedAction): FeedItem[] {
         ...items,
         new FileAttachmentItem({
           id: crypto.randomUUID(),
-          source: event.source,
+          source: event.source ?? { type: "file", path: "" },
           fileName: Option.fromNullable(event.fileName),
           isHistory
         })
@@ -150,7 +165,7 @@ function feedReducer(items: FeedItem[], action: FeedAction): FeedItem[] {
         ...items,
         new UnknownEventItem({
           id: crypto.randomUUID(),
-          eventTag: (event as { _tag: string })._tag,
+          eventTag: event._tag,
           isHistory
         })
       ]
@@ -265,25 +280,34 @@ const UnknownEventRenderer = memo<{ item: UnknownEventItem }>(({ item }) => {
 })
 
 const FeedItemRenderer = memo<{ item: FeedItem }>(({ item }) => {
+  if (!("_tag" in item)) return null
+
   switch (item._tag) {
     case "UserMessageItem":
-      return <UserMessageRenderer item={item} />
+      return <UserMessageRenderer item={item as UserMessageItem} />
     case "InProgressAssistantItem":
-      return <InProgressAssistantRenderer item={item} />
+      return <InProgressAssistantRenderer item={item as InProgressAssistantItem} />
     case "AssistantMessageItem":
-      return <AssistantMessageRenderer item={item} />
+      return <AssistantMessageRenderer item={item as AssistantMessageItem} />
     case "LLMInterruptionItem":
-      return <LLMInterruptionRenderer item={item} />
+      return <LLMInterruptionRenderer item={item as LLMInterruptionItem} />
     case "FileAttachmentItem":
-      return <FileAttachmentRenderer item={item} />
+      return <FileAttachmentRenderer item={item as FileAttachmentItem} />
     case "UnknownEventItem":
-      return <UnknownEventRenderer item={item} />
+      return <UnknownEventRenderer item={item as UnknownEventItem} />
+    default:
+      return null
   }
 })
 
 interface FeedProps {
   feedItems: FeedItem[]
   hasHistory: boolean
+}
+
+const getItemId = (item: FeedItem): string => {
+  if ("id" in item) return item.id as string
+  return crypto.randomUUID()
 }
 
 const Feed = memo<FeedProps>(({ feedItems, hasHistory }) => {
@@ -298,7 +322,7 @@ const Feed = memo<FeedProps>(({ feedItems, hasHistory }) => {
       )}
 
       {feedItems.map((item) => (
-        <FeedItemRenderer key={item.id} item={item} />
+        <FeedItemRenderer key={getItemId(item)} item={item} />
       ))}
     </box>
   )
@@ -310,16 +334,18 @@ export interface ChatCallbacks {
 }
 
 export interface ChatController {
-  addEvent: (event: ContextEvent) => void
+  addEvent: (event: ChatEvent) => void
   cleanup: () => void
 }
 
 interface ChatAppProps {
   contextName: string
-  initialEvents: PersistedEvent[]
+  initialEvents: ChatEvent[]
   callbacks: ChatCallbacks
   controllerRef: React.MutableRefObject<ChatController | null>
 }
+
+const hasTag = (item: FeedItem): item is FeedItem & { _tag: string } => "_tag" in item
 
 function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatAppProps) {
   // Derive initial feed items from history events (runs once on mount)
@@ -340,20 +366,22 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
   // Check if we have any history (for separator display)
   const hasHistory = initialFeedItems.some(
     (item) =>
-      item._tag === "UserMessageItem" ||
-      item._tag === "AssistantMessageItem" ||
-      item._tag === "LLMInterruptionItem"
+      hasTag(item) && (
+        item._tag === "UserMessageItem" ||
+        item._tag === "AssistantMessageItem" ||
+        item._tag === "LLMInterruptionItem"
+      )
   )
 
   // Check if currently streaming (for input placeholder)
-  const isStreaming = feedItems.some((item) => item._tag === "InProgressAssistantItem")
+  const isStreaming = feedItems.some((item) => hasTag(item) && item._tag === "InProgressAssistantItem")
   const isStreamingRef = useRef(false)
   isStreamingRef.current = isStreaming
 
   // Set up controller synchronously during first render
   if (!controllerRef.current) {
     controllerRef.current = {
-      addEvent(event: ContextEvent) {
+      addEvent(event: ChatEvent) {
         dispatchRef.current({ event, isHistory: false })
       },
       cleanup() {
@@ -421,7 +449,7 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
 
 export async function runOpenTUIChat(
   contextName: string,
-  initialEvents: PersistedEvent[],
+  initialEvents: ChatEvent[],
   callbacks: ChatCallbacks
 ): Promise<ChatController> {
   let exitSignaled = false
@@ -462,7 +490,7 @@ export async function runOpenTUIChat(
   renderer.start()
 
   return {
-    addEvent(event: ContextEvent) {
+    addEvent(event: ChatEvent) {
       controllerRef.current?.addEvent(event)
     },
     cleanup() {

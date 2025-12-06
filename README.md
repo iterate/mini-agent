@@ -78,7 +78,7 @@ LLM='{"apiFormat":"openai-chat-completions","model":"my-model","baseUrl":"https:
 
 ## Event Types
 
-See [`src/context.model.ts`](src/context.model.ts) for schema definitions.
+See [`src/domain.ts`](src/domain.ts) for schema definitions.
 
 **Input Events** (via stdin in script mode):
 - `UserMessage` - User message content
@@ -86,12 +86,14 @@ See [`src/context.model.ts`](src/context.model.ts) for schema definitions.
 - `FileAttachment` - Image or file attachment
 
 **Output Events**:
-- `TextDelta` - Streaming chunk (ephemeral)
-- `AssistantMessage` - Complete response (persisted)
+- `TextDeltaEvent` - Streaming chunk (ephemeral)
+- `AssistantMessageEvent` - Complete response (persisted)
+- `AgentTurnStartedEvent` / `AgentTurnCompletedEvent` - Turn lifecycle
 
 **Internal Events** (persisted):
-- `SetLlmConfig` - LLM configuration for context
-- `LLMRequestInterrupted` - Partial response on cancellation
+- `SetLlmConfigEvent` - LLM configuration for context
+- `AgentTurnInterruptedEvent` - Partial response on cancellation
+- `SessionStartedEvent` / `SessionEndedEvent` - Session lifecycle
 
 ## Script Mode
 
@@ -127,7 +129,7 @@ bun run mini-agent serve --port 3000
 ```
 
 Endpoints:
-- `POST /context/:name` - Send JSONL body, receive SSE stream
+- `POST /agent/:agentName` - Send JSON body `{"_tag":"UserMessage","content":"..."}`, receive SSE stream
 - `GET /health` - Health check
 
 See [`src/http.ts`](src/http.ts) for implementation.

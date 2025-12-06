@@ -9,7 +9,7 @@
 import { FileSystem, Path } from "@effect/platform"
 import { Deferred, Effect, Layer, Option, Queue, Ref, Schema } from "effect"
 import * as YAML from "yaml"
-import { AppConfig } from "../config.ts"
+import { AppConfig } from "./config.ts"
 import { ContextEvent, ContextLoadError, type ContextName, ContextSaveError } from "./domain.ts"
 import { EventStore } from "./event-store.ts"
 
@@ -32,7 +32,7 @@ export const EventStoreFileSystem: Layer.Layer<
     const config = yield* AppConfig
 
     const cwd = Option.getOrElse(config.cwd, () => process.cwd())
-    const contextsDir = path.join(cwd, config.dataStorageDir, "contexts-v2")
+    const contextsDir = path.join(cwd, config.dataStorageDir, "contexts")
 
     const getContextPath = (contextName: ContextName) => path.join(contextsDir, `${contextName}.yaml`)
 

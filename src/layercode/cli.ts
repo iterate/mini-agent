@@ -10,7 +10,6 @@ import { BunHttpServer } from "@effect/platform-bun"
 import { Console, Effect, Layer, Option, Stream } from "effect"
 import { AppConfig } from "../config.ts"
 import { makeRouter } from "../http.ts"
-import { AgentServer } from "../server.service.ts"
 import { makeLayerCodeRouter } from "./layercode.adapter.ts"
 
 const portOption = Options.integer("port").pipe(
@@ -147,11 +146,6 @@ const layercodeServeCommand = CliCommand.make(
       // Create server layer with configured port/host
       const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost })
 
-      const layers = Layer.mergeAll(
-        serverLayer,
-        AgentServer.layer
-      )
-
       // Start the tunnel if enabled (fork it to run concurrently with server)
       if (tunnelEnabled && Option.isSome(agentId)) {
         yield* startTunnel(agentId.value, actualPort).pipe(Effect.fork)
@@ -160,7 +154,7 @@ const layercodeServeCommand = CliCommand.make(
       // Use Layer.launch to keep the server running (blocks forever)
       return yield* Layer.launch(
         HttpServer.serve(combinedRouter).pipe(
-          Layer.provide(layers)
+          Layer.provide(serverLayer)
         )
       )
     })

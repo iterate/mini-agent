@@ -7,21 +7,12 @@ import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
 import { type Error as PlatformError, FileSystem, HttpServer, Terminal } from "@effect/platform"
 import { BunHttpServer, BunStream } from "@effect/platform-bun"
-import { Chunk, Console, Effect, Layer, Option, Schema, Stream } from "effect"
+import { Chunk, Console, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { AgentRegistry } from "../agent-registry.ts"
 import { AppConfig, resolveBaseDir } from "../config.ts"
-import {
-  AssistantMessageEvent,
-  type ContextEvent,
-  FileAttachmentEvent,
-  type InputEvent,
-  SystemPromptEvent,
-  TextDeltaEvent,
-  UserMessageEvent
-} from "../context.model.ts"
-import { ContextService } from "../context.service.ts"
+import { type AgentName, type ContextEvent, EventBuilder, SystemPromptEvent, UserMessageEvent } from "../domain.ts"
 import { makeRouter } from "../http.ts"
 import { layercodeCommand } from "../layercode/index.ts"
-import { AgentServer } from "../server.service.ts"
 import { printTraceLinks } from "../tracing.ts"
 
 export const configFileOption = Options.file("config").pipe(
@@ -127,62 +118,21 @@ const handleEvent = (
     const terminal = yield* Terminal.Terminal
 
     if (options.raw) {
-      if (Schema.is(TextDeltaEvent)(event) && !options.showEphemeral) {
+      if (event._tag === "TextDeltaEvent" && !options.showEphemeral) {
         return
       }
       yield* Console.log(JSON.stringify(event))
       return
     }
 
-    if (Schema.is(TextDeltaEvent)(event)) {
+    if (event._tag === "TextDeltaEvent") {
       yield* terminal.display(event.delta)
       return
     }
-    if (Schema.is(AssistantMessageEvent)(event)) {
+    if (event._tag === "AssistantMessageEvent") {
       yield* Console.log("")
       return
     }
-  })
-
-/** Run the event stream, handling each event */
-const runEventStream = (
-  contextName: string,
-  userMessage: string,
-  options: OutputOptions,
-  imageInput?: string
-) =>
-  Effect.gen(function*() {
-    const contextService = yield* ContextService
-    const inputEvents: Array<InputEvent> = []
-
-    if (imageInput) {
-      const mediaType = getMediaType(imageInput)
-      const fileName = getFileName(imageInput)
-
-      if (isUrl(imageInput)) {
-        inputEvents.push(
-          new FileAttachmentEvent({
-            source: { type: "url", url: imageInput },
-            mediaType,
-            fileName
-          })
-        )
-      } else {
-        inputEvents.push(
-          new FileAttachmentEvent({
-            source: { type: "file", path: imageInput },
-            mediaType,
-            fileName
-          })
-        )
-      }
-    }
-
-    inputEvents.push(new UserMessageEvent({ content: userMessage }))
-
-    yield* contextService.addEvents(contextName, inputEvents).pipe(
-      Stream.runForEach((event) => handleEvent(event, options))
-    )
   })
 
 /** CLI interaction mode - determines how input/output is handled */
@@ -210,7 +160,24 @@ const readAllStdin: Effect.Effect<string> = BunStream.stdin.pipe(
   Effect.map((chunks) => Chunk.join(chunks, "").trim())
 )
 
-const ScriptInputEvent = Schema.Union(UserMessageEvent, SystemPromptEvent)
+// Script input events - simplified format for external tools
+// Accept both the full event format (with all fields) and simplified format (just _tag and content)
+const SimpleUserMessage = Schema.Struct({
+  _tag: Schema.Literal("UserMessage"),
+  content: Schema.String
+})
+const SimpleSystemPrompt = Schema.Struct({
+  _tag: Schema.Literal("SystemPrompt"),
+  content: Schema.String
+})
+const ScriptInputEvent = Schema.Union(
+  UserMessageEvent,
+  SystemPromptEvent,
+  SimpleUserMessage,
+  SimpleSystemPrompt
+)
+
+type ScriptInputEvent = typeof ScriptInputEvent.Type
 
 const stdinEvents = BunStream.stdin.pipe(
   Stream.mapChunks(Chunk.map((bytes) => utf8Decoder.decode(bytes))),
@@ -223,20 +190,43 @@ const stdinEvents = BunStream.stdin.pipe(
   )
 )
 
-const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
+const isUserMessage = (e: ScriptInputEvent): e is typeof UserMessageEvent.Type | typeof SimpleUserMessage.Type =>
+  e._tag === "UserMessageEvent" || e._tag === "UserMessage"
+
+const isSystemPrompt = (e: ScriptInputEvent): e is typeof SystemPromptEvent.Type | typeof SimpleSystemPrompt.Type =>
+  e._tag === "SystemPromptEvent" || e._tag === "SystemPrompt"
+
+const scriptInteractiveLoop = (agentName: AgentName, options: OutputOptions) =>
   Effect.gen(function*() {
-    const contextService = yield* ContextService
+    const registry = yield* AgentRegistry
+    const agent = yield* registry.getOrCreate(agentName)
 
     yield* stdinEvents.pipe(
       Stream.mapEffect((event) =>
         Effect.gen(function*() {
+          // Echo the received event
           yield* Console.log(JSON.stringify(event))
 
-          if (Schema.is(UserMessageEvent)(event)) {
-            yield* contextService.addEvents(contextName, [event]).pipe(
-              Stream.runForEach((outputEvent) => handleEvent(outputEvent, options))
+          if (isUserMessage(event)) {
+            const ctx = yield* agent.getReducedContext
+            const userEvent = EventBuilder.userMessage(
+              agentName,
+              agent.contextName,
+              ctx.nextEventNumber,
+              event.content
             )
-          } else if (Schema.is(SystemPromptEvent)(event)) {
+
+            // Subscribe to events before adding user message
+            const streamFiber = yield* agent.events.pipe(
+              Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
+              Stream.tap((e) => handleEvent(e, options)),
+              Stream.runDrain,
+              Effect.fork
+            )
+
+            yield* agent.addEvent(userEvent)
+            yield* Fiber.join(streamFiber)
+          } else if (isSystemPrompt(event)) {
             yield* Effect.logDebug("SystemPrompt events in script mode are echoed but not persisted")
           }
         })
@@ -248,8 +238,19 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
 const NEW_CONTEXT_VALUE = "__new__"
 
 const selectOrCreateContext = Effect.gen(function*() {
-  const contextService = yield* ContextService
-  const contexts = yield* contextService.list()
+  const fs = yield* FileSystem.FileSystem
+  const config = yield* AppConfig
+  const baseDir = resolveBaseDir(config)
+  const contextsDir = `${baseDir}/contexts`
+
+  const exists = yield* fs.exists(contextsDir)
+  if (!exists) {
+    yield* Console.log("No existing contexts found.")
+    return yield* CliPrompt.text({ message: "Enter a name for your new context" })
+  }
+
+  const entries = yield* fs.readDirectory(contextsDir)
+  const contexts = entries.filter((name) => name.endsWith(".yaml")).map((name) => name.replace(/\.yaml$/, ""))
 
   if (contexts.length === 0) {
     yield* Console.log("No existing contexts found.")
@@ -295,6 +296,61 @@ const makeChatUILayer = () =>
     })
   )
 
+/** Run the event stream for a single message */
+const runSingleTurn = (
+  agentName: AgentName,
+  userMessage: string,
+  options: OutputOptions,
+  imageInput?: string
+) =>
+  Effect.gen(function*() {
+    const registry = yield* AgentRegistry
+    const agent = yield* registry.getOrCreate(agentName)
+    const ctx = yield* agent.getReducedContext
+
+    // If there's an image, add it first
+    if (imageInput) {
+      const mediaType = getMediaType(imageInput)
+      const fileName = getFileName(imageInput)
+      const source = isUrl(imageInput)
+        ? { type: "url" as const, url: imageInput }
+        : { type: "file" as const, path: imageInput }
+
+      const fileEvent = EventBuilder.fileAttachment(
+        agentName,
+        agent.contextName,
+        ctx.nextEventNumber,
+        source,
+        mediaType,
+        Option.some(fileName)
+      )
+      yield* agent.addEvent(fileEvent)
+    }
+
+    // Get updated context after adding file
+    const updatedCtx = yield* agent.getReducedContext
+
+    // Subscribe to events BEFORE adding the user message
+    const streamFiber = yield* agent.events.pipe(
+      Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
+      Stream.tap((e) => handleEvent(e, options)),
+      Stream.runDrain,
+      Effect.fork
+    )
+
+    // Add user message with triggersAgentTurn=true
+    const userEvent = EventBuilder.userMessage(
+      agentName,
+      agent.contextName,
+      updatedCtx.nextEventNumber,
+      userMessage
+    )
+    yield* agent.addEvent(userEvent)
+
+    // Wait for stream to complete
+    yield* Fiber.join(streamFiber)
+  })
+
 const runChat = (options: {
   name: Option.Option<string>
   message: Option.Option<string>
@@ -307,6 +363,7 @@ const runChat = (options: {
     yield* Effect.logDebug("Starting chat session")
     const mode = determineMode(options)
     const contextName = Option.getOrElse(options.name, generateRandomContextName)
+    const agentName = contextName as AgentName
     const imagePath = Option.getOrNull(options.image) ?? undefined
 
     const outputOptions: OutputOptions = {
@@ -317,7 +374,7 @@ const runChat = (options: {
     switch (mode) {
       case "single-turn": {
         const message = Option.getOrElse(options.message, () => "")
-        yield* runEventStream(contextName, message, outputOptions, imagePath)
+        yield* runSingleTurn(agentName, message, outputOptions, imagePath)
         if (!outputOptions.raw) {
           yield* printTraceLinks
         }
@@ -327,13 +384,13 @@ const runChat = (options: {
       case "pipe": {
         const input = yield* readAllStdin
         if (input !== "") {
-          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false }, imagePath)
+          yield* runSingleTurn(agentName, input, { raw: false, showEphemeral: false }, imagePath)
         }
         break
       }
 
       case "script": {
-        yield* scriptInteractiveLoop(contextName, outputOptions)
+        yield* scriptInteractiveLoop(agentName, outputOptions)
         break
       }
 
@@ -345,7 +402,7 @@ const runChat = (options: {
         const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))
         const chatUI = yield* ChatUI
 
-        yield* chatUI.runChat(resolvedName).pipe(
+        yield* chatUI.runChat(resolvedName as AgentName).pipe(
           Effect.catchAllCause(() => Effect.void),
           Effect.ensuring(printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!"))))
         )
@@ -485,7 +542,7 @@ const hostOption = Options.text("host").pipe(
   Options.optional
 )
 
-/** Generic serve command - starts HTTP server with /context/:name endpoint */
+/** Generic serve command - starts HTTP server with /agent/:agentName endpoint */
 export const serveCommand = Command.make(
   "serve",
   {
@@ -501,37 +558,31 @@ export const serveCommand = Command.make(
       yield* Console.log(`Starting HTTP server on http://${actualHost}:${actualPort}`)
       yield* Console.log("")
       yield* Console.log("Endpoints:")
-      yield* Console.log("  POST /context/:contextName")
-      yield* Console.log("       Send JSONL events, receive SSE stream")
-      yield* Console.log("       Content-Type: application/x-ndjson")
+      yield* Console.log("  POST /agent/:agentName")
+      yield* Console.log("       Send JSON message, receive SSE stream")
+      yield* Console.log("       Content-Type: application/json")
       yield* Console.log("")
       yield* Console.log("  GET  /health")
       yield* Console.log("       Health check endpoint")
       yield* Console.log("")
       yield* Console.log("Example:")
-      yield* Console.log(`  curl -X POST http://${actualHost}:${actualPort}/context/test \\`)
-      yield* Console.log(`    -H "Content-Type: application/x-ndjson" \\`)
+      yield* Console.log(`  curl -X POST http://${actualHost}:${actualPort}/agent/test \\`)
+      yield* Console.log(`    -H "Content-Type: application/json" \\`)
       yield* Console.log(`    -d '{"_tag":"UserMessage","content":"hello"}'`)
       yield* Console.log("")
 
       // Create server layer with configured port/host
       const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost })
 
-      // Create layers for the server
-      const layers = Layer.mergeAll(
-        serverLayer,
-        AgentServer.layer
-      )
-
       // Use Layer.launch to keep the server running
       return yield* Layer.launch(
         HttpServer.serve(makeRouter).pipe(
-          Layer.provide(layers)
+          Layer.provide(serverLayer)
         )
       )
     })
 ).pipe(
-  Command.withDescription("Start generic HTTP server for agent requests")
+  Command.withDescription("Start HTTP server for agent requests")
 )
 
 const rootCommand = Command.make(

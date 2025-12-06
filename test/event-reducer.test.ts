@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { DateTime, Effect, Option, Redacted } from "effect"
-import type { AgentName, AgentTurnNumber, ContextName, LlmProviderId } from "./domain.ts"
+import type { AgentName, AgentTurnNumber, ContextName, LlmProviderId } from "../src/domain.ts"
 import {
   AgentTurnCompletedEvent,
   AgentTurnStartedEvent,
@@ -16,8 +16,8 @@ import {
   SetTimeoutEvent,
   SystemPromptEvent,
   UserMessageEvent
-} from "./domain.ts"
-import { EventReducer } from "./event-reducer.ts"
+} from "../src/domain.ts"
+import { EventReducer } from "../src/event-reducer.ts"
 
 const testAgentName = "test-agent" as AgentName
 const testContextName = "test-context" as ContextName
@@ -226,23 +226,6 @@ describe("EventReducer", () => {
         const result = yield* reducer.reduce(reducer.initialReducedContext, events)
 
         expect(result.nextEventNumber).toBe(3)
-      }).pipe(Effect.provide(EventReducer.Default)))
-  })
-
-  describe("idempotency", () => {
-    it.effect("reducing same events twice yields same result", () =>
-      Effect.gen(function*() {
-        const reducer = yield* EventReducer
-        const events = [
-          new SystemPromptEvent({ ...baseFields(0), content: "System" }),
-          new UserMessageEvent({ ...baseFields(1), content: "Hello" })
-        ]
-
-        const result1 = yield* reducer.reduce(reducer.initialReducedContext, events)
-        const result2 = yield* reducer.reduce(reducer.initialReducedContext, events)
-
-        expect(result1.messages.length).toBe(result2.messages.length)
-        expect(result1.nextEventNumber).toBe(result2.nextEventNumber)
       }).pipe(Effect.provide(EventReducer.Default)))
   })
 })

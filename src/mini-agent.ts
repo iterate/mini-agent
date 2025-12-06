@@ -178,7 +178,7 @@ export const makeMiniAgent = (
         })
       ),
       Stream.runDrain,
-      Effect.fork
+      Effect.forkDaemon
     )
 
     // Helper: Add event to state and broadcast (via queue for serialization)
@@ -228,7 +228,7 @@ export const makeMiniAgent = (
         )
       ),
       Stream.runDrain,
-      Effect.fork
+      Effect.forkDaemon
     )
 
     // Track if shutdown has been called to prevent duplicate cleanup
