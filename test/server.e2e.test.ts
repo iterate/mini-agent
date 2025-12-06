@@ -5,13 +5,26 @@
  * - Generic /context/:name endpoint
  * - LayerCode webhook endpoint
  * - Health check
+ *
+ * All tests use a mock LLM server for fast, predictable responses.
  */
 import { Command } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
 import { spawn } from "child_process"
 import { Effect } from "effect"
-import { describe } from "vitest"
+import { afterAll, beforeAll, describe } from "vitest"
 import { expect, test } from "./fixtures.js"
+import { type MockLlmServer, startMockLlmServer } from "./mock-llm-server.ts"
+
+let mockLlmServer: MockLlmServer
+
+beforeAll(async () => {
+  mockLlmServer = await startMockLlmServer()
+})
+
+afterAll(async () => {
+  await mockLlmServer?.close()
+})
 
 // Resolve CLI path relative to this file
 const CLI_PATH = new URL("../src/cli/main.ts", import.meta.url).pathname
@@ -39,6 +52,16 @@ const fetchWithRetry = async (
   throw lastError
 }
 
+const mockLlmEnv = () => ({
+  LLM: JSON.stringify({
+    apiFormat: "openai-responses",
+    model: "mock-model",
+    baseUrl: mockLlmServer.url,
+    apiKeyEnvVar: "MOCK_API_KEY"
+  }),
+  MOCK_API_KEY: "test-key"
+})
+
 /** Start the server in background and return port + cleanup function */
 const startServer = async (
   cwd: string,
@@ -55,7 +78,7 @@ const startServer = async (
       cwd,
       env: {
         ...process.env,
-        OPENAI_API_KEY: process.env.OPENAI_API_KEY ?? "test-api-key"
+        ...mockLlmEnv()
       },
       stdio: "ignore"
     })

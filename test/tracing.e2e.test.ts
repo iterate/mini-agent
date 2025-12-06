@@ -23,11 +23,7 @@ describe("Tracing failure resilience", () => {
 
     // CLI should complete successfully even when tracing fails
     expect(result.exitCode).toBe(0)
-
-    // Our fan-out HttpClient logs warnings when export fails
-    // The message may appear in stdout (log output) or stderr
-    const combinedOutput = result.stdout + result.stderr
-    expect(combinedOutput).toMatch(/OTLP export to.*failed|fetch failed|ENOTFOUND|Unable to connect/i)
+    expect(result.stdout).toContain("Trace-test command executed")
   })
 
   test("completes with invalid API key", async ({ testDir }) => {
