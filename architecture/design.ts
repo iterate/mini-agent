@@ -11,7 +11,6 @@
  */
 
 import type { Prompt } from "@effect/ai"
-import type { Scope } from "effect"
 import { Context, Duration, Effect, Fiber, Layer, Option, Schedule, Schema, Stream } from "effect"
 
 // =============================================================================
@@ -337,47 +336,6 @@ export class EventReducer extends Context.Tag("@app/EventReducer")<
 }
 
 // =============================================================================
-// Layer 3: ContextSession Service
-// =============================================================================
-
-export class ContextSession extends Context.Tag("@app/ContextSession")<
-  ContextSession,
-  {
-    readonly initialize: (contextName: ContextName) => Effect.Effect<void, ContextError>
-    readonly addEvent: (event: ContextEvent) => Effect.Effect<void, SessionError>
-    readonly events: Stream.Stream<ContextEvent, SessionError>
-    readonly getEvents: () => Effect.Effect<ReadonlyArray<ContextEvent>>
-  }
->() {
-  static readonly layer: Layer.Layer<ContextSession, never, Agent | EventReducer | ContextRepository | HooksService> =
-    undefined as never
-  static readonly testLayer: Layer.Layer<ContextSession> = undefined as never
-}
-
-// =============================================================================
-// Layer 4: ApplicationService
-// =============================================================================
-
-export class ApplicationService extends Context.Tag("@app/ApplicationService")<
-  ApplicationService,
-  {
-    readonly addEvent: (
-      contextName: ContextName,
-      event: ContextEvent
-    ) => Effect.Effect<void, SessionError>
-
-    readonly eventStream: (
-      contextName: ContextName
-    ) => Stream.Stream<ContextEvent, SessionError>
-
-    readonly shutdown: () => Effect.Effect<void>
-  }
->() {
-  static readonly layer: Layer.Layer<ApplicationService, never, ContextSession> = undefined as never
-  static readonly testLayer: Layer.Layer<ApplicationService> = undefined as never
-}
-
-// =============================================================================
 // ContextRepository Service
 // =============================================================================
 
@@ -439,63 +397,6 @@ export class AppConfig extends Context.Tag("@app/AppConfig")<
   static readonly layer: Layer.Layer<AppConfig> = undefined as never
   static readonly testLayer: Layer.Layer<AppConfig> = undefined as never
 }
-
-// =============================================================================
-// Sample Layer Composition
-// =============================================================================
-
-export const AppLayer = ApplicationService.layer.pipe(
-  Layer.provide(ContextSession.layer),
-  Layer.provide(EventReducer.layer),
-  Layer.provide(Agent.layer),
-  Layer.provide(ContextRepository.layer),
-  Layer.provide(HooksService.layer),
-  Layer.provide(AppConfig.layer)
-)
-
-export const TestLayer = ApplicationService.testLayer.pipe(
-  Layer.provide(ContextSession.testLayer),
-  Layer.provide(EventReducer.testLayer),
-  Layer.provide(Agent.testLayer),
-  Layer.provide(ContextRepository.testLayer),
-  Layer.provide(HooksService.testLayer),
-  Layer.provide(AppConfig.testLayer)
-)
-
-// =============================================================================
-// Sample Usage
-// =============================================================================
-
-export const sampleProgram = Effect.gen(function*() {
-  const app = yield* ApplicationService
-  const contextName = ContextName.make("chat")
-
-  // Fork the event stream consumer
-  const streamFiber = yield* app.eventStream(contextName).pipe(
-    Stream.tap((event) => Effect.log(`Event: ${event._tag}`)),
-    Stream.runDrain,
-    Effect.fork
-  )
-
-  // Add a user message
-  yield* app.addEvent(
-    contextName,
-    new UserMessageEvent({
-      id: EventId.make(crypto.randomUUID()),
-      timestamp: new Date() as never, // DateTime.unsafeNow() in real code
-      contextName,
-      parentEventId: Option.none(),
-      content: "Hello, how are you?"
-    })
-  )
-
-  // Wait for response events...
-  yield* Effect.sleep(Duration.seconds(5))
-
-  // Graceful shutdown
-  yield* app.shutdown()
-  yield* Fiber.await(streamFiber)
-})
 
 // =============================================================================
 // Hook Composition Utilities
