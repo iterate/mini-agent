@@ -1,23 +1,22 @@
 /**
- * Unsafe Executor (eval-based, dev only)
+ * Code Executor
  *
- * WARNING: This executor provides NO isolation!
- * Use only for development/testing where speed matters more than security.
- * User code runs in the same V8 context as the host.
+ * Runs validated JavaScript with injected context.
+ * Uses eval() - security comes from validation, not isolation.
  */
 import { Effect, Layer } from "effect"
 
 import { ExecutionError, TimeoutError } from "../errors.ts"
-import { SandboxExecutor } from "../services.ts"
-import type { CallbackRecord, ExecutionResult, ParentContext, SandboxConfig } from "../types.ts"
+import { Executor } from "../services.ts"
+import type { CallbackRecord, CodeModeConfig, ExecutionResult, ParentContext } from "../types.ts"
 
-export const UnsafeExecutorLive = Layer.succeed(
-  SandboxExecutor,
-  SandboxExecutor.of({
+export const ExecutorLive = Layer.succeed(
+  Executor,
+  Executor.of({
     execute: <TCallbacks extends CallbackRecord, TData, TResult>(
       javascript: string,
       parentContext: ParentContext<TCallbacks, TData>,
-      config: SandboxConfig
+      config: CodeModeConfig
     ): Effect.Effect<ExecutionResult<TResult>, ExecutionError | TimeoutError> =>
       Effect.async<ExecutionResult<TResult>, ExecutionError | TimeoutError>((resume) => {
         const start = performance.now()
@@ -31,14 +30,12 @@ export const UnsafeExecutorLive = Layer.succeed(
           resume(effect)
         }
 
-        // Wrap user code to extract and call the default export
+        // Wrap code to extract and call default export
         const wrappedCode = `
           (function(ctx) {
             const module = { exports: {} };
             const exports = module.exports;
-
             ${javascript}
-
             const exported = module.exports.default || module.exports;
             if (typeof exported === 'function') {
               return exported(ctx);
@@ -50,21 +47,18 @@ export const UnsafeExecutorLive = Layer.succeed(
         try {
           const fn = eval(wrappedCode) as (ctx: ParentContext<TCallbacks, TData>) => unknown
 
-          // Timeout promise
           const timeoutPromise = new Promise<never>((_, reject) => {
             timeoutId = setTimeout(() => {
               reject(new TimeoutError({ timeoutMs: config.timeoutMs }))
             }, config.timeoutMs)
           })
 
-          // Race execution against timeout
           Promise.race([Promise.resolve(fn(parentContext)), timeoutPromise])
             .then((value) => {
               safeResume(
                 Effect.succeed({
                   value: value as TResult,
-                  durationMs: performance.now() - start,
-                  metadata: { executor: "unsafe-eval", isolated: false }
+                  durationMs: performance.now() - start
                 })
               )
             })
@@ -97,7 +91,6 @@ export const UnsafeExecutorLive = Layer.succeed(
           )
         }
 
-        // Cleanup for Effect interruption
         return Effect.sync(() => {
           completed = true
           if (timeoutId) clearTimeout(timeoutId)
