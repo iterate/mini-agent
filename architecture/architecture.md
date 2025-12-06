@@ -72,29 +72,44 @@ These are stateless domain services:
 
 **Agent** - LLM execution with retry and fallback
 ```typescript
-class Agent extends Context.Tag("@app/Agent")<Agent, {
+class Agent extends Effect.Service<Agent>()("@app/Agent", {
+  effect: Effect.gen(function*() {
+    // Implementation with dependencies
+  }),
+  dependencies: [/* dependencies */]
+}) {
   readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError>
-}>() {}
+}
 ```
 
 **EventReducer** - Folds events into ReducedContext (including config from events)
 ```typescript
-class EventReducer extends Context.Tag("@app/EventReducer")<EventReducer, {
+class EventReducer extends Effect.Service<EventReducer>()("@app/EventReducer", {
+  effect: Effect.gen(function*() {
+    // Implementation
+  }),
+  dependencies: []
+}) {
   readonly reduce: (current: ReducedContext, newEvents: ReadonlyArray<ContextEvent>) => Effect.Effect<ReducedContext, ReducerError>
   readonly initialReducedContext: ReducedContext
-}>() {}
+}
 ```
 
 **EventStore** - Pluggable event persistence
 ```typescript
-class EventStore extends Context.Tag("@app/EventStore")<EventStore, {
+class EventStore extends Effect.Service<EventStore>()("@app/EventStore", {
+  effect: Effect.gen(function*() {
+    // YAML file implementation
+  }),
+  dependencies: [FileSystem, Path]
+}) {
   readonly load: (name: AgentName) => Effect.Effect<ReadonlyArray<ContextEvent>, AgentLoadError>
   readonly append: (name: AgentName, events: ReadonlyArray<ContextEvent>) => Effect.Effect<void, AgentSaveError>
   readonly exists: (name: AgentName) => Effect.Effect<boolean>
-}>() {
-  static readonly yamlFileLayer: Layer.Layer<EventStore>  // Production
-  static readonly inMemoryLayer: Layer.Layer<EventStore>  // Tests
 }
+
+// Alternative implementations via Layer.succeed
+const EventStoreInMemory: Layer.Layer<EventStore> = Layer.succeed(EventStore, {...})
 ```
 
 Note: No AppConfig service. All config derives from events via ReducedContext (SetLlmConfigEvent, SetTimeoutEvent).
@@ -118,14 +133,22 @@ The reducer is a pure function: `(events) → ReducedContext`. Actor holds event
 The actor manages a single agent's lifecycle. It uses all core services internally.
 
 ```typescript
-class MiniAgent extends Context.Tag("@app/MiniAgent")<MiniAgent, {
+class MiniAgent extends Effect.Service<MiniAgent>()("@app/MiniAgent", {
+  effect: (agentName: AgentName) => Effect.gen(function*() {
+    const agent = yield* Agent
+    const reducer = yield* EventReducer
+    const store = yield* EventStore
+    // Implementation using dependencies
+  }),
+  dependencies: [Agent, EventReducer, EventStore]
+}) {
   readonly agentName: AgentName
   readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentError>
   readonly events: Stream.Stream<ContextEvent, never>  // Live broadcast
   readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>  // Historical
   readonly getReducedContext: Effect.Effect<ReducedContext>  // Current derived state
   readonly shutdown: Effect.Effect<void>
-}>() {
+
   static readonly make: (agentName: AgentName) => Layer.Layer<MiniAgent, MiniAgentError, Agent | EventReducer | EventStore>
 }
 ```
@@ -144,12 +167,17 @@ const broadcast = yield* Stream.broadcastDynamic(Mailbox.toStream(mailbox), {
 
 **AgentRegistry** - Manages multiple agents (public API)
 ```typescript
-class AgentRegistry extends Context.Tag("@app/AgentRegistry")<AgentRegistry, {
+class AgentRegistry extends Effect.Service<AgentRegistry>()("@app/AgentRegistry", {
+  effect: Effect.gen(function*() {
+    // Implementation manages map of MiniAgent instances
+  }),
+  dependencies: [Agent, EventReducer, EventStore]
+}) {
   readonly getOrCreate: (agentName: AgentName) => Effect.Effect<MiniAgent, MiniAgentError>
   readonly get: (agentName: AgentName) => Effect.Effect<MiniAgent, AgentNotFoundError>
   readonly list: Effect.Effect<ReadonlyArray<AgentName>>
   readonly shutdownAll: Effect.Effect<void>
-}>() {}
+}
 ```
 
 ---
@@ -238,19 +266,19 @@ Layer.scoped(MiniAgent, Effect.gen(function*() {
 ## Dependency Composition
 
 ```typescript
-// Production (YAML file storage)
-const AgentRegistryLive = AgentRegistry.layer.pipe(
-  Layer.provide(EventReducer.layer),
-  Layer.provide(Agent.layer),
-  Layer.provide(EventStore.yamlFileLayer)
-)
+// Production - Effect.Service auto-generates .Default layer with dependencies
+const MainLayer = AgentRegistry.Default
+// Includes: AgentRegistry + Agent + EventReducer + EventStore (YAML)
 
-// Tests (in-memory, no disk I/O)
-const AgentRegistryTest = AgentRegistry.testLayer.pipe(
-  Layer.provide(EventReducer.testLayer),
-  Layer.provide(Agent.testLayer),
-  Layer.provide(EventStore.inMemoryLayer)
+// Tests - Replace EventStore with in-memory implementation
+const TestLayer = Layer.provide(
+  AgentRegistry.Default,
+  EventStoreInMemory
 )
+// Alternative test layers use Layer.succeed for mocks:
+const MockAgentLayer = Layer.succeed(Agent, {
+  takeTurn: (ctx) => Stream.make(/* mock events */)
+})
 ```
 
 ---

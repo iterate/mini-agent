@@ -109,7 +109,8 @@ MVP supports one LLM request at a time:
 
 ### Effect Idioms
 
-- `Context.Tag` for service definitions (not `Effect.Service`)
+- `Effect.Service` for service definitions with auto-generated `.Default` layers
+- Test layers use `Layer.succeed(ServiceTag, mockImpl)`
 - `Effect.fn` for automatic span creation
 - `Schema.TaggedClass` for events with `...BaseEventFields` spread (includes triggersAgentTurn)
 - `Schema.TaggedError` for errors

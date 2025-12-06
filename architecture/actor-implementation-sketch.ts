@@ -56,10 +56,13 @@ interface ActorState {
  *
  * Processing is triggered by events with triggersAgentTurn=true, not event type.
  * Debounce is hard-coded to 100ms.
+ *
+ * Note: MiniAgent uses factory pattern (not static Default layer) because it takes
+ * agentName as a parameter. In actual code, MiniAgent would be defined with Effect.Service.
  */
 const makeMiniAgent = (agentName: AgentName) =>
   Layer.scoped(
-    // MiniAgent tag - would be imported from design.ts
+    // MiniAgent service - would be defined with Effect.Service in design.ts
     Context.GenericTag<{
       readonly agentName: AgentName
       readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentError>
@@ -68,7 +71,7 @@ const makeMiniAgent = (agentName: AgentName) =>
       readonly shutdown: Effect.Effect<void>
     }>("@app/MiniAgent"),
     Effect.gen(function*() {
-      // Dependencies
+      // Dependencies (would be Effect.Service in actual implementation)
       const reducer = yield* EventReducer
       const eventStore = yield* Context.GenericTag<{
         readonly append: (

@@ -2,6 +2,9 @@
  * Complete type definitions for the MiniAgent Architecture.
  * Service interfaces only - no implementations.
  *
+ * Uses Effect.Service pattern for service definitions with placeholder implementations.
+ * Real implementations provide Service.Default layers in their respective modules.
+ *
  * Philosophy: "Agent events are all you need"
  * - Everything the agent does is driven by events
  * - Events reduce to state, state drives the agent
@@ -314,14 +317,15 @@ export type MiniAgentError = typeof MiniAgentError.Type
 /**
  * Agent service - makes LLM requests with retry and fallback.
  * Executes agent turns using config from ReducedContext, returns event stream.
+ *
+ * Real implementation provides Agent.Default layer.
  */
-export class Agent extends Context.Tag("@app/Agent")<
-  Agent,
-  {
-    readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError>
-  }
->() {
-  static readonly layer: Layer.Layer<Agent> = undefined as never
+export class Agent extends Effect.Service<Agent>()("@app/Agent", {
+  effect: Effect.die("Not implemented"),
+  accessors: true
+}) {
+  readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError> =
+    undefined as never
 }
 
 /**
@@ -332,36 +336,39 @@ export class Agent extends Context.Tag("@app/Agent")<
  * - Message events (SystemPromptEvent, UserMessageEvent, etc.) → messages
  * - Turn events (AgentTurnStartedEvent, AgentTurnCompletedEvent) → agentTurnStartedAtEventId, currentTurnNumber
  * - All events → increment nextEventNumber
+ *
+ * Real implementation provides EventReducer.Default layer.
  */
-export class EventReducer extends Context.Tag("@app/EventReducer")<
-  EventReducer,
-  {
-    readonly reduce: (
-      current: ReducedContext,
-      newEvents: ReadonlyArray<ContextEvent>
-    ) => Effect.Effect<ReducedContext, ReducerError>
+export class EventReducer extends Effect.Service<EventReducer>()("@app/EventReducer", {
+  effect: Effect.die("Not implemented"),
+  accessors: true
+}) {
+  readonly reduce: (
+    current: ReducedContext,
+    newEvents: ReadonlyArray<ContextEvent>
+  ) => Effect.Effect<ReducedContext, ReducerError> = undefined as never
 
-    readonly initialReducedContext: ReducedContext
-  }
->() {
-  static readonly layer: Layer.Layer<EventReducer> = undefined as never
+  readonly initialReducedContext: ReducedContext = undefined as never
 }
 
 /**
  * EventStore persists agent events.
  * Pluggable: YamlFileStore (disk), InMemoryStore (tests), PostgresStore (future).
+ *
+ * Real implementations provide:
+ * - EventStore.YamlFile layer (disk persistence)
+ * - EventStore.InMemory layer (tests)
+ * - EventStore.Default layer (defaults to YamlFile)
  */
-export class EventStore extends Context.Tag("@app/EventStore")<
-  EventStore,
-  {
-    readonly load: (name: AgentName) => Effect.Effect<ReadonlyArray<ContextEvent>, AgentLoadError>
-    readonly append: (name: AgentName, events: ReadonlyArray<ContextEvent>) => Effect.Effect<void, AgentSaveError>
-    readonly exists: (name: AgentName) => Effect.Effect<boolean>
-  }
->() {
-  static readonly yamlFileLayer: Layer.Layer<EventStore> = undefined as never
-  static readonly inMemoryLayer: Layer.Layer<EventStore> = undefined as never
-  static readonly testLayer = EventStore.inMemoryLayer
+export class EventStore extends Effect.Service<EventStore>()("@app/EventStore", {
+  effect: Effect.die("Not implemented"),
+  accessors: true
+}) {
+  readonly load: (name: AgentName) => Effect.Effect<ReadonlyArray<ContextEvent>, AgentLoadError> =
+    undefined as never
+  readonly append: (name: AgentName, events: ReadonlyArray<ContextEvent>) => Effect.Effect<void, AgentSaveError> =
+    undefined as never
+  readonly exists: (name: AgentName) => Effect.Effect<boolean> = undefined as never
 }
 
 /**
@@ -418,28 +425,31 @@ export class MiniAgent extends Context.Tag("@app/MiniAgent")<
  * AgentRegistry manages multiple MiniAgent instances.
  * Lazy creation, caching, routing, graceful shutdown.
  * Future: replace with @effect/cluster Sharding.
+ *
+ * Real implementation provides AgentRegistry.Default layer.
+ * Dependencies: Agent | EventReducer | EventStore
  */
-export class AgentRegistry extends Context.Tag("@app/AgentRegistry")<
-  AgentRegistry,
-  {
-    /** Get or create agent (cached) */
-    readonly getOrCreate: (agentName: AgentName) => Effect.Effect<MiniAgent, MiniAgentError>
-
-    /** Get existing agent (fails if not found) */
-    readonly get: (agentName: AgentName) => Effect.Effect<MiniAgent, AgentNotFoundError>
-
-    /** List all active agent names */
-    readonly list: Effect.Effect<ReadonlyArray<AgentName>>
-
-    /** Shutdown specific agent */
-    readonly shutdownAgent: (agentName: AgentName) => Effect.Effect<void, AgentNotFoundError>
-
-    /** Shutdown all agents gracefully */
-    readonly shutdownAll: Effect.Effect<void>
-  }
->() {
-  static readonly layer: Layer.Layer<AgentRegistry, never, Agent | EventReducer | EventStore> =
+export class AgentRegistry extends Effect.Service<AgentRegistry>()("@app/AgentRegistry", {
+  effect: Effect.die("Not implemented"),
+  accessors: true
+}) {
+  /** Get or create agent (cached) */
+  readonly getOrCreate: (agentName: AgentName) => Effect.Effect<MiniAgent, MiniAgentError> =
     undefined as never
+
+  /** Get existing agent (fails if not found) */
+  readonly get: (agentName: AgentName) => Effect.Effect<MiniAgent, AgentNotFoundError> =
+    undefined as never
+
+  /** List all active agent names */
+  readonly list: Effect.Effect<ReadonlyArray<AgentName>> = undefined as never
+
+  /** Shutdown specific agent */
+  readonly shutdownAgent: (agentName: AgentName) => Effect.Effect<void, AgentNotFoundError> =
+    undefined as never
+
+  /** Shutdown all agents gracefully */
+  readonly shutdownAll: Effect.Effect<void> = undefined as never
 }
 
 export const sampleProgram = Effect.gen(function*() {
