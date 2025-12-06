@@ -9,7 +9,7 @@ import { GoogleClient, GoogleLanguageModel } from "@effect/ai-google"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient, HttpServer } from "@effect/platform"
 import { BunContext, BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { Effect, Layer, LogLevel, Option } from "effect"
+import { ConfigProvider, Effect, Layer, LogLevel, Option } from "effect"
 import { AppConfig, type MiniAgentConfig } from "../config.ts"
 import { CurrentLlmConfig, getApiKey, type LlmConfig, resolveLlmConfig } from "../llm-config.ts"
 import { createLoggingLayer } from "../logging.ts"
@@ -87,7 +87,7 @@ const defaultConfig: MiniAgentConfig = {
 const appConfigLayer = Layer.succeed(AppConfig, defaultConfig)
 
 const program = Effect.gen(function*() {
-  const llmConfig = yield* resolveLlmConfig
+  const llmConfig = yield* resolveLlmConfig.pipe(Effect.withConfigProvider(ConfigProvider.fromEnv()))
   yield* Effect.log(`Starting server on port ${port}`)
   yield* Effect.logDebug("Using LLM config", { provider: llmConfig.apiFormat, model: llmConfig.model })
 

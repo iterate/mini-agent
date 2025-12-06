@@ -11,7 +11,7 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { Command, Options } from "@effect/cli"
 import { FetchHttpClient, Terminal } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { Effect, Fiber, Layer, LogLevel, Option, Stream } from "effect"
+import { ConfigProvider, Effect, Fiber, Layer, LogLevel, Option, Stream } from "effect"
 import { AppConfig, type MiniAgentConfig } from "../config.ts"
 import { CurrentLlmConfig, getApiKey, type LlmConfig, resolveLlmConfig } from "../llm-config.ts"
 import { createLoggingLayer } from "../logging.ts"
@@ -160,7 +160,7 @@ const defaultConfig: MiniAgentConfig = {
 const appConfigLayer = Layer.succeed(AppConfig, defaultConfig)
 
 const program = Effect.gen(function*() {
-  const llmConfig = yield* resolveLlmConfig
+  const llmConfig = yield* resolveLlmConfig.pipe(Effect.withConfigProvider(ConfigProvider.fromEnv()))
   yield* Effect.logDebug("Using LLM config", { provider: llmConfig.apiFormat, model: llmConfig.model })
 
   const languageModelLayer = makeLanguageModelLayer(llmConfig)
