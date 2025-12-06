@@ -4,8 +4,11 @@
  * Vitest 3.x fixtures for isolated test environments with temp directories.
  *
  * LLM Mode:
- * - By default, tests use a mock LLM server for fast, predictable responses
- * - Set USE_REAL_LLM=1 to use real LLM APIs (requires valid API keys)
+ * - Default: Uses mock LLM server for fast (~31s), predictable responses
+ * - Set USE_REAL_LLM=1 to use real LLM APIs:
+ *   - Requires valid API keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, etc.)
+ *   - Optionally set LLM env var to specify provider (e.g., LLM=anthropic:claude-haiku-4-5)
+ *   - Example: USE_REAL_LLM=1 doppler run -- bun vitest run
  */
 import { Command } from "@effect/platform"
 import { BunContext } from "@effect/platform-bun"
