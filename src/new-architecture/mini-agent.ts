@@ -12,6 +12,7 @@ import { DateTime, Duration, Effect, Fiber, Mailbox, Option, Ref, type Scope, St
 import {
   type AgentName,
   AgentTurnCompletedEvent,
+  AgentTurnFailedEvent,
   type AgentTurnNumber,
   AgentTurnStartedEvent,
   type ContextEvent,
@@ -111,25 +112,43 @@ export const makeMiniAgent = (
         const ctx = yield* Ref.get(stateRef).pipe(Effect.map((s) => s.reducedContext))
 
         // Execute turn via service - stream events
-        yield* turnService.execute(ctx).pipe(
+        const turnOutcome = yield* turnService.execute(ctx).pipe(
           Stream.tap(addEventInternal),
           Stream.runDrain,
-          Effect.catchAll((error) => Effect.logWarning("Turn failed", { error }))
+          Effect.match({
+            onSuccess: () => ({ _tag: "success" as const }),
+            onFailure: (error) => ({ _tag: "failure" as const, error })
+          })
         )
 
-        // Emit turn completed
         const durationMs = Date.now() - startTime
         const endState = yield* Ref.get(stateRef)
-        const completeEvent = new AgentTurnCompletedEvent({
-          id: makeEventId(contextName, endState.reducedContext.nextEventNumber),
-          timestamp: DateTime.unsafeNow(),
-          agentName,
-          parentEventId: Option.some(startEvent.id),
-          triggersAgentTurn: false,
-          turnNumber,
-          durationMs
-        })
-        yield* addEventInternal(completeEvent)
+
+        if (turnOutcome._tag === "failure") {
+          const { error } = turnOutcome
+          yield* Effect.logWarning("Turn failed", { error })
+          const failureEvent = new AgentTurnFailedEvent({
+            id: makeEventId(contextName, endState.reducedContext.nextEventNumber),
+            timestamp: DateTime.unsafeNow(),
+            agentName,
+            parentEventId: Option.some(startEvent.id),
+            triggersAgentTurn: false,
+            turnNumber,
+            error: error instanceof Error ? error.message : String(error)
+          })
+          yield* addEventInternal(failureEvent)
+        } else {
+          const completeEvent = new AgentTurnCompletedEvent({
+            id: makeEventId(contextName, endState.reducedContext.nextEventNumber),
+            timestamp: DateTime.unsafeNow(),
+            agentName,
+            parentEventId: Option.some(startEvent.id),
+            triggersAgentTurn: false,
+            turnNumber,
+            durationMs
+          })
+          yield* addEventInternal(completeEvent)
+        }
       })
 
     // Process triggering events with debounce
