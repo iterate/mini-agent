@@ -142,6 +142,11 @@ function feedReducer(items: FeedItem[], action: FeedAction): FeedItem[] {
         })
       ]
 
+    case "SystemPrompt":
+    case "SetLlmConfig":
+      // Config events - don't render in chat feed
+      return items
+
     default:
       return [
         ...items,
