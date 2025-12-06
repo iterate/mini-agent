@@ -54,10 +54,11 @@ class FileAttachmentItem extends Schema.TaggedClass<FileAttachmentItem>()("FileA
   isHistory: Schema.Boolean
 }) {}
 
-/** Fallback for unknown event types - displays muted warning */
+/** Fallback for unknown event types - displays event type and timestamp in muted colors */
 class UnknownEventItem extends Schema.TaggedClass<UnknownEventItem>()("UnknownEventItem", {
   id: Schema.String,
   eventTag: Schema.String,
+  timestamp: Schema.DateFromSelf,
   isHistory: Schema.Boolean
 }) {}
 
@@ -141,16 +142,13 @@ function feedReducer(items: FeedItem[], action: FeedAction): FeedItem[] {
         })
       ]
 
-    case "SystemPrompt":
-    case "SetLlmConfig":
-      return items
-
     default:
       return [
         ...items,
         new UnknownEventItem({
           id: crypto.randomUUID(),
           eventTag: (event as { _tag: string })._tag,
+          timestamp: new Date(),
           isHistory
         })
       ]
@@ -257,9 +255,13 @@ const FileAttachmentRenderer = memo<{ item: FileAttachmentItem }>(({ item }) => 
 })
 
 const UnknownEventRenderer = memo<{ item: UnknownEventItem }>(({ item }) => {
+  const timeStr = item.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+
   return (
     <box marginBottom={1}>
-      <text fg={colors.dim}>No renderer for {item.eventTag}</text>
+      <text fg={colors.dim}>
+        [{timeStr}] {item.eventTag}
+      </text>
     </box>
   )
 })
