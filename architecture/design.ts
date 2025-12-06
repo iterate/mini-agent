@@ -25,10 +25,6 @@
 import type { Prompt } from "@effect/ai"
 import { Context, Duration, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
 
-// =============================================================================
-// Branded Types
-// =============================================================================
-
 export const AgentName = Schema.String.pipe(Schema.brand("AgentName"))
 export type AgentName = typeof AgentName.Type
 
@@ -45,21 +41,11 @@ export type LlmProviderId = typeof LlmProviderId.Type
 export const EventId = Schema.String.pipe(Schema.brand("EventId"))
 export type EventId = typeof EventId.Type
 
-export namespace EventId {
-  /**
-   * Create an EventId from agent name and counter.
-   * Counter should be zero-padded to 4 digits.
-   */
-  export const make = (agentName: AgentName, counter: number): EventId =>
-    EventId.make(`${agentName}:${String(counter).padStart(4, "0")}`)
-}
+export const makeEventId = (agentName: AgentName, counter: number): EventId =>
+  `${agentName}:${String(counter).padStart(4, "0")}` as EventId
 
 export const AgentTurnNumber = Schema.Number.pipe(Schema.brand("AgentTurnNumber"))
 export type AgentTurnNumber = typeof AgentTurnNumber.Type
-
-// =============================================================================
-// Base Event Fields - All events share these
-// =============================================================================
 
 /**
  * All agent events must have these fields.
@@ -81,10 +67,6 @@ export const BaseEventFields = {
   triggersAgentTurn: Schema.Boolean
 }
 
-// =============================================================================
-// Configuration Schemas (derived from events, not AppConfig)
-// =============================================================================
-
 export class LlmProviderConfig extends Schema.Class<LlmProviderConfig>("LlmProviderConfig")({
   providerId: LlmProviderId,
   model: Schema.String,
@@ -99,13 +81,8 @@ export class LlmProviderConfig extends Schema.Class<LlmProviderConfig>("LlmProvi
 export class AgentConfig extends Schema.Class<AgentConfig>("AgentConfig")({
   primary: LlmProviderConfig,
   fallback: Schema.optionalWith(LlmProviderConfig, { as: "Option" }),
-  timeoutMs: Schema.Number.pipe(Schema.positive()),
-  debounceMs: Schema.Number
+  timeoutMs: Schema.Number.pipe(Schema.positive())
 }) {}
-
-// =============================================================================
-// ReducedContext - Output of reducer, input to Agent
-// =============================================================================
 
 /**
  * ALL actor state derived from events.
@@ -123,44 +100,13 @@ export class AgentConfig extends Schema.Class<AgentConfig>("AgentConfig")({
  * No separate counters, flags, or state refs.
  */
 export interface ReducedContext {
-  // Content for LLM
   readonly messages: ReadonlyArray<Prompt.Message>
-
-  // Config derived from events
   readonly config: AgentConfig
-
-  // Actor internal state - ALL derived from events
-  readonly nextEventNumber: number // for generating EventId counter
-  readonly currentTurnNumber: AgentTurnNumber // current or next turn
-  readonly isAgentTurnInProgress: boolean // true between Started and Completed/Failed
-  readonly lastTriggeringEventId: Option.Option<EventId> // last event with triggersAgentTurn=true
+  readonly nextEventNumber: number
+  readonly currentTurnNumber: AgentTurnNumber
+  /** Some = turn in progress (started at that event), None = no turn in progress */
+  readonly agentTurnStartedAtEventId: Option.Option<EventId>
 }
-
-// =============================================================================
-// ReducedContext Utilities
-// =============================================================================
-
-/**
- * Check if an agent turn is currently in progress.
- */
-export const isAgentTurnInProgress = (ctx: ReducedContext): boolean =>
-  ctx.isAgentTurnInProgress
-
-/**
- * Get the next EventId for this agent.
- */
-export const getNextEventId = (ctx: ReducedContext, agentName: AgentName): EventId =>
-  EventId.make(agentName, ctx.nextEventNumber)
-
-/**
- * Get the last event that triggered an agent turn.
- */
-export const getLastTriggeringEventId = (ctx: ReducedContext): Option.Option<EventId> =>
-  ctx.lastTriggeringEventId
-
-// =============================================================================
-// Content Events
-// =============================================================================
 
 export class SystemPromptEvent extends Schema.TaggedClass<SystemPromptEvent>()(
   "SystemPromptEvent",
@@ -204,10 +150,6 @@ export class TextDeltaEvent extends Schema.TaggedClass<TextDeltaEvent>()(
   }
 ) {}
 
-// =============================================================================
-// Configuration Events
-// =============================================================================
-
 export class SetLlmProviderConfigEvent extends Schema.TaggedClass<SetLlmProviderConfigEvent>()(
   "SetLlmProviderConfigEvent",
   {
@@ -227,18 +169,6 @@ export class SetTimeoutEvent extends Schema.TaggedClass<SetTimeoutEvent>()(
     timeoutMs: Schema.Number
   }
 ) {}
-
-export class SetDebounceEvent extends Schema.TaggedClass<SetDebounceEvent>()(
-  "SetDebounceEvent",
-  {
-    ...BaseEventFields,
-    debounceMs: Schema.Number
-  }
-) {}
-
-// =============================================================================
-// Lifecycle Events
-// =============================================================================
 
 export class SessionStartedEvent extends Schema.TaggedClass<SessionStartedEvent>()(
   "SessionStartedEvent",
@@ -289,10 +219,6 @@ export class AgentTurnFailedEvent extends Schema.TaggedClass<AgentTurnFailedEven
   }
 ) {}
 
-// =============================================================================
-// ContextEvent - The one and only event union
-// =============================================================================
-
 /**
  * Events that can occur in a context. There's no distinction between
  * "input" and "output" events - they're all just events that flow through
@@ -303,17 +229,13 @@ export class AgentTurnFailedEvent extends Schema.TaggedClass<AgentTurnFailedEven
  * Every event has triggersAgentTurn to indicate if it should start an LLM request.
  */
 export const ContextEvent = Schema.Union(
-  // Content events
   SystemPromptEvent,
   UserMessageEvent,
   FileAttachmentEvent,
   AssistantMessageEvent,
   TextDeltaEvent,
-  // Configuration events
   SetLlmProviderConfigEvent,
   SetTimeoutEvent,
-  SetDebounceEvent,
-  // Lifecycle events
   SessionStartedEvent,
   SessionEndedEvent,
   AgentTurnStartedEvent,
@@ -322,10 +244,6 @@ export const ContextEvent = Schema.Union(
   AgentTurnFailedEvent
 )
 export type ContextEvent = typeof ContextEvent.Type
-
-// =============================================================================
-// Errors
-// =============================================================================
 
 export class AgentError extends Schema.TaggedError<AgentError>()(
   "AgentError",
@@ -372,10 +290,6 @@ export class AgentSaveError extends Schema.TaggedError<AgentSaveError>()(
 export const MiniAgentError = Schema.Union(AgentNotFoundError, AgentLoadError, AgentSaveError)
 export type MiniAgentError = typeof MiniAgentError.Type
 
-// =============================================================================
-// Agent Service (LLM execution)
-// =============================================================================
-
 /**
  * Agent service - makes LLM requests with retry and fallback.
  *
@@ -389,12 +303,7 @@ export class Agent extends Context.Tag("@app/Agent")<
   }
 >() {
   static readonly layer: Layer.Layer<Agent> = undefined as never
-  static readonly testLayer: Layer.Layer<Agent> = undefined as never
 }
-
-// =============================================================================
-// EventReducer Service
-// =============================================================================
 
 /**
  * EventReducer folds events into a ReducedContext ready for an agent turn.
@@ -404,12 +313,10 @@ export class Agent extends Context.Tag("@app/Agent")<
  * It looks at event types to update state:
  * - SetLlmProviderConfigEvent → config.primary or config.fallback
  * - SetTimeoutEvent → config.timeoutMs
- * - SetDebounceEvent → config.debounceMs
  * - SystemPromptEvent, UserMessageEvent, etc. → messages array
- * - AgentTurnStartedEvent → isAgentTurnInProgress=true, increment currentTurnNumber
- * - AgentTurnCompletedEvent/FailedEvent → isAgentTurnInProgress=false
+ * - AgentTurnStartedEvent → agentTurnStartedAtEventId=Some(eventId), increment currentTurnNumber
+ * - AgentTurnCompletedEvent/FailedEvent → agentTurnStartedAtEventId=None
  * - Any event → increment nextEventNumber
- * - Event with triggersAgentTurn=true → update lastTriggeringEventId
  *
  * Everything the actor needs is in ReducedContext.
  * The actor just stores events, runs reducer, calls Agent when needed.
@@ -427,13 +334,7 @@ export class EventReducer extends Context.Tag("@app/EventReducer")<
 >() {
   /** Default reducer - keeps all messages, no truncation */
   static readonly layer: Layer.Layer<EventReducer> = undefined as never
-
-  static readonly testLayer: Layer.Layer<EventReducer> = undefined as never
 }
-
-// =============================================================================
-// EventStore Service (pluggable storage backend)
-// =============================================================================
 
 /**
  * EventStore handles persistence of agent events.
@@ -460,10 +361,6 @@ export class EventStore extends Context.Tag("@app/EventStore")<
   static readonly testLayer = EventStore.inMemoryLayer
 }
 
-// =============================================================================
-// MiniAgent Service
-// =============================================================================
-
 /**
  * MiniAgent represents a single agent as an actor.
  *
@@ -477,7 +374,7 @@ export class EventStore extends Context.Tag("@app/EventStore")<
  * Actor behavior:
  * - Stores events (event log)
  * - Runs reducer to get current state
- * - Calls Agent service when event has triggersAgentTurn=true
+ * - Calls Agent service when event has triggersAgentTurn=true (with 100ms debounce)
  * - Broadcasts events to subscribers
  *
  * The agent is scoped - when the scope closes, the agent shuts down gracefully.
@@ -505,7 +402,7 @@ export class MiniAgent extends Context.Tag("@app/MiniAgent")<
      * 2. Update in-memory events list
      * 3. Run reducer to update reducedContext
      * 4. Offer to mailbox (broadcasts to all subscribers)
-     * 5. If event.triggersAgentTurn, starts debounce timer for processing
+     * 5. If event.triggersAgentTurn, starts 100ms debounce timer for processing
      */
     readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentError>
 
@@ -545,13 +442,7 @@ export class MiniAgent extends Context.Tag("@app/MiniAgent")<
     agentName: AgentName
   ) => Layer.Layer<MiniAgent, MiniAgentError, Agent | EventReducer | EventStore> =
     undefined as never
-
-  static readonly testLayer: Layer.Layer<MiniAgent> = undefined as never
 }
-
-// =============================================================================
-// AgentRegistry Service
-// =============================================================================
 
 /**
  * AgentRegistry manages multiple MiniAgent instances.
@@ -596,97 +487,17 @@ export class AgentRegistry extends Context.Tag("@app/AgentRegistry")<
 >() {
   static readonly layer: Layer.Layer<AgentRegistry, never, Agent | EventReducer | EventStore> =
     undefined as never
-
-  static readonly testLayer: Layer.Layer<AgentRegistry> = undefined as never
 }
-
-// =============================================================================
-// MiniAgentApp Service (Application Facade)
-// =============================================================================
-
-/**
- * Application service - thin facade over AgentRegistry.
- */
-export class MiniAgentApp extends Context.Tag("@app/MiniAgentApp")<
-  MiniAgentApp,
-  {
-    /**
-     * Add event to an agent (creates agent if needed).
-     */
-    readonly addEvent: (
-      agentName: AgentName,
-      event: ContextEvent
-    ) => Effect.Effect<void, MiniAgentError>
-
-    /**
-     * Get event stream for an agent.
-     * Creates agent if needed.
-     * Each execution of the stream creates a new subscriber - all get same events.
-     *
-     * NOTE: This is a live stream. Late subscribers only get events published
-     * after they subscribe. For historical events, use getEvents.
-     */
-    readonly getEventStream: (
-      agentName: AgentName
-    ) => Effect.Effect<Stream.Stream<ContextEvent, never>, MiniAgentError>
-
-    /**
-     * Get all events for an agent.
-     */
-    readonly getEvents: (
-      agentName: AgentName
-    ) => Effect.Effect<ReadonlyArray<ContextEvent>, MiniAgentError>
-
-    /**
-     * List all active agents.
-     */
-    readonly list: Effect.Effect<ReadonlyArray<AgentName>>
-
-    /**
-     * Shutdown all agents.
-     */
-    readonly shutdown: Effect.Effect<void>
-  }
->() {
-  static readonly layer: Layer.Layer<MiniAgentApp, never, AgentRegistry> = undefined as never
-  static readonly testLayer: Layer.Layer<MiniAgentApp> = undefined as never
-}
-
-// =============================================================================
-// Layer Composition
-// =============================================================================
-
-/**
- * Production layer - uses YAML file storage.
- */
-export const MiniAgentAppLayer = MiniAgentApp.layer.pipe(
-  Layer.provide(AgentRegistry.layer),
-  Layer.provide(EventReducer.layer),
-  Layer.provide(Agent.layer),
-  Layer.provide(EventStore.yamlFileLayer)
-)
-
-/**
- * Test layer - uses in-memory storage (no disk I/O).
- */
-export const MiniAgentTestLayer = MiniAgentApp.testLayer.pipe(
-  Layer.provide(AgentRegistry.testLayer),
-  Layer.provide(EventReducer.testLayer),
-  Layer.provide(Agent.testLayer),
-  Layer.provide(EventStore.inMemoryLayer)
-)
-
-// =============================================================================
-// Sample Usage
-// =============================================================================
 
 export const sampleProgram = Effect.gen(function*() {
-  const app = yield* MiniAgentApp
+  const registry = yield* AgentRegistry
   const agentName = AgentName.make("chat")
 
-  // Get event stream (creates agent if needed)
-  const eventStream = yield* app.getEventStream(agentName)
-  const streamFiber = yield* eventStream.pipe(
+  // Get or create agent
+  const agent = yield* registry.getOrCreate(agentName)
+
+  // Subscribe to event stream
+  const streamFiber = yield* agent.events.pipe(
     Stream.tap((event) => Effect.log(`Event: ${event._tag}`)),
     Stream.runDrain,
     Effect.fork
@@ -694,14 +505,14 @@ export const sampleProgram = Effect.gen(function*() {
 
   // First event has no parent
   const firstEvent = new UserMessageEvent({
-    id: EventId.make(agentName, 0),
+    id: makeEventId(agentName, 0),
     timestamp: new Date() as never, // DateTime.unsafeNow() in real code
     agentName,
     parentEventId: Option.none(),
     triggersAgentTurn: true, // This triggers the LLM request
     content: "Hello, how are you?"
   })
-  yield* app.addEvent(agentName, firstEvent)
+  yield* agent.addEvent(firstEvent)
 
   // Agent will respond with events linking back to the first event
   // For example, the AssistantMessageEvent would have:
@@ -712,25 +523,21 @@ export const sampleProgram = Effect.gen(function*() {
 
   // Add another message - links to previous message for context
   const secondEvent = new UserMessageEvent({
-    id: EventId.make(agentName, 5), // Assuming events 1-4 were generated by agent
+    id: makeEventId(agentName, 5), // Assuming events 1-4 were generated by agent
     timestamp: new Date() as never,
     agentName,
     parentEventId: Option.some(firstEvent.id), // Links to what we're responding to
     triggersAgentTurn: true,
     content: "Tell me more"
   })
-  yield* app.addEvent(agentName, secondEvent)
+  yield* agent.addEvent(secondEvent)
 
   yield* Effect.sleep(Duration.seconds(5))
 
   // Graceful shutdown
-  yield* app.shutdown()
+  yield* registry.shutdownAll()
   yield* Fiber.await(streamFiber)
 })
-
-// =============================================================================
-// Future Considerations
-// =============================================================================
 
 /**
  * FUTURE: Everything driven by events

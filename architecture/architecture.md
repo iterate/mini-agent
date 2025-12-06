@@ -97,7 +97,7 @@ class EventStore extends Context.Tag("@app/EventStore")<EventStore, {
 }
 ```
 
-Note: No AppConfig service. All config derives from events via ReducedContext (SetLlmProviderConfigEvent, SetTimeoutEvent, SetDebounceEvent).
+Note: No AppConfig service. All config derives from events via ReducedContext (SetLlmProviderConfigEvent, SetTimeoutEvent).
 
 ### ReducedContext (Derived State)
 
@@ -107,12 +107,7 @@ All actor internal state is derived from events via the reducer. ReducedContext 
 - `config` - LLM settings (from config events)
 - `nextEventNumber` - For generating EventId
 - `currentTurnNumber` - Current or next turn number
-- `isAgentTurnInProgress` - True between Started and Completed/Failed
-- `lastTriggeringEventId` - For parent event linking
-
-Utility functions:
-- `getNextEventId(ctx, agentName)` - Generate next EventId
-- `isAgentTurnInProgress(ctx)` - Check if turn in progress
+- `agentTurnStartedAtEventId: Option<EventId>` - When Some, turn in progress. When None, no turn.
 
 The reducer is a pure function: `(events) → ReducedContext`. Actor holds events + reducedContext only.
 
@@ -147,24 +142,13 @@ const broadcast = yield* Stream.broadcastDynamic(Mailbox.toStream(mailbox), {
 
 ### Application Facade
 
-**AgentRegistry** - Manages multiple agents
+**AgentRegistry** - Manages multiple agents (public API)
 ```typescript
 class AgentRegistry extends Context.Tag("@app/AgentRegistry")<AgentRegistry, {
   readonly getOrCreate: (agentName: AgentName) => Effect.Effect<MiniAgent, MiniAgentError>
   readonly get: (agentName: AgentName) => Effect.Effect<MiniAgent, AgentNotFoundError>
   readonly list: Effect.Effect<ReadonlyArray<AgentName>>
   readonly shutdownAll: Effect.Effect<void>
-}>() {}
-```
-
-**MiniAgentApp** - Thin facade for external consumers
-```typescript
-class MiniAgentApp extends Context.Tag("@app/MiniAgentApp")<MiniAgentApp, {
-  readonly addEvent: (agentName: AgentName, event: ContextEvent) => Effect.Effect<void, MiniAgentError>
-  readonly getEventStream: (agentName: AgentName) => Effect.Effect<Stream.Stream<ContextEvent, never>, MiniAgentError>
-  readonly getEvents: (agentName: AgentName) => Effect.Effect<ReadonlyArray<ContextEvent>, MiniAgentError>
-  readonly list: Effect.Effect<ReadonlyArray<AgentName>>
-  readonly shutdown: Effect.Effect<void>
 }>() {}
 ```
 
@@ -178,16 +162,11 @@ class MiniAgentApp extends Context.Tag("@app/MiniAgentApp")<MiniAgentApp, {
 2. Add to events array (Ref)
 3. Run reducer: `reducedContext = reduce(events)` → update reducedContext (Ref)
 4. `Mailbox.offer(event)` → broadcasts to all current subscribers
-5. If `event.triggersAgentTurn=true`: starts debounce timer for processing
-
-**Parent Event Linking**: New events automatically link to `lastTriggeringEventId` from reducedContext. This enables:
-- Event causality tracking (every event knows its parent)
-- Future agent forking (multiple events can share same parent)
-- Execution tree visualization
+5. If `event.triggersAgentTurn=true`: starts 100ms debounce timer (hard-coded) for processing
 
 ### Agent Turn Flow
 
-1. Debounce timer fires (no new events with `triggersAgentTurn=true` for N ms)
+1. 100ms debounce timer fires (no new triggering events for 100ms)
 2. Emit `AgentTurnStartedEvent` → persist → reduce → broadcast
 3. Read current `reducedContext` (already up-to-date from addEvent flow)
 4. Call `Agent.takeTurn(reducedContext)`
@@ -260,16 +239,14 @@ Layer.scoped(MiniAgent, Effect.gen(function*() {
 
 ```typescript
 // Production (YAML file storage)
-const MiniAgentAppLayer = MiniAgentApp.layer.pipe(
-  Layer.provide(AgentRegistry.layer),
+const AgentRegistryLive = AgentRegistry.layer.pipe(
   Layer.provide(EventReducer.layer),
   Layer.provide(Agent.layer),
   Layer.provide(EventStore.yamlFileLayer)
 )
 
 // Tests (in-memory, no disk I/O)
-const MiniAgentTestLayer = MiniAgentApp.testLayer.pipe(
-  Layer.provide(AgentRegistry.testLayer),
+const AgentRegistryTest = AgentRegistry.testLayer.pipe(
   Layer.provide(EventReducer.testLayer),
   Layer.provide(Agent.testLayer),
   Layer.provide(EventStore.inMemoryLayer)

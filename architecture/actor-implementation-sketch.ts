@@ -14,7 +14,7 @@
  * - ALL internal state (counters, flags, tracking) lives in reducedContext
  * - EventReducer derives reducedContext from events
  * - No manual counter management, no separate refs for processing state
- * - Parent event linking is automatic via reducedContext.lastTriggeringEventId
+ * - Parent event linking is automatic via reducedContext.agentTurnStartedAtEventId
  *
  * Key Pattern: Mailbox + broadcastDynamic
  * - Mailbox for actor mailbox semantics (offer, end, toStream)
@@ -56,31 +56,10 @@ import type {
   SessionStartedEvent
 } from "./design.ts"
 
-// =============================================================================
-// Actor Internal State
-// =============================================================================
-
 interface ActorState {
   readonly events: ReadonlyArray<ContextEvent>
   readonly reducedContext: ReducedContext
 }
-
-// =============================================================================
-// Helper Functions
-// =============================================================================
-
-/**
- * Generate next event ID using agent name and counter from reduced context.
- * Format: {agentName}:{counter}
- */
-const getNextEventId = (reducedContext: ReducedContext, agentName: AgentName): EventId => {
-  const counter = reducedContext.nextEventNumber
-  return `${agentName}:${String(counter).padStart(4, "0")}` as EventId
-}
-
-// =============================================================================
-// MiniAgent Implementation Pattern
-// =============================================================================
 
 /**
  * Implementation sketch for MiniAgent using Mailbox + broadcastDynamic.
@@ -89,7 +68,7 @@ const getNextEventId = (reducedContext: ReducedContext, agentName: AgentName): E
  * a new subscriber to the internal PubSub. This is the fan-out mechanism.
  *
  * Processing is triggered by events with triggersAgentTurn=true, not event type.
- * Debounce delay comes from ReducedContext (via SetDebounceEvent).
+ * Debounce is hard-coded to 100ms.
  */
 const makeMiniAgent = (agentName: AgentName) =>
   Layer.scoped(
@@ -115,9 +94,7 @@ const makeMiniAgent = (agentName: AgentName) =>
       const initialReducedContext = {
         nextEventNumber: 0,
         currentTurnNumber: 0,
-        isAgentTurnInProgress: false,
-        lastTriggeringEventId: Option.none() as Option.Option<EventId>,
-        debounceMs: 100
+        agentTurnStartedAtEventId: Option.none() as Option.Option<EventId>
         // ... other reducer state
       } as ReducedContext
 
@@ -133,12 +110,12 @@ const makeMiniAgent = (agentName: AgentName) =>
       // Helper to generate event metadata with agent-prefixed IDs
       // Uses reducedContext for counter and parent linking
       const makeEventMeta = (state: ActorState, triggersAgentTurn = false) => {
-        const id = getNextEventId(state.reducedContext, agentName)
+        const id = `${agentName}:${String(state.reducedContext.nextEventNumber).padStart(4, "0")}` as EventId
         return {
           id,
           timestamp: DateTime.unsafeNow(),
           agentName,
-          parentEventId: state.reducedContext.lastTriggeringEventId, // Link to parent!
+          parentEventId: state.reducedContext.agentTurnStartedAtEventId,
           triggersAgentTurn
         }
       }
@@ -156,8 +133,7 @@ const makeMiniAgent = (agentName: AgentName) =>
         const state = yield* Ref.get(stateRef)
 
         // Check if we should process (from reduced state)
-        if (state.reducedContext.isAgentTurnInProgress) return
-        if (Option.isNone(state.reducedContext.lastTriggeringEventId)) return
+        if (Option.isSome(state.reducedContext.agentTurnStartedAtEventId)) return
 
         // Get turn number from reduced context
         const turnNumber = state.reducedContext.currentTurnNumber
@@ -231,12 +207,7 @@ const makeMiniAgent = (agentName: AgentName) =>
       // Only debounce events with triggersAgentTurn=true
       const processingFiber = yield* broadcast.pipe(
         Stream.filter((e) => e.triggersAgentTurn),
-        Stream.debounce(
-          Effect.gen(function*() {
-            const state = yield* Ref.get(stateRef)
-            return Duration.millis(state.reducedContext.debounceMs)
-          })
-        ),
+        Stream.debounce(Duration.millis(100)),
         Stream.mapEffect(() => processBatch),
         Stream.catchAll((error) =>
           Stream.fromEffect(
@@ -298,11 +269,9 @@ const makeMiniAgent = (agentName: AgentName) =>
     })
   )
 
-// =============================================================================
-// Key Learnings
-// =============================================================================
-
 /**
+ * KEY LEARNINGS
+ *
  * 1. ACTOR STATE SIMPLIFICATION
  *
  *    ActorState contains ONLY:
@@ -312,9 +281,8 @@ const makeMiniAgent = (agentName: AgentName) =>
  *    ALL internal state lives in reducedContext:
  *    - nextEventNumber: Counter for generating event IDs
  *    - currentTurnNumber: Current agent turn number
- *    - isAgentTurnInProgress: Processing flag
- *    - lastTriggeringEventId: Parent event for linking
- *    - debounceMs: Configurable debounce delay
+ *    - agentTurnStartedAtEventId: Option<EventId> - tracks if turn is in progress
+ *                                 and serves as parent event for linking
  *
  *    This eliminates manual counter management and separate refs.
  *
@@ -323,7 +291,8 @@ const makeMiniAgent = (agentName: AgentName) =>
  *    EventIds use format: {agentName}:{counter}
  *    Example: "chat:0001", "chat:0002", etc.
  *
- *    Generated using reducedContext.nextEventNumber via getNextEventId helper.
+ *    Generated inline using reducedContext.nextEventNumber:
+ *    `${agentName}:${String(state.reducedContext.nextEventNumber).padStart(4, "0")}`
  *
  *    This allows:
  *    - Easy identification of which agent created the event
@@ -343,14 +312,20 @@ const makeMiniAgent = (agentName: AgentName) =>
  *    - Measuring turn duration and performance
  *    - Debugging multi-turn conversations
  *
- * 4. PARENT EVENT ID (AUTOMATIC LINKING)
+ * 4. AGENT TURN TRACKING (SINGLE FIELD)
  *
- *    All events have parentEventId populated from reducedContext.lastTriggeringEventId.
- *    When an event with triggersAgentTurn=true is added, reducer updates lastTriggeringEventId.
- *    Subsequent events (AgentTurnStartedEvent, model messages, AgentTurnCompletedEvent)
- *    automatically link to that triggering event as their parent.
+ *    agentTurnStartedAtEventId: Option<EventId> serves dual purpose:
+ *    - Option.isSome = agent turn is in progress
+ *    - The EventId value = parent event for automatic linking
+ *
+ *    When an event with triggersAgentTurn=true is added, reducer sets this to Option.some(eventId).
+ *    When AgentTurnStartedEvent is added, reducer stores its ID here.
+ *    When AgentTurnCompletedEvent/AgentTurnFailedEvent is added, reducer resets to Option.none().
+ *
+ *    All events have parentEventId populated from this field, creating automatic causal chains.
  *
  *    This enables:
+ *    - Single field for turn state + parent linking (no redundancy)
  *    - Automatic causal relationship tracking
  *    - Future branching/forking from specific events
  *    - Building event trees rather than linear lists
@@ -383,7 +358,15 @@ const makeMiniAgent = (agentName: AgentName) =>
  *    - FileAttachmentEvent: triggersAgentTurn=false (attached before user sends)
  *    - SystemPromptEvent: triggersAgentTurn=false (setup phase)
  *
- * 8. SUBSCRIPTION TIMING
+ * 8. HARD-CODED DEBOUNCE
+ *
+ *    Debounce is hard-coded to 100ms for simplicity.
+ *    Stream.debounce(Duration.millis(100)) delays processing until 100ms after
+ *    the last triggering event.
+ *
+ *    This prevents multiple rapid-fire events from triggering multiple agent turns.
+ *
+ * 9. SUBSCRIPTION TIMING
  *
  *    For tests or code that needs to ensure a subscriber is connected
  *    before events are added, either:
@@ -403,14 +386,14 @@ const makeMiniAgent = (agentName: AgentName) =>
  *    yield* agent.addEvent(event)
  *    ```
  *
- * 9. CLEAN SHUTDOWN
+ * 10. CLEAN SHUTDOWN
  *
- *    - Emit SessionEndedEvent before ending mailbox
- *    - mailbox.end completes the broadcast stream
- *    - Interrupt processing fiber
- *    - Use Effect.addFinalizer for automatic cleanup on scope close
+ *     - Emit SessionEndedEvent before ending mailbox
+ *     - mailbox.end completes the broadcast stream
+ *     - Interrupt processing fiber
+ *     - Use Effect.addFinalizer for automatic cleanup on scope close
  *
- * 10. TESTING
+ * 11. TESTING
  *
  *     - Tests work well for synchronous subscription scenarios
  *     - Concurrent tests (fork + add events) require careful timing

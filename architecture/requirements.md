@@ -29,11 +29,10 @@ Philosophy: **"Agent events are all you need"** - Everything the agent does is d
 
 The reducer derives ALL actor internal state from events:
 - `messages` - Prompt.Message array for LLM
-- `config` - AgentConfig from SetLlmProviderConfigEvent, SetTimeoutEvent, SetDebounceEvent
+- `config` - AgentConfig from SetLlmProviderConfigEvent, SetTimeoutEvent
 - `nextEventNumber` - Counter for EventId generation
 - `currentTurnNumber` - Sequential turn counter
-- `isAgentTurnInProgress` - Boolean flag
-- `lastTriggeringEventId` - For automatic parent linking
+- `agentTurnStartedAtEventId` - Option<EventId> tracking current turn's AgentTurnStartedEvent (Option.none() = no turn in progress, Option.some(eventId) = turn in progress + parent for new events)
 
 No separate counters or flags in actor - everything from reducer.
 
@@ -45,7 +44,7 @@ All events share base fields:
 - `agentName` (AgentName)
 - `parentEventId` (Option<EventId>) - REQUIRED field linking to causal parent event
   - Every event (except first) links to the event that caused it
-  - New events automatically link to `lastTriggeringEventId` from ReducedContext
+  - New events automatically link to `agentTurnStartedAtEventId` from ReducedContext when present
   - First event in context has `parentEventId = Option.none()`
   - Enables causal chains and future forking capabilities
 - `triggersAgentTurn` (Boolean) - Whether this event should trigger an LLM request
@@ -60,7 +59,6 @@ All events share base fields:
 **Configuration Events**:
 - `SetLlmProviderConfigEvent` - Change LLM provider (primary or fallback)
 - `SetTimeoutEvent` - Change request timeout
-- `SetDebounceEvent` - Change debounce delay
 
 **Lifecycle Events**:
 - `SessionStartedEvent` - Emitted when actor starts
@@ -83,11 +81,7 @@ Implementation uses Effect's fiber interruption:
 
 ### Debouncing
 
-When events with `triggersAgentTurn=true` arrive rapidly:
-- Wait N ms after last triggering event before starting agent turn
-- Default: 100ms (configurable via SetDebounceEvent)
-- Config comes from events via ReducedContext (no separate AppConfig)
-- Implementation: `Stream.debounce(Duration.millis(reducedContext.config.debounceMs))`
+When events with `triggersAgentTurn=true` arrive rapidly, wait 100ms (hard-coded for MVP) after last triggering event before starting agent turn. Implementation: `Stream.debounce(Duration.millis(100))`
 
 ### Session Lifecycle
 
