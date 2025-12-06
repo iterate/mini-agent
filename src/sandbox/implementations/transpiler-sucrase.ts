@@ -37,8 +37,9 @@ export const SucraseTranspilerLive = Layer.succeed(
           const err = e as SucraseError
           return new TranspilationError({
             source: "sucrase",
-            message: err.message,
-            location: err.loc
+            _message: err.message,
+            location: err.loc,
+            cause: err
           })
         }
       })

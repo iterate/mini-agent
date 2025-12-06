@@ -2,8 +2,15 @@
  * TypeScript Sandbox Error Types
  *
  * Uses Schema.TaggedError for serializable, type-safe error handling.
+ * Includes cause tracking for preserving original error chains.
  */
-import { Schema } from "effect"
+import { Predicate, Schema } from "effect"
+
+// TypeID for runtime type guards
+const SandboxErrorTypeId: unique symbol = Symbol.for("@app/sandbox/SandboxError")
+export type SandboxErrorTypeId = typeof SandboxErrorTypeId
+
+export const isSandboxError = (u: unknown): u is SandboxError => Predicate.hasProperty(u, SandboxErrorTypeId)
 
 const SourceLocation = Schema.Struct({
   line: Schema.Number,
@@ -21,10 +28,21 @@ export class ValidationError extends Schema.TaggedError<ValidationError>()(
   "ValidationError",
   {
     type: ValidationErrorType,
-    message: Schema.String,
-    location: Schema.optional(SourceLocation)
+    _message: Schema.String,
+    location: Schema.optional(SourceLocation),
+    cause: Schema.optional(Schema.Defect)
   }
-) {}
+) {
+  readonly [SandboxErrorTypeId]: SandboxErrorTypeId = SandboxErrorTypeId
+
+  override get message(): string {
+    let msg = `${this.type}: ${this._message}`
+    if (this.location) {
+      msg += ` at line ${this.location.line}, column ${this.location.column}`
+    }
+    return msg
+  }
+}
 
 const ValidationWarningType = Schema.String
 
@@ -43,25 +61,49 @@ export class TranspilationError extends Schema.TaggedError<TranspilationError>()
   "TranspilationError",
   {
     source: TranspilerSource,
-    message: Schema.String,
-    location: Schema.optional(SourceLocation)
+    _message: Schema.String,
+    location: Schema.optional(SourceLocation),
+    cause: Schema.optional(Schema.Defect)
   }
-) {}
+) {
+  readonly [SandboxErrorTypeId]: SandboxErrorTypeId = SandboxErrorTypeId
+
+  override get message(): string {
+    let msg = `${this.source} transpilation error: ${this._message}`
+    if (this.location) {
+      msg += ` at line ${this.location.line}, column ${this.location.column}`
+    }
+    return msg
+  }
+}
 
 export class ExecutionError extends Schema.TaggedError<ExecutionError>()(
   "ExecutionError",
   {
-    message: Schema.String,
-    stack: Schema.optional(Schema.String)
+    _message: Schema.String,
+    stack: Schema.optional(Schema.String),
+    cause: Schema.optional(Schema.Defect)
   }
-) {}
+) {
+  readonly [SandboxErrorTypeId]: SandboxErrorTypeId = SandboxErrorTypeId
+
+  override get message(): string {
+    return `Execution error: ${this._message}`
+  }
+}
 
 export class TimeoutError extends Schema.TaggedError<TimeoutError>()(
   "TimeoutError",
   {
     timeoutMs: Schema.Number
   }
-) {}
+) {
+  readonly [SandboxErrorTypeId]: SandboxErrorTypeId = SandboxErrorTypeId
+
+  override get message(): string {
+    return `Execution timed out after ${this.timeoutMs}ms`
+  }
+}
 
 const SecurityViolationType = Schema.Literal(
   "validation_failed",
@@ -73,9 +115,16 @@ export class SecurityViolation extends Schema.TaggedError<SecurityViolation>()(
   "SecurityViolation",
   {
     violation: SecurityViolationType,
-    details: Schema.String
+    details: Schema.String,
+    cause: Schema.optional(Schema.Defect)
   }
-) {}
+) {
+  readonly [SandboxErrorTypeId]: SandboxErrorTypeId = SandboxErrorTypeId
+
+  override get message(): string {
+    return `Security violation (${this.violation}): ${this.details}`
+  }
+}
 
 export const SandboxError = Schema.Union(
   ValidationError,

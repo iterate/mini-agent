@@ -88,8 +88,9 @@ export const UnsafeExecutorLive = Layer.succeed(
                 safeResume(
                   Effect.fail(
                     new ExecutionError({
-                      message: e.message,
-                      stack: e.stack
+                      _message: e.message,
+                      stack: e.stack,
+                      cause: e
                     })
                   )
                 )
@@ -100,8 +101,9 @@ export const UnsafeExecutorLive = Layer.succeed(
           safeResume(
             Effect.fail(
               new ExecutionError({
-                message: err.message,
-                stack: err.stack
+                _message: err.message,
+                stack: err.stack,
+                cause: err
               })
             )
           )

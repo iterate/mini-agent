@@ -188,7 +188,7 @@ export const BunWorkerExecutorLive = Layer.succeed(
               safeResume(
                 Effect.fail(
                   new ExecutionError({
-                    message: payload.message || "Unknown error",
+                    _message: payload.message || "Unknown error",
                     stack: payload.stack
                   })
                 )
@@ -205,7 +205,7 @@ export const BunWorkerExecutorLive = Layer.succeed(
           safeResume(
             Effect.fail(
               new ExecutionError({
-                message: error.message || "Worker error",
+                _message: error.message || "Worker error",
                 stack: undefined
               })
             )

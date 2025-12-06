@@ -48,7 +48,7 @@ export const AcornValidatorLive = Layer.succeed(
             errors.push(
               new ValidationError({
                 type: "forbidden_construct",
-                message: `Forbidden pattern detected: ${pattern.source}`,
+                _message: `Forbidden pattern detected: ${pattern.source}`,
                 location: loc
               })
             )
@@ -69,8 +69,9 @@ export const AcornValidatorLive = Layer.succeed(
           errors.push(
             new ValidationError({
               type: "syntax",
-              message: err.message,
-              location: err.loc ? { line: err.loc.line, column: err.loc.column } : undefined
+              _message: err.message,
+              location: err.loc ? { line: err.loc.line, column: err.loc.column } : undefined,
+              cause: err
             })
           )
           return { valid: false, errors, warnings }
@@ -183,7 +184,7 @@ export const AcornValidatorLive = Layer.succeed(
               errors.push(
                 new ValidationError({
                   type: "forbidden_construct",
-                  message: `Accessing .${propName} is forbidden (potential prototype manipulation)`,
+                  _message: `Accessing .${propName} is forbidden (potential prototype manipulation)`,
                   location: node.loc?.start
                 })
               )
@@ -193,7 +194,7 @@ export const AcornValidatorLive = Layer.succeed(
             errors.push(
               new ValidationError({
                 type: "import",
-                message: `Static imports are forbidden: "${node.source?.value}"`,
+                _message: `Static imports are forbidden: "${node.source?.value}"`,
                 location: node.loc?.start
               })
             )
@@ -202,7 +203,7 @@ export const AcornValidatorLive = Layer.succeed(
             errors.push(
               new ValidationError({
                 type: "import",
-                message: "Dynamic import() is forbidden",
+                _message: "Dynamic import() is forbidden",
                 location: node.loc?.start
               })
             )
@@ -213,7 +214,7 @@ export const AcornValidatorLive = Layer.succeed(
               errors.push(
                 new ValidationError({
                   type: "import",
-                  message: `Re-exports are forbidden: "${node.source.value}"`,
+                  _message: `Re-exports are forbidden: "${node.source.value}"`,
                   location: node.loc?.start
                 })
               )
@@ -223,7 +224,7 @@ export const AcornValidatorLive = Layer.succeed(
             errors.push(
               new ValidationError({
                 type: "import",
-                message: `Export * is forbidden: "${node.source?.value}"`,
+                _message: `Export * is forbidden: "${node.source?.value}"`,
                 location: node.loc?.start
               })
             )
@@ -234,7 +235,7 @@ export const AcornValidatorLive = Layer.succeed(
               errors.push(
                 new ValidationError({
                   type: "import",
-                  message: "require() is forbidden",
+                  _message: "require() is forbidden",
                   location: node.loc?.start
                 })
               )
@@ -244,7 +245,7 @@ export const AcornValidatorLive = Layer.succeed(
               errors.push(
                 new ValidationError({
                   type: "forbidden_construct",
-                  message: "eval() is forbidden",
+                  _message: "eval() is forbidden",
                   location: node.loc?.start
                 })
               )
@@ -258,7 +259,7 @@ export const AcornValidatorLive = Layer.succeed(
               errors.push(
                 new ValidationError({
                   type: "forbidden_construct",
-                  message: "Calling .constructor() is forbidden (potential Function constructor bypass)",
+                  _message: "Calling .constructor() is forbidden (potential Function constructor bypass)",
                   location: node.loc?.start
                 })
               )
@@ -270,7 +271,7 @@ export const AcornValidatorLive = Layer.succeed(
               errors.push(
                 new ValidationError({
                   type: "forbidden_construct",
-                  message: "new Function() is forbidden",
+                  _message: "new Function() is forbidden",
                   location: node.loc?.start
                 })
               )
@@ -284,7 +285,7 @@ export const AcornValidatorLive = Layer.succeed(
               errors.push(
                 new ValidationError({
                   type: "forbidden_construct",
-                  message: "Accessing .constructor is forbidden (potential Function constructor bypass)",
+                  _message: "Accessing .constructor is forbidden (potential Function constructor bypass)",
                   location: node.loc?.start
                 })
               )
@@ -334,7 +335,7 @@ export const AcornValidatorLive = Layer.succeed(
               errors.push(
                 new ValidationError({
                   type: "global",
-                  message: `Access to global "${name}" is forbidden`,
+                  _message: `Access to global "${name}" is forbidden`,
                   location: node.loc?.start
                 })
               )
