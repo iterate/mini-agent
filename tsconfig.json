@@ -7,6 +7,10 @@
     "moduleResolution": "NodeNext",
     "moduleDetection": "force",
 
+    // JSX for OpenTUI React components
+    "jsx": "react-jsx",
+    "jsxImportSource": "@opentui/react",
+
     // Bundler mode (Bun handles transpilation)
     "noEmit": true,
     "allowImportingTsExtensions": true,

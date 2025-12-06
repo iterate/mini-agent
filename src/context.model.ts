@@ -56,6 +56,23 @@ export class TextDeltaEvent extends Schema.TaggedClass<TextDeltaEvent>()("TextDe
   delta: Schema.String
 }) {}
 
+/** Reason for LLM request interruption */
+export const InterruptReason = Schema.Literal("user_cancel", "user_new_message", "timeout")
+export type InterruptReason = typeof InterruptReason.Type
+
+/** Emitted when LLM request is interrupted - persisted because it contains partial response */
+export class LLMRequestInterruptedEvent
+  extends Schema.TaggedClass<LLMRequestInterruptedEvent>()("LLMRequestInterrupted", {
+    requestId: Schema.String,
+    reason: InterruptReason,
+    partialResponse: Schema.String
+  })
+{
+  toLLMMessage(): LLMMessage {
+    return { role: "assistant", content: this.partialResponse }
+  }
+}
+
 /** Attachment source - local file path or remote URL */
 export const AttachmentSource = Schema.Union(
   Schema.Struct({ type: Schema.Literal("file"), path: Schema.String }),
@@ -84,6 +101,7 @@ export const PersistedEvent = Schema.Union(
   SystemPromptEvent,
   UserMessageEvent,
   AssistantMessageEvent,
+  LLMRequestInterruptedEvent,
   FileAttachmentEvent,
   SetLlmConfigEvent
 )
@@ -94,6 +112,7 @@ export const ContextEvent = Schema.Union(
   SystemPromptEvent,
   UserMessageEvent,
   AssistantMessageEvent,
+  LLMRequestInterruptedEvent,
   FileAttachmentEvent,
   SetLlmConfigEvent,
   TextDeltaEvent

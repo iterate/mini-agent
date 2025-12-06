@@ -5,25 +5,24 @@
  */
 import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
-import { type Error as PlatformError, HttpServer, Terminal } from "@effect/platform"
+import { type Error as PlatformError, FileSystem, HttpServer, Terminal } from "@effect/platform"
 import { BunHttpServer, BunStream } from "@effect/platform-bun"
 import { Chunk, Console, Effect, Layer, Option, Schema, Stream } from "effect"
-import { AppConfig } from "./config.ts"
+import { AppConfig, resolveBaseDir } from "../config.ts"
 import {
   AssistantMessageEvent,
   type ContextEvent,
   FileAttachmentEvent,
   type InputEvent,
-  type PersistedEvent,
   SystemPromptEvent,
   TextDeltaEvent,
   UserMessageEvent
-} from "./context.model.ts"
-import { ContextService } from "./context.service.ts"
-import { makeRouter } from "./http.ts"
-import { layercodeCommand } from "./layercode/index.ts"
-import { AgentServer } from "./server.service.ts"
-import { printTraceLinks } from "./tracing.ts"
+} from "../context.model.ts"
+import { ContextService } from "../context.service.ts"
+import { makeRouter } from "../http.ts"
+import { layercodeCommand } from "../layercode/index.ts"
+import { AgentServer } from "../server.service.ts"
+import { printTraceLinks } from "../tracing.ts"
 
 export const configFileOption = Options.file("config").pipe(
   Options.withAlias("c"),
@@ -45,6 +44,14 @@ export const stdoutLogLevelOption = Options.choice("stdout-log-level", [
   "none"
 ]).pipe(
   Options.withDescription("Stdout log level (overrides config)"),
+  Options.optional
+)
+
+export const llmOption = Options.text("llm").pipe(
+  Options.withDescription(
+    "LLM provider:model (e.g., openai:gpt-4.1-mini, anthropic:claude-sonnet-4-5-20250929). " +
+      "See README for full model list. Can also be set via LLM env var."
+  ),
   Options.optional
 )
 
@@ -109,20 +116,8 @@ interface OutputOptions {
   showEphemeral: boolean
 }
 
-const bold = (s: string) => `\x1b[1m${s}\x1b[0m`
-const cyan = (s: string) => `\x1b[36m${s}\x1b[0m`
-const green = (s: string) => `\x1b[32m${s}\x1b[0m`
-const dim = (s: string) => `\x1b[90m${s}\x1b[0m`
-const dimCyan = (s: string) => `\x1b[38;5;66m${s}\x1b[0m`
-const dimGreen = (s: string) => `\x1b[38;5;65m${s}\x1b[0m`
-const assistantLabel = bold(green("Assistant:"))
-const dimUserLabel = dimCyan("You:")
-const dimAssistantLabel = dimGreen("Assistant:")
-
 /**
  * Handle a single context event based on output options.
- * Uses Terminal service for output instead of direct process access.
- * See: https://effect.website/docs/platform/terminal/
  */
 const handleEvent = (
   event: ContextEvent,
@@ -190,68 +185,6 @@ const runEventStream = (
     )
   })
 
-/** Display previous conversation history */
-const displayHistory = (events: ReadonlyArray<PersistedEvent>) =>
-  Effect.gen(function*() {
-    const messages = events.filter((e) => e._tag === "UserMessage" || e._tag === "AssistantMessage")
-    if (messages.length === 0) return
-
-    yield* Console.log(dim("─".repeat(50)))
-    yield* Console.log(dim("Previous conversation:"))
-    yield* Console.log("")
-
-    for (const event of messages) {
-      const prefix = event._tag === "UserMessage" ? dimUserLabel : dimAssistantLabel
-      yield* Console.log(prefix)
-      yield* Console.log(dim(event.content))
-      yield* Console.log("")
-    }
-
-    yield* Console.log(dim("─".repeat(50)))
-    yield* Console.log("")
-  })
-
-/** Display raw event history as JSONL */
-const displayRawHistory = (events: ReadonlyArray<PersistedEvent>) =>
-  Effect.gen(function*() {
-    for (const event of events) {
-      yield* Console.log(JSON.stringify(event))
-    }
-  })
-
-/** Single conversation turn */
-const conversationTurn = (contextName: string, options: OutputOptions) =>
-  Effect.gen(function*() {
-    const input = yield* CliPrompt.text({ message: bold(cyan("You")) })
-
-    if (input.trim() === "") return
-
-    if (!options.raw) {
-      yield* Console.log(`\n${assistantLabel}`)
-    }
-    yield* runEventStream(contextName, input, options)
-    if (!options.raw) {
-      yield* Console.log("")
-    }
-  })
-
-/** Run conversation turns forever until Ctrl+C */
-const conversationLoop = (contextName: string, options: OutputOptions) =>
-  conversationTurn(contextName, options).pipe(
-    Effect.catchIf(
-      (error) => !Terminal.isQuitException(error),
-      (error) =>
-        Effect.logError("Conversation error", { error: String(error) }).pipe(
-          Effect.flatMap(() => Console.error(`Error: ${String(error)}`))
-        )
-    ),
-    Effect.forever
-  )
-
-// =============================================================================
-// Interaction Mode
-// =============================================================================
-
 /** CLI interaction mode - determines how input/output is handled */
 const InteractionMode = Schema.Literal("single-turn", "pipe", "script", "tty-interactive")
 type InteractionMode = typeof InteractionMode.Type
@@ -266,24 +199,19 @@ const determineMode = (options: {
   if (hasMessage) return "single-turn"
   if (options.script) return "script"
   if (process.stdin.isTTY) return "tty-interactive"
-  return "pipe" // Default for piped stdin: read all as one message, output plain text
+  return "pipe"
 }
 
-/** Shared UTF-8 decoder for stdin processing */
 const utf8Decoder = new TextDecoder("utf-8")
 
-/** Read all stdin as a single string (for pipe mode) */
 const readAllStdin: Effect.Effect<string> = BunStream.stdin.pipe(
   Stream.mapChunks(Chunk.map((bytes) => utf8Decoder.decode(bytes))),
   Stream.runCollect,
   Effect.map((chunks) => Chunk.join(chunks, "").trim())
 )
 
-/** Script mode input events - UserMessage or SystemPrompt for dynamic injection */
 const ScriptInputEvent = Schema.Union(UserMessageEvent, SystemPromptEvent)
-type ScriptInputEvent = typeof ScriptInputEvent.Type
 
-/** Read JSONL events from stdin (for script mode) */
 const stdinEvents = BunStream.stdin.pipe(
   Stream.mapChunks(Chunk.map((bytes) => utf8Decoder.decode(bytes))),
   Stream.splitLines,
@@ -295,7 +223,6 @@ const stdinEvents = BunStream.stdin.pipe(
   )
 )
 
-/** Script interactive loop - read JSONL events, process, output JSONL */
 const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
   Effect.gen(function*() {
     const contextService = yield* ContextService
@@ -303,18 +230,13 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
     yield* stdinEvents.pipe(
       Stream.mapEffect((event) =>
         Effect.gen(function*() {
-          // Echo input event
           yield* Console.log(JSON.stringify(event))
 
-          // Process through context service - convert to InputEvent for addEvents
-          // SystemPrompt needs special handling since addEvents expects InputEvent
           if (Schema.is(UserMessageEvent)(event)) {
             yield* contextService.addEvents(contextName, [event]).pipe(
               Stream.runForEach((outputEvent) => handleEvent(outputEvent, options))
             )
           } else if (Schema.is(SystemPromptEvent)(event)) {
-            // For SystemPrompt, we need to create a new context with this prompt
-            // This is a limitation - script mode can only set system prompt at context creation
             yield* Effect.logDebug("SystemPrompt events in script mode are echoed but not persisted")
           }
         })
@@ -323,13 +245,8 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
     )
   })
 
-// =============================================================================
-// Context Selection
-// =============================================================================
-
 const NEW_CONTEXT_VALUE = "__new__"
 
-/** Prompt user to select an existing context or create a new one */
 const selectOrCreateContext = Effect.gen(function*() {
   const contextService = yield* ContextService
   const contexts = yield* contextService.list()
@@ -364,12 +281,19 @@ const selectOrCreateContext = Effect.gen(function*() {
   return selected
 })
 
-/** Generate a random context name like "chat-a7b3c" */
 const generateRandomContextName = (): string => {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
   const suffix = Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join("")
   return `chat-${suffix}`
 }
+
+const makeChatUILayer = () =>
+  Layer.unwrapEffect(
+    Effect.gen(function*() {
+      const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))
+      return ChatUI.layer
+    })
+  )
 
 const runChat = (options: {
   name: Option.Option<string>
@@ -381,12 +305,10 @@ const runChat = (options: {
 }) =>
   Effect.gen(function*() {
     yield* Effect.logDebug("Starting chat session")
-    const contextService = yield* ContextService
     const mode = determineMode(options)
     const contextName = Option.getOrElse(options.name, generateRandomContextName)
     const imagePath = Option.getOrNull(options.image) ?? undefined
 
-    // Script mode: raw output + ephemeral events by default (for full streaming)
     const outputOptions: OutputOptions = {
       raw: mode === "script" || options.raw,
       showEphemeral: mode === "script" || options.showEphemeral
@@ -403,7 +325,6 @@ const runChat = (options: {
       }
 
       case "pipe": {
-        // Read all stdin as one message, output plain text
         const input = yield* readAllStdin
         if (input !== "") {
           yield* runEventStream(contextName, input, { raw: false, showEphemeral: false }, imagePath)
@@ -412,7 +333,6 @@ const runChat = (options: {
       }
 
       case "script": {
-        // JSONL events in, JSONL events out
         yield* scriptInteractiveLoop(contextName, outputOptions)
         break
       }
@@ -422,37 +342,21 @@ const runChat = (options: {
           ? contextName
           : yield* selectOrCreateContext
 
-        const existingEvents = yield* contextService.load(resolvedName)
-        const hasHistory = existingEvents.length > 1
+        const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))
+        const chatUI = yield* ChatUI
 
-        if (outputOptions.raw) {
-          if (hasHistory) {
-            yield* displayRawHistory(existingEvents)
-          }
-        } else {
-          yield* Console.log(`\nContext name: ${resolvedName}`)
-
-          if (hasHistory) {
-            yield* displayHistory(existingEvents)
-          } else {
-            yield* Console.log("Starting new conversation. Press Ctrl+C to exit.\n")
-          }
-        }
-
-        yield* conversationLoop(resolvedName, outputOptions).pipe(
-          Effect.catchIf(Terminal.isQuitException, () => Effect.void),
-          Effect.ensuring(
-            outputOptions.raw
-              ? Effect.void
-              : printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!")))
-          )
+        yield* chatUI.runChat(resolvedName).pipe(
+          Effect.catchAllCause(() => Effect.void),
+          Effect.ensuring(printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!"))))
         )
         break
       }
     }
-  }).pipe(Effect.withSpan("chat-session"))
+  }).pipe(
+    Effect.provide(makeChatUILayer()),
+    Effect.withSpan("chat-session")
+  )
 
-/** Extract text from Prompt content parts */
 const collectText = (parts: ReadonlyArray<{ type: string; text?: string }>) =>
   parts
     .filter((p): p is typeof p & { text: string } => p.type === "text" && !!p.text)
@@ -464,7 +368,6 @@ interface CleanMessage {
   content: string
 }
 
-/** Convert prompt to clean messages, merging consecutive same-role messages */
 const promptToCleanMessages = (prompt: Prompt.Prompt): Array<CleanMessage> => {
   const raw: Array<CleanMessage> = []
   for (const msg of prompt.content) {
@@ -494,7 +397,6 @@ const promptToCleanMessages = (prompt: Prompt.Prompt): Array<CleanMessage> => {
   return result
 }
 
-/** Extract text from Response parts */
 const extractResponseText = (parts: ReadonlyArray<{ type: string; text?: string; delta?: string }>): string =>
   parts
     .filter((p): p is typeof p & { text: string } | typeof p & { delta: string } =>
@@ -529,10 +431,6 @@ const chatCommand = Command.make(
     runChat({ image, message, name, raw, script, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
-/**
- * Log-test command that emits log messages at all levels.
- * Used for testing logging configuration.
- */
 const logTestCommand = Command.make(
   "log-test",
   {},
@@ -547,9 +445,6 @@ const logTestCommand = Command.make(
     })
 ).pipe(Command.withDescription("Emit test log messages at all levels (for testing logging config)"))
 
-/**
- * Trace-test command for testing tracing. Produces a span and exits.
- */
 const traceTestCommand = Command.make(
   "trace-test",
   {},
@@ -558,6 +453,26 @@ const traceTestCommand = Command.make(
       yield* Console.log("Trace-test command executed")
     }).pipe(Effect.withSpan("trace-test-command"))
 ).pipe(Command.withDescription("Simple command for testing tracing"))
+
+const clearCommand = Command.make(
+  "clear",
+  {},
+  () =>
+    Effect.gen(function*() {
+      const config = yield* AppConfig
+      const baseDir = resolveBaseDir(config)
+      const fs = yield* FileSystem.FileSystem
+
+      const exists = yield* fs.exists(baseDir)
+      if (!exists) {
+        yield* Console.log(`No data directory found at ${baseDir}`)
+        return
+      }
+
+      yield* fs.remove(baseDir, { recursive: true })
+      yield* Console.log(`Deleted ${baseDir}`)
+    })
+).pipe(Command.withDescription("Delete the .mini-agent data directory"))
 
 const portOption = Options.integer("port").pipe(
   Options.withAlias("p"),
@@ -619,16 +534,23 @@ export const serveCommand = Command.make(
   Command.withDescription("Start generic HTTP server for agent requests")
 )
 
-// Root command with global options
 const rootCommand = Command.make(
   "mini-agent",
   {
     configFile: configFileOption,
     cwd: cwdOption,
-    stdoutLogLevel: stdoutLogLevelOption
+    stdoutLogLevel: stdoutLogLevelOption,
+    llm: llmOption
   }
 ).pipe(
-  Command.withSubcommands([chatCommand, serveCommand, layercodeCommand, logTestCommand, traceTestCommand]),
+  Command.withSubcommands([
+    chatCommand,
+    serveCommand,
+    layercodeCommand,
+    logTestCommand,
+    traceTestCommand,
+    clearCommand
+  ]),
   Command.withDescription("AI assistant with persistent context and comprehensive configuration")
 )
 

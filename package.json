@@ -5,9 +5,9 @@
   "private": true,
   "scripts": {
     "prepare": "effect-language-service patch",
-    "mini-agent": "doppler run -- bun src/main.ts",
-    "start": "bun src/main.ts",
-    "dev": "bun --watch src/main.ts",
+    "mini-agent": "doppler run -- bun src/cli/main.ts",
+    "start": "bun src/cli/main.ts",
+    "dev": "bun --watch src/cli/main.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\"",
     "lint:fix": "eslint \"src/**/*.ts\" \"test/**/*.ts\" --fix",
@@ -24,6 +24,7 @@
     "@eslint/eslintrc": "^3.1.0",
     "@eslint/js": "^9.10.0",
     "@types/bun": "latest",
+    "@types/react": "19",
     "@typescript-eslint/eslint-plugin": "^8.4.0",
     "@typescript-eslint/parser": "^8.4.0",
     "eslint": "^9.10.0",
@@ -49,7 +50,13 @@
     "@effect/platform-bun": "^0.85.0",
     "@effect/rpc": "^0.72.2",
     "@effect/rpc-http": "^0.52.4",
+    "@opentelemetry/otlp-transformer": "^0.208.0",
+    "@opentelemetry/sdk-trace-base": "^2.2.0",
+    "@opentui/core": "^0.1.55",
+    "@opentui/react": "^0.1.55",
     "effect": "^3.19.8",
+    "react": "19",
+    "react-dom": "19",
     "yaml": "^2.7.0"
   }
 }

@@ -6,6 +6,8 @@ alwaysApply: true
 # General
 
 - Sacrifice grammar in favour of concision. Write like a good software engineer would write to another.
+- Comments and documentation must be standalone - readable without knowledge of prior versions. Never write "now simplified to X", "previously was Y", "changed from Z". Describe what IS, not what changed.
+- Never give time estimates for how long tasks would take humans. Focus on implementation steps and actions, not timelines.
 
 # What we're building
 
@@ -21,6 +23,7 @@ See README.md for context
 - Use comments sparingly to explain any additional context and "why" that isn't evident from the code. Don't redundantly describe the code below.
 - No banner comments (e.g. `// ===== Section Name =====`). Use whitespace and JSDoc to organize code.
 - DO NOT use nodejs imports like node:fs etc - you must use @effect/platform/FileSystem and @effect/platform/Path instead (read source if you need to grok it)
+- Acronyms in identifiers use PascalCase, not ALL_CAPS: `LlmConfig` not `LLMConfig`, `HttpClient` not `HTTPClient`
 
 ## Scripts
 
@@ -57,48 +60,46 @@ Also make sure to amend the pull request description using the `gh` utility each
 **Effect Patterns Knowledge Base:** Cross-reference with `~/src/github.com/PaulJPhilp/EffectPatterns` for community patterns in `content/` and `packages/`.
 
 
-## Services with Context.Tag (Canonical Pattern)
+## Services with Effect.Service
 
-Services define a contract (interface) separate from implementation. Use `Context.Tag` with static `layer` and `testLayer` properties:
+Use `Effect.Service` for service definitions. It combines tag, implementation, and layer generation:
 
 ```typescript
-class MyService extends Context.Tag("@app/MyService")<
-  MyService,
-  {
-    readonly doSomething: (input: string) => Effect.Effect<string>
-  }
->() {
-  // Production layer with dependencies
-  static readonly layer = Layer.effect(
-    MyService,
-    Effect.gen(function*() {
-      const dep = yield* SomeDependency
+class MyService extends Effect.Service<MyService>()("@mini-agent/MyService", {
+  effect: Effect.gen(function*() {
+    const dep = yield* SomeDependency
+    return {
+      doSomething: (input: string) => Effect.succeed(`result: ${input}`)
+    }
+  }),
+  dependencies: [SomeDependency.Default]
+}) {}
 
-      // Use Effect.fn for call-site tracing
-      const doSomething = Effect.fn("MyService.doSomething")(
-        function*(input: string) {
-          yield* Effect.log(`Processing: ${input}`)
-          return "result"
-        }
-      )
-
-      return MyService.of({ doSomething })
-    })
-  )
-
-  // Test layer with mock implementation
-  static readonly testLayer = Layer.sync(MyService, () =>
-    MyService.of({
-      doSomething: (input) => Effect.succeed(`mock: ${input}`)
-    })
-  )
-}
+// Auto-generated: MyService.Default (includes dependencies)
+// Usage:
+Effect.provide(program, MyService.Default)
 ```
 
-**Why Context.Tag over Effect.Service:**
-- Supports service-driven development (sketch interfaces before implementations)
-- Explicit separation of contract and implementation
-- Clearer dependency graph
+For simple services without dependencies:
+
+```typescript
+class Config extends Effect.Service<Config>()("@mini-agent/Config", {
+  sync: () => ({
+    logLevel: "info",
+    apiUrl: "https://api.example.com"
+  })
+}) {}
+```
+
+**Test layers** use `Layer.succeed` with the service tag:
+
+```typescript
+const MyServiceTest = Layer.succeed(MyService, {
+  doSomething: (input) => Effect.succeed(`mock: ${input}`)
+})
+```
+
+**Tag identifiers** use package-scoped names: `@mini-agent/ServiceName`
 
 ## Prefer Schema Over Plain Types
 

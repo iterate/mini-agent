@@ -7,7 +7,6 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
-import { cli, GenAISpanTransformerLayer } from "./cli.ts"
 import {
   AppConfig,
   extractConfigPath,
@@ -15,12 +14,14 @@ import {
   MiniAgentConfig,
   type MiniAgentConfig as MiniAgentConfigType,
   resolveBaseDir
-} from "./config.ts"
-import { ContextRepository } from "./context.repository.ts"
-import { ContextService } from "./context.service.ts"
-import { CurrentLlmConfig, getApiKey, type LlmConfig, resolveLlmConfig } from "./llm-config.ts"
-import { createLoggingLayer } from "./logging.ts"
-import { createTracingLayer } from "./tracing.ts"
+} from "../config.ts"
+import { ContextRepository } from "../context.repository.ts"
+import { ContextService } from "../context.service.ts"
+import { CurrentLlmConfig, getApiKey, type LlmConfig, resolveLlmConfig } from "../llm-config.ts"
+import { createLoggingLayer } from "../logging.ts"
+import { OpenAiChatClient, OpenAiChatLanguageModel } from "../openai-chat-completions-client.ts"
+import { createTracingLayer } from "../tracing.ts"
+import { cli, GenAISpanTransformerLayer } from "./commands.ts"
 
 const makeLanguageModelLayer = (llmConfig: LlmConfig) => {
   const apiKey = getApiKey(llmConfig)
@@ -31,6 +32,15 @@ const makeLanguageModelLayer = (llmConfig: LlmConfig) => {
         return OpenAiLanguageModel.layer({ model: llmConfig.model }).pipe(
           Layer.provide(
             OpenAiClient.layer({ apiKey, apiUrl: llmConfig.baseUrl }).pipe(
+              Layer.provide(FetchHttpClient.layer)
+            )
+          )
+        )
+
+      case "openai-chat-completions":
+        return OpenAiChatLanguageModel.layer({ model: llmConfig.model }).pipe(
+          Layer.provide(
+            OpenAiChatClient.layer({ apiKey, apiUrl: llmConfig.baseUrl }).pipe(
               Layer.provide(FetchHttpClient.layer)
             )
           )
