@@ -9,7 +9,7 @@
  * Future: Replace with @effect/cluster Sharding
  */
 
-import { Effect, Exit, Ref, Scope } from "effect"
+import { Effect, Exit, Layer, Ref, Scope } from "effect"
 import {
   type AgentName,
   AgentNotFoundError,
@@ -131,6 +131,14 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
       shutdownAll
     }
   }),
-  dependencies: [EventReducer.Default, EventStore.InMemory, MiniAgentTurn.Default],
   accessors: true
-}) {}
+}) {
+  /**
+   * Default layer for tests - uses InMemory store and stub turn.
+   */
+  static readonly TestLayer = AgentRegistry.Default.pipe(
+    Layer.provide(EventReducer.Default),
+    Layer.provide(EventStore.InMemory),
+    Layer.provide(MiniAgentTurn.Default)
+  )
+}

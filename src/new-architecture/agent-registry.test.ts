@@ -22,11 +22,12 @@ const MockTurn = Layer.sync(MiniAgentTurn, () =>
   }) as unknown as MiniAgentTurn)
 
 // Test layer with all dependencies
-const TestLayer = Layer.mergeAll(
-  EventReducer.Default,
-  EventStore.InMemory,
-  MockTurn
-).pipe(Layer.provideMerge(AgentRegistry.Default))
+// AgentRegistry.Default needs EventStore, EventReducer, and MiniAgentTurn
+const TestLayer = AgentRegistry.Default.pipe(
+  Layer.provide(MockTurn),
+  Layer.provide(EventStore.InMemory),
+  Layer.provide(EventReducer.Default)
+)
 
 describe("AgentRegistry", () => {
   describe("getOrCreate", () => {

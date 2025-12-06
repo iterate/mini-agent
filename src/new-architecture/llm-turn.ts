@@ -35,77 +35,73 @@ const mapAiError = (providerId: LlmProviderId) => (error: AiError.AiError): Agen
   })
 
 /**
- * Stream LLM response from ReducedContext.
- *
- * Returns:
- * - TextDeltaEvent for each streaming chunk (ephemeral)
- * - AssistantMessageEvent with complete response at the end (persisted)
- */
-const streamLlmResponse = (
-  ctx: ReducedContext
-): Stream.Stream<ContextEvent, AgentError, LanguageModel.LanguageModel | CurrentLlmConfig> =>
-  Stream.unwrap(
-    Effect.gen(function*() {
-      const model = yield* LanguageModel.LanguageModel
-      const llmConfig = yield* CurrentLlmConfig
-      const fullResponseRef = yield* Ref.make("")
-
-      const prompt = contextToPrompt(ctx)
-      const providerId = llmConfig.apiFormat as LlmProviderId
-
-      yield* Effect.logDebug("Streaming LLM response", {
-        model: llmConfig.model,
-        apiFormat: llmConfig.apiFormat,
-        messageCount: ctx.messages.length
-      })
-
-      return pipe(
-        model.streamText({ prompt }),
-        Stream.filterMap((part) => part.type === "text-delta" ? Option.some(part.delta) : Option.none()),
-        Stream.mapEffect((delta) =>
-          Ref.update(fullResponseRef, (t) => t + delta).pipe(
-            Effect.as(
-              new TextDeltaEvent({
-                id: `delta-${Date.now()}` as never, // Ephemeral, ID doesn't matter
-                timestamp: new Date() as never,
-                agentName: "" as never,
-                parentEventId: Option.none(),
-                triggersAgentTurn: false,
-                delta
-              }) as ContextEvent
-            )
-          )
-        ),
-        Stream.concat(
-          Stream.fromEffect(
-            Ref.get(fullResponseRef).pipe(
-              Effect.map(
-                (content) =>
-                  new AssistantMessageEvent({
-                    id: `assistant-${Date.now()}` as never, // Will be assigned real ID by MiniAgent
-                    timestamp: new Date() as never,
-                    agentName: "" as never,
-                    parentEventId: Option.none(),
-                    triggersAgentTurn: false,
-                    content
-                  }) as ContextEvent
-              )
-            )
-          )
-        ),
-        Stream.mapError(mapAiError(providerId))
-      )
-    })
-  )
-
-/**
  * Production MiniAgentTurn layer.
- * Requires LanguageModel and CurrentLlmConfig services.
+ * Captures LanguageModel and CurrentLlmConfig at layer creation time.
  */
 export const LlmTurnLive: Layer.Layer<
   MiniAgentTurn,
   never,
   LanguageModel.LanguageModel | CurrentLlmConfig
-> = Layer.succeed(MiniAgentTurn, {
-  execute: (ctx: ReducedContext) => streamLlmResponse(ctx)
-} as unknown as MiniAgentTurn)
+> = Layer.effect(
+  MiniAgentTurn,
+  Effect.gen(function*() {
+    // Capture services at layer creation time
+    const model = yield* LanguageModel.LanguageModel
+    const llmConfig = yield* CurrentLlmConfig
+
+    return {
+      execute: (ctx: ReducedContext): Stream.Stream<ContextEvent, AgentError> =>
+        Stream.unwrap(
+          Effect.gen(function*() {
+            const fullResponseRef = yield* Ref.make("")
+
+            const prompt = contextToPrompt(ctx)
+            const providerId = llmConfig.apiFormat as LlmProviderId
+
+            yield* Effect.logDebug("Streaming LLM response", {
+              model: llmConfig.model,
+              apiFormat: llmConfig.apiFormat,
+              messageCount: ctx.messages.length
+            })
+
+            return pipe(
+              model.streamText({ prompt }),
+              Stream.filterMap((part) => part.type === "text-delta" ? Option.some(part.delta) : Option.none()),
+              Stream.mapEffect((delta) =>
+                Ref.update(fullResponseRef, (t) => t + delta).pipe(
+                  Effect.as(
+                    new TextDeltaEvent({
+                      id: `delta-${Date.now()}` as never,
+                      timestamp: new Date() as never,
+                      agentName: "" as never,
+                      parentEventId: Option.none(),
+                      triggersAgentTurn: false,
+                      delta
+                    }) as ContextEvent
+                  )
+                )
+              ),
+              Stream.concat(
+                Stream.fromEffect(
+                  Ref.get(fullResponseRef).pipe(
+                    Effect.map(
+                      (content) =>
+                        new AssistantMessageEvent({
+                          id: `assistant-${Date.now()}` as never,
+                          timestamp: new Date() as never,
+                          agentName: "" as never,
+                          parentEventId: Option.none(),
+                          triggersAgentTurn: false,
+                          content
+                        }) as ContextEvent
+                    )
+                  )
+                )
+              ),
+              Stream.mapError(mapAiError(providerId))
+            )
+          })
+        )
+    } as unknown as MiniAgentTurn
+  })
+)

@@ -63,19 +63,29 @@ const agentHandler = Effect.gen(function*() {
   const agent = yield* registry.getOrCreate(agentName as AgentName)
   const ctx = yield* agent.getReducedContext
 
-  // Add user message
+  // Prepare user event
   const userEvent = EventBuilder.userMessage(
     agentName as AgentName,
     agent.contextName,
     ctx.nextEventNumber,
     message.content
   )
-  yield* agent.addEvent(userEvent)
 
-  // Stream events until turn completes
-  const sseStream = agent.events.pipe(
-    Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
-    Stream.map(encodeSSE)
+  // Use Stream.unwrap to ensure subscription happens before event is added
+  // The inner effect runs when stream consumption starts
+  const sseStream = Stream.unwrap(
+    Effect.gen(function*() {
+      // Fork stream consumption first to establish subscription
+      const eventsStream = agent.events.pipe(
+        Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
+        Stream.map(encodeSSE)
+      )
+
+      // Now add the event
+      yield* agent.addEvent(userEvent)
+
+      return eventsStream
+    })
   )
 
   return HttpServerResponse.stream(sseStream, {

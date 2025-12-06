@@ -11,7 +11,7 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { Command, Options } from "@effect/cli"
 import { FetchHttpClient, Terminal } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { Effect, Layer, LogLevel, Option, Stream } from "effect"
+import { Effect, Fiber, Layer, LogLevel, Option, Stream } from "effect"
 import { AppConfig, type MiniAgentConfig } from "../config.ts"
 import { CurrentLlmConfig, getApiKey, type LlmConfig, resolveLlmConfig } from "../llm-config.ts"
 import { createLoggingLayer } from "../logging.ts"
@@ -102,17 +102,9 @@ const chatCommand = Command.make(
       // Get current context to know event number
       const ctx = yield* agent.getReducedContext
 
-      // Add user message with triggersAgentTurn=true
-      const userEvent = EventBuilder.userMessage(
-        agentName,
-        agent.contextName,
-        ctx.nextEventNumber,
-        message
-      )
-      yield* agent.addEvent(userEvent)
-
-      // Stream events - the agent will automatically start an LLM turn
-      yield* agent.events.pipe(
+      // Subscribe to events BEFORE adding the user message
+      // Fork the stream consumption so it runs in parallel
+      const streamFiber = yield* agent.events.pipe(
         Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
         Stream.tap((event) => {
           if (raw) {
@@ -124,8 +116,21 @@ const chatCommand = Command.make(
           }
           return Effect.void
         }),
-        Stream.runDrain
+        Stream.runDrain,
+        Effect.fork
       )
+
+      // Add user message with triggersAgentTurn=true
+      const userEvent = EventBuilder.userMessage(
+        agentName,
+        agent.contextName,
+        ctx.nextEventNumber,
+        message
+      )
+      yield* agent.addEvent(userEvent)
+
+      // Wait for stream to complete
+      yield* Fiber.join(streamFiber)
     })
 )
 
@@ -162,14 +167,15 @@ const program = Effect.gen(function*() {
   const llmConfigLayer = CurrentLlmConfig.fromConfig(llmConfig)
 
   // Build the full layer stack
+  // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
   const fullLayer = AgentRegistry.Default.pipe(
-    Layer.provideMerge(LlmTurnLive),
-    Layer.provideMerge(languageModelLayer),
-    Layer.provideMerge(llmConfigLayer),
-    Layer.provideMerge(EventStoreFileSystem),
-    Layer.provideMerge(EventReducer.Default),
-    Layer.provideMerge(appConfigLayer),
-    Layer.provideMerge(BunContext.layer)
+    Layer.provide(LlmTurnLive),
+    Layer.provide(languageModelLayer),
+    Layer.provide(llmConfigLayer),
+    Layer.provide(EventStoreFileSystem),
+    Layer.provide(EventReducer.Default),
+    Layer.provide(appConfigLayer),
+    Layer.provide(BunContext.layer)
   )
 
   yield* cliApp(process.argv).pipe(Effect.provide(fullLayer))

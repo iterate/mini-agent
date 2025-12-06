@@ -95,14 +95,15 @@ const program = Effect.gen(function*() {
   const llmConfigLayer = CurrentLlmConfig.fromConfig(llmConfig)
 
   // Build the full layer stack
+  // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
   const serviceLayer = AgentRegistry.Default.pipe(
-    Layer.provideMerge(LlmTurnLive),
-    Layer.provideMerge(languageModelLayer),
-    Layer.provideMerge(llmConfigLayer),
-    Layer.provideMerge(EventStoreFileSystem),
-    Layer.provideMerge(EventReducer.Default),
-    Layer.provideMerge(appConfigLayer),
-    Layer.provideMerge(BunContext.layer)
+    Layer.provide(LlmTurnLive),
+    Layer.provide(languageModelLayer),
+    Layer.provide(llmConfigLayer),
+    Layer.provide(EventStoreFileSystem),
+    Layer.provide(EventReducer.Default),
+    Layer.provide(appConfigLayer),
+    Layer.provide(BunContext.layer)
   )
 
   // HTTP server layer
