@@ -209,7 +209,9 @@ export class AgentTurnInterruptedEvent extends Schema.TaggedClass<AgentTurnInter
   {
     ...BaseEventFields,
     turnNumber: AgentTurnNumber,
-    reason: Schema.String
+    reason: Schema.String,
+    /** Partial response generated before interruption (if any) */
+    partialResponse: Schema.optionalWith(Schema.String, { as: "Option" })
   }
 ) {}
 
