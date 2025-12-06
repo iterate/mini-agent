@@ -58,3 +58,7 @@ export { EventStore } from "./event-store.ts"
 
 // Agent factory
 export { makeMiniAgent } from "./mini-agent.ts"
+
+// Production layers
+export { EventStoreFileSystem } from "./event-store-fs.ts"
+export { LlmTurnLive } from "./llm-turn.ts"
