@@ -1,66 +1,22 @@
-CLI chat agent with persistent conversation contexts. Multiple named conversations, each keeping full history.
+CLI chat agent with persistent conversation contexts. Built with [Effect](https://effect.website/) and Bun.
 
-# Quick Start
-
-```bash
-# 1. Simple question
-doppler run -- bun src/main.ts chat -m "What is 2+2?"
-
-# 2. Pipe content
-echo "Explain this" | doppler run -- bun src/main.ts chat
-
-# 3. Interactive mode
-doppler run -- bun src/main.ts chat
-
-# 4. Script mode (JSONL events)
-cat examples/pirate.jsonl | doppler run -- bun src/main.ts chat --script
-```
-
-# Script Mode Demo
-
-Script mode accepts JSONL events on stdin. Example files in `examples/`:
+## Quick Start
 
 ```bash
-# examples/pirate.jsonl
-{"_tag":"SystemPrompt","content":"You are a pirate. Always respond in pirate speak."}
-{"_tag":"UserMessage","content":"Hello, how are you?"}
+# Simple question
+bun run mini-agent chat -m "What is 2+2?"
+
+# Pipe content
+echo "Explain this code" | bun run mini-agent chat
+
+# Interactive mode (TTY)
+bun run mini-agent chat
+
+# Script mode (JSONL in/out)
+cat examples/pirate.jsonl | bun run mini-agent chat --script
 ```
 
-Run it:
-```bash
-cat examples/pirate.jsonl | doppler run -- bun src/main.ts chat --script -n pirate-demo
-```
-
-Output (JSONL with streaming):
-```json
-{"_tag":"SystemPrompt","content":"You are a pirate..."}
-{"_tag":"UserMessage","content":"Hello, how are you?"}
-{"_tag":"TextDelta","delta":"Ahoy"}
-{"_tag":"TextDelta","delta":" there"}
-{"_tag":"TextDelta","delta":", matey!"}
-...
-{"_tag":"AssistantMessage","content":"Ahoy there, matey! I be doin' just fine..."}
-```
-
-### Interactive demo with named pipe
-
-Keep a process running and send events from another terminal:
-
-```bash
-# Terminal 1: create pipe and start agent (loop keeps pipe alive)
-mkfifo /tmp/agent
-while true; do cat /tmp/agent; done | doppler run -- bun src/main.ts chat --script -n live-demo
-
-# Terminal 2: send events one at a time
-echo '{"_tag":"UserMessage","content":"Hello!"}' > /tmp/agent
-# (watch Terminal 1 for response)
-echo '{"_tag":"UserMessage","content":"What did I just say?"}' > /tmp/agent
-
-# Cleanup: Ctrl+C in Terminal 1, then:
-rm /tmp/agent
-```
-
-# Modes Overview
+## Modes
 
 | Mode | Trigger | Input | Output |
 |------|---------|-------|--------|
@@ -69,143 +25,148 @@ rm /tmp/agent
 | Script | `--script` | JSONL events | JSONL events |
 | Interactive | TTY stdin | Prompts | Plain text |
 
-Add `--raw` to any mode for JSONL output. Add `-n name` to persist context.
+Add `--raw` for JSONL output. Add `-n name` to persist conversation.
 
-# Options
+## CLI Options
+
+See [`src/cli/commands.ts`](src/cli/commands.ts) for full definitions.
 
 | Option | Alias | Description |
 |--------|-------|-------------|
 | `--name` | `-n` | Context name (persists conversation) |
 | `--message` | `-m` | Single message (non-interactive) |
 | `--raw` | `-r` | Output as JSONL |
-| `--script` | `-s` | JSONL in/out |
+| `--script` | `-s` | JSONL in/out mode |
 | `--show-ephemeral` | `-e` | Include streaming deltas |
 | `--image` | `-i` | Attach image file or URL |
 | `--config` | `-c` | YAML config file |
 | `--cwd` | | Working directory |
 | `--stdout-log-level` | | trace/debug/info/warn/error/none |
-
-# Event Types
-
-Input:
-- `{"_tag":"UserMessage","content":"..."}` - user says something
-- `{"_tag":"SystemPrompt","content":"..."}` - set system behavior
-
-Output:
-- `UserMessage`, `SystemPrompt` - echoed input
-- `TextDelta` - streaming chunks (included by default in script mode)
-- `AssistantMessage` - final response
+| `--llm` | | Provider:model (global, before subcommand) |
 
 ## LLM Configuration
 
-Use `--llm` (global option, before subcommand) or `LLM` env var:
+Specify via `--llm` flag (before subcommand) or `LLM` env var. Format: `provider:model`
+
+See [`src/llm-config.ts`](src/llm-config.ts) for provider definitions.
 
 ```bash
-# Via --llm flag (must come before subcommand)
 bun run mini-agent --llm openai:gpt-4.1-mini chat -m "Hello"
-bun run mini-agent --llm anthropic:claude-sonnet-4-5-20250929 chat
-
-# Via env var
-LLM=groq:llama-3.3-70b-versatile bun run mini-agent chat -m "Hello"
+LLM=anthropic:claude-sonnet-4-5-20250929 bun run mini-agent chat
 ```
 
-### Supported Providers & Models
+### Providers
 
-**OpenAI** (`OPENAI_API_KEY`)
-```
-openai:gpt-4.1              # Latest GPT-4.1 (1M context)
-openai:gpt-4.1-mini         # Default - fast and affordable
-openai:gpt-4.1-nano         # Smallest/fastest
-openai:gpt-4o               # Multimodal flagship
-openai:gpt-4o-mini          # Lighter multimodal
-openai:o3                   # Deep reasoning
-openai:o4-mini              # Fast reasoning
-openai:o1                   # Original reasoning model
-```
+| Provider | Env Var | Example Models |
+|----------|---------|----------------|
+| `openai` | `OPENAI_API_KEY` | `gpt-4.1-mini`, `gpt-4.1`, `o3`, `o4-mini` |
+| `anthropic` | `ANTHROPIC_API_KEY` | `claude-sonnet-4-5-20250929`, `claude-opus-4-5-20251101` |
+| `gemini` | `GEMINI_API_KEY` | `gemini-2.5-flash`, `gemini-2.5-pro` |
+| `groq` | `GROQ_API_KEY` | `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` |
+| `cerebras` | `CEREBRAS_API_KEY` | `llama-3.3-70b`, `qwen-3-32b` |
+| `openrouter` | `OPENROUTER_API_KEY` | `deepseek/deepseek-chat-v3.1`, `anthropic/claude-sonnet-4` |
 
-**Anthropic** (`ANTHROPIC_API_KEY`)
-```
-anthropic:claude-opus-4-5-20251101      # Most capable
-anthropic:claude-sonnet-4-5-20250929    # Best balance
-anthropic:claude-haiku-4-5-20251001     # Fast and cheap
-```
+Default: `openai:gpt-4.1-mini`
 
-**Google Gemini** (`GEMINI_API_KEY`)
-```
-gemini:gemini-2.5-flash       # Best price-performance
-gemini:gemini-2.5-flash-lite  # Fastest/cheapest
-gemini:gemini-2.5-pro         # Advanced reasoning
-gemini:gemini-2.0-flash       # 1M context workhorse
-gemini:gemini-3-pro-preview   # Latest preview
-```
+### Custom Endpoints
 
-**Groq** (`GROQ_API_KEY`) — Ultra-fast inference
-```
-groq:llama-3.3-70b-versatile  # Best Llama on Groq
-groq:llama-3.1-8b-instant     # Fastest
-groq:qwen/qwen3-32b           # Qwen 3 (preview)
-```
-
-**Cerebras** (`CEREBRAS_API_KEY`) — Fast inference
-```
-cerebras:llama-3.3-70b        # Llama 3.3
-cerebras:llama-3.1-8b         # Fast Llama
-cerebras:qwen-3-32b           # Qwen 3 hybrid reasoning
-```
-
-**OpenRouter** (`OPENROUTER_API_KEY`) — Multi-provider gateway
-```
-openrouter:deepseek/deepseek-chat-v3.1      # DeepSeek V3.1
-openrouter:deepseek/deepseek-r1             # DeepSeek R1 reasoning
-openrouter:anthropic/claude-sonnet-4        # Claude via OpenRouter
-openrouter:google/gemini-2.5-pro-preview    # Gemini via OpenRouter
-openrouter:qwen/qwen3-235b                  # Qwen 3 235B
-```
-Full list: https://openrouter.ai/models
-
-### Custom Configuration
-
-For unlisted models or custom endpoints, pass JSON:
 ```bash
-LLM='{"apiFormat":"openai-responses","model":"my-model","baseUrl":"https://my-api.com/v1","apiKeyEnvVar":"MY_KEY"}'
+LLM='{"apiFormat":"openai-chat-completions","model":"my-model","baseUrl":"https://my-api.com/v1","apiKeyEnvVar":"MY_KEY"}'
 ```
 
-`apiFormat` options:
-- `openai-responses` — OpenAI Responses API (for OpenAI native models)
-- `openai-chat-completions` — OpenAI Chat Completions API (for Groq, Cerebras, OpenRouter, and other OpenAI-compatible providers)
-- `anthropic` — Anthropic Messages API
-- `gemini` — Google Gemini API
+`apiFormat`: `openai-responses` | `openai-chat-completions` | `anthropic` | `gemini`
 
-# Side quests (so far)
+## Event Types
 
-- Exploring different OTEL tracing providers - and learned about OTEL gen [AI conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-events/)
+See [`src/context.model.ts`](src/context.model.ts) for schema definitions.
 
+**Input Events** (via stdin in script mode):
+- `UserMessage` - User message content
+- `SystemPrompt` - System behavior configuration
+- `FileAttachment` - Image or file attachment
 
+**Output Events**:
+- `TextDelta` - Streaming chunk (ephemeral)
+- `AssistantMessage` - Complete response (persisted)
 
+**Internal Events** (persisted):
+- `SetLlmConfig` - LLM configuration for context
+- `LLMRequestInterrupted` - Partial response on cancellation
 
-I have a few high level goals
+## Script Mode
 
-- Learn a few new tools (effect, beads, various otel and LLM tracing providers,etc)
-- Experiment with some simplified abstractions for our agentic harness
-- Make a system that is independent of any one LLM provider's high level abstractions ("just strings" would be ideal)
+JSONL events on stdin, JSONL events on stdout. Useful for programmatic control.
 
-So I'm incrementally building a chat agent. Initially just a CLI that runs an agent loop, but I want to then add embryonic versions of everything we care about at iterate
+```bash
+# examples/pirate.jsonl
+{"_tag":"SystemPrompt","content":"You are a pirate. Always respond in pirate speak."}
+{"_tag":"UserMessage","content":"Hello, how are you?"}
+```
 
-- Different channels (voice, text message, etc)
-- Codemode instead of tool calling (LLM responds with typescript code)
-- Serialize agent state in file system
-- Evals (agent evaling agent)
-- Human in the loop approvals
-- Event sourced agent design
-- "Context rules are all you need" / iterate.config.ts / i18n style approach
-- Multi-user MCP client
-- Hide secrets from LLM agents (via secret proxy)
-- Deploy to cloudflare containers
-- sub-agents
-- agents in long single threaded contexts (like whatsapp convo)
-- client / non-confidential server / confidential server architecture where we can run the servers locally or on durable objects when deployed
-- interruption and turn-taking behaviours
-- tracing
-- codemode that produces workflow code (for async tool calls and human in the loop approval)
-- agents sending other agents messages
-- bricking / disposing of broken contents with broken events
+```bash
+cat examples/pirate.jsonl | bun run mini-agent chat --script -n pirate-demo
+```
+
+Output includes all events including streaming deltas by default.
+
+### Interactive Named Pipe
+
+```bash
+# Terminal 1: create pipe and start agent
+mkfifo /tmp/agent
+while true; do cat /tmp/agent; done | bun run mini-agent chat --script -n live
+
+# Terminal 2: send events
+echo '{"_tag":"UserMessage","content":"Hello!"}' > /tmp/agent
+```
+
+## HTTP Server
+
+```bash
+bun run mini-agent serve --port 3000
+```
+
+Endpoints:
+- `POST /context/:name` - Send JSONL body, receive SSE stream
+- `GET /health` - Health check
+
+See [`src/http.ts`](src/http.ts) for implementation.
+
+## Configuration
+
+Precedence: CLI args → Env vars → YAML config → Defaults
+
+See [`src/config.ts`](src/config.ts) for all options.
+
+```yaml
+# mini-agent.config.yaml
+llm: openai:gpt-4.1-mini
+dataStorageDir: .mini-agent
+stdoutLogLevel: warn
+fileLogLevel: debug
+port: 3000
+host: 0.0.0.0
+```
+
+## Tracing
+
+Multi-destination OTLP tracing to Honeycomb, Axiom, Sentry, Langfuse, and Traceloop.
+
+See [`src/tracing.ts`](src/tracing.ts) for configuration. Set provider-specific env vars to enable.
+
+## Architecture
+
+See [`architecture/architecture.md`](architecture/architecture.md) for design overview and [`architecture/design.ts`](architecture/design.ts) for complete type definitions.
+
+Core concept: A **Context** is a named, ordered list of events representing a conversation. Events reduce to state, state drives the agent.
+
+## Development
+
+```bash
+bun install
+bun run check        # typecheck + lint
+bun run check:fix    # with auto-fix
+doppler run -- bun run test
+```
+
+See [CLAUDE.md](CLAUDE.md) for detailed conventions.
