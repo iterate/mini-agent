@@ -4,6 +4,15 @@ Actor-based event architecture where each agent is a MiniAgent.
 
 Philosophy: **"Agent events are all you need"** - Everything the agent does is driven by events.
 
+## Conceptual Model
+
+- **ContextEvent**: An event in a context (the fundamental unit)
+- **Context**: A list of ContextEvents (the event log for an agent)
+- **ReducedContext**: The reduced state ready for an agent turn (messages + config)
+- **MiniAgent**: Has agentName, context (list of ContextEvents), and external interface
+- **EventId**: Globally unique identifier with format `{agentName}:{counter}`
+- **Turn Numbering**: Agent turns are numbered sequentially within each agent
+
 ## Reference Files
 
 - **[design.ts](./design.ts)** - Complete service interfaces
@@ -53,14 +62,14 @@ These are stateless domain services:
 **Agent** - LLM execution with retry and fallback
 ```typescript
 class Agent extends Context.Tag("@app/Agent")<Agent, {
-  readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<AgentEvent, AgentError>
+  readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError>
 }>() {}
 ```
 
 **EventReducer** - Folds events into ReducedContext (including config from events)
 ```typescript
 class EventReducer extends Context.Tag("@app/EventReducer")<EventReducer, {
-  readonly reduce: (current: ReducedContext, newEvents: ReadonlyArray<AgentEvent>) => Effect.Effect<ReducedContext, ReducerError>
+  readonly reduce: (current: ReducedContext, newEvents: ReadonlyArray<ContextEvent>) => Effect.Effect<ReducedContext, ReducerError>
   readonly initialReducedContext: ReducedContext
 }>() {}
 ```
@@ -68,8 +77,8 @@ class EventReducer extends Context.Tag("@app/EventReducer")<EventReducer, {
 **EventStore** - Pluggable event persistence
 ```typescript
 class EventStore extends Context.Tag("@app/EventStore")<EventStore, {
-  readonly load: (name: AgentName) => Effect.Effect<ReadonlyArray<AgentEvent>, AgentLoadError>
-  readonly append: (name: AgentName, events: ReadonlyArray<AgentEvent>) => Effect.Effect<void, AgentSaveError>
+  readonly load: (name: AgentName) => Effect.Effect<ReadonlyArray<ContextEvent>, AgentLoadError>
+  readonly append: (name: AgentName, events: ReadonlyArray<ContextEvent>) => Effect.Effect<void, AgentSaveError>
   readonly exists: (name: AgentName) => Effect.Effect<boolean>
 }>() {
   static readonly yamlFileLayer: Layer.Layer<EventStore>  // Production
@@ -88,9 +97,9 @@ The actor manages a single agent's lifecycle. It uses all core services internal
 ```typescript
 class MiniAgent extends Context.Tag("@app/MiniAgent")<MiniAgent, {
   readonly agentName: AgentName
-  readonly addEvent: (event: AgentEvent) => Effect.Effect<void, MiniAgentError>
-  readonly events: Stream.Stream<AgentEvent, never>  // Live broadcast
-  readonly getEvents: Effect.Effect<ReadonlyArray<AgentEvent>>  // Historical
+  readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentError>
+  readonly events: Stream.Stream<ContextEvent, never>  // Live broadcast
+  readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>  // Historical
   readonly shutdown: Effect.Effect<void>
 }>() {
   static readonly make: (agentName: AgentName) => Layer.Layer<MiniAgent, MiniAgentError, Agent | EventReducer | EventStore>
@@ -99,7 +108,7 @@ class MiniAgent extends Context.Tag("@app/MiniAgent")<MiniAgent, {
 
 Implementation pattern (Mailbox + broadcastDynamic):
 ```typescript
-const mailbox = yield* Mailbox.make<AgentEvent>()
+const mailbox = yield* Mailbox.make<ContextEvent>()
 const broadcast = yield* Stream.broadcastDynamic(Mailbox.toStream(mailbox), {
   capacity: "unbounded"
 })
@@ -122,9 +131,9 @@ class AgentRegistry extends Context.Tag("@app/AgentRegistry")<AgentRegistry, {
 **MiniAgentApp** - Thin facade for external consumers
 ```typescript
 class MiniAgentApp extends Context.Tag("@app/MiniAgentApp")<MiniAgentApp, {
-  readonly addEvent: (agentName: AgentName, event: AgentEvent) => Effect.Effect<void, MiniAgentError>
-  readonly getEventStream: (agentName: AgentName) => Effect.Effect<Stream.Stream<AgentEvent, never>, MiniAgentError>
-  readonly getEvents: (agentName: AgentName) => Effect.Effect<ReadonlyArray<AgentEvent>, MiniAgentError>
+  readonly addEvent: (agentName: AgentName, event: ContextEvent) => Effect.Effect<void, MiniAgentError>
+  readonly getEventStream: (agentName: AgentName) => Effect.Effect<Stream.Stream<ContextEvent, never>, MiniAgentError>
+  readonly getEvents: (agentName: AgentName) => Effect.Effect<ReadonlyArray<ContextEvent>, MiniAgentError>
   readonly list: Effect.Effect<ReadonlyArray<AgentName>>
   readonly shutdown: Effect.Effect<void>
 }>() {}
@@ -166,7 +175,7 @@ class MiniAgentApp extends Context.Tag("@app/MiniAgentApp")<MiniAgentApp, {
 ### Mailbox (Actor Input)
 
 ```typescript
-const mailbox = yield* Mailbox.make<AgentEvent>()
+const mailbox = yield* Mailbox.make<ContextEvent>()
 yield* mailbox.offer(event)  // Fire-and-forget
 yield* mailbox.end  // Closes stream
 ```
@@ -197,7 +206,7 @@ Effect.onInterrupt(() =>
 
 ```typescript
 Layer.scoped(MiniAgent, Effect.gen(function*() {
-  const mailbox = yield* Mailbox.make<AgentEvent>()
+  const mailbox = yield* Mailbox.make<ContextEvent>()
 
   yield* Effect.addFinalizer((_exit) =>
     Effect.gen(function*() {
@@ -234,7 +243,18 @@ const MiniAgentTestLayer = MiniAgentApp.testLayer.pipe(
 
 ---
 
-## Future: @effect/cluster Distribution
+## Future Considerations
+
+### Agent Forking
+
+The `parentEventId` field on every event enables **agent forking** - branching into parallel execution paths:
+
+- Events reference their causal parent via `parentEventId`
+- Multiple events can share the same parent, creating a fork
+- Each fork can evolve independently while maintaining lineage
+- Future: visualize execution trees, merge forks, explore alternative paths
+
+### @effect/cluster Distribution
 
 When ready to distribute across nodes:
 

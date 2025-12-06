@@ -12,7 +12,13 @@
  * - All events share BaseEventFields (id, timestamp, agentName, triggersAgentTurn)
  * - triggersAgentTurn property on ALL events determines if LLM request should happen
  * - Uses @effect/ai Prompt.Message for LLM messages (not custom types)
- * - Single AgentEvent union - no InputEvent/StreamEvent distinction
+ * - Single ContextEvent union - no InputEvent/StreamEvent distinction
+ *
+ * Conceptual Model:
+ * - ContextEvent: An event in a context (unit of state change)
+ * - Context: A list of ContextEvents (the event log)
+ * - ReducedContext: The reduced state ready for agent turn (derived from events)
+ * - MiniAgent: Has agentName, context (events), and external interface
  */
 
 import type { Prompt } from "@effect/ai"
@@ -28,8 +34,18 @@ export type AgentName = typeof AgentName.Type
 export const LlmProviderId = Schema.String.pipe(Schema.brand("LlmProviderId"))
 export type LlmProviderId = typeof LlmProviderId.Type
 
+/**
+ * Globally unique event identifier with format: {agentName}:{counter}
+ * Examples: "chat:0001", "chat:0002", "assistant:0001"
+ *
+ * This enables globally unique event references across all agents.
+ * The counter is sequential within each agent.
+ */
 export const EventId = Schema.String.pipe(Schema.brand("EventId"))
 export type EventId = typeof EventId.Type
+
+export const AgentTurnNumber = Schema.Number.pipe(Schema.brand("AgentTurnNumber"))
+export type AgentTurnNumber = typeof AgentTurnNumber.Type
 
 // =============================================================================
 // Base Event Fields - All events share these
@@ -42,7 +58,8 @@ export type EventId = typeof EventId.Type
  * triggersAgentTurn: Whether this event should trigger an LLM request.
  * This is a property of EVERY event - not hardcoded to specific event types.
  *
- * parentEventId enables future forking - events can reference their causal parent.
+ * parentEventId: Enables future agent forking - events can reference their causal parent.
+ * This allows an agent to branch into multiple parallel execution paths.
  */
 export const BaseEventFields = {
   id: EventId,
@@ -190,7 +207,8 @@ export class SessionEndedEvent extends Schema.TaggedClass<SessionEndedEvent>()(
 export class AgentTurnStartedEvent extends Schema.TaggedClass<AgentTurnStartedEvent>()(
   "AgentTurnStartedEvent",
   {
-    ...BaseEventFields
+    ...BaseEventFields,
+    turnNumber: AgentTurnNumber
   }
 ) {}
 
@@ -198,6 +216,7 @@ export class AgentTurnCompletedEvent extends Schema.TaggedClass<AgentTurnComplet
   "AgentTurnCompletedEvent",
   {
     ...BaseEventFields,
+    turnNumber: AgentTurnNumber,
     durationMs: Schema.Number
   }
 ) {}
@@ -206,6 +225,7 @@ export class AgentTurnInterruptedEvent extends Schema.TaggedClass<AgentTurnInter
   "AgentTurnInterruptedEvent",
   {
     ...BaseEventFields,
+    turnNumber: AgentTurnNumber,
     reason: Schema.String
   }
 ) {}
@@ -214,22 +234,25 @@ export class AgentTurnFailedEvent extends Schema.TaggedClass<AgentTurnFailedEven
   "AgentTurnFailedEvent",
   {
     ...BaseEventFields,
+    turnNumber: AgentTurnNumber,
     error: Schema.String
   }
 ) {}
 
 // =============================================================================
-// AgentEvent - The one and only event union
+// ContextEvent - The one and only event union
 // =============================================================================
 
 /**
- * All events that can occur in an agent. There's no distinction between
+ * Events that can occur in a context. There's no distinction between
  * "input" and "output" events - they're all just events that flow through
  * the system and get streamed to consumers.
  *
+ * A list of ContextEvents IS a context (the event log).
+ *
  * Every event has triggersAgentTurn to indicate if it should start an LLM request.
  */
-export const AgentEvent = Schema.Union(
+export const ContextEvent = Schema.Union(
   // Content events
   SystemPromptEvent,
   UserMessageEvent,
@@ -248,7 +271,7 @@ export const AgentEvent = Schema.Union(
   AgentTurnInterruptedEvent,
   AgentTurnFailedEvent
 )
-export type AgentEvent = typeof AgentEvent.Type
+export type ContextEvent = typeof ContextEvent.Type
 
 // =============================================================================
 // Errors
@@ -267,7 +290,7 @@ export class ReducerError extends Schema.TaggedError<ReducerError>()(
   "ReducerError",
   {
     message: Schema.String,
-    event: Schema.optionalWith(AgentEvent, { as: "Option" })
+    event: Schema.optionalWith(ContextEvent, { as: "Option" })
   }
 ) {}
 
@@ -312,7 +335,7 @@ export type MiniAgentError = typeof MiniAgentError.Type
 export class Agent extends Context.Tag("@app/Agent")<
   Agent,
   {
-    readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<AgentEvent, AgentError>
+    readonly takeTurn: (ctx: ReducedContext) => Stream.Stream<ContextEvent, AgentError>
   }
 >() {
   static readonly layer: Layer.Layer<Agent> = undefined as never
@@ -337,7 +360,7 @@ export class EventReducer extends Context.Tag("@app/EventReducer")<
   {
     readonly reduce: (
       current: ReducedContext,
-      newEvents: ReadonlyArray<AgentEvent>
+      newEvents: ReadonlyArray<ContextEvent>
     ) => Effect.Effect<ReducedContext, ReducerError>
 
     readonly initialReducedContext: ReducedContext
@@ -364,8 +387,8 @@ export class EventReducer extends Context.Tag("@app/EventReducer")<
 export class EventStore extends Context.Tag("@app/EventStore")<
   EventStore,
   {
-    readonly load: (name: AgentName) => Effect.Effect<ReadonlyArray<AgentEvent>, AgentLoadError>
-    readonly append: (name: AgentName, events: ReadonlyArray<AgentEvent>) => Effect.Effect<void, AgentSaveError>
+    readonly load: (name: AgentName) => Effect.Effect<ReadonlyArray<ContextEvent>, AgentLoadError>
+    readonly append: (name: AgentName, events: ReadonlyArray<ContextEvent>) => Effect.Effect<void, AgentSaveError>
     readonly exists: (name: AgentName) => Effect.Effect<boolean>
   }
 >() {
@@ -386,6 +409,8 @@ export class EventStore extends Context.Tag("@app/EventStore")<
  * MiniAgent represents a single agent as an actor.
  *
  * Each agent encapsulates:
+ * - agentName: The agent's unique identifier
+ * - context: List of ContextEvents (the event log)
  * - Mailbox for incoming events (actor mailbox pattern)
  * - broadcastDynamic for fan-out to multiple subscribers
  * - Background fiber for processing events
@@ -394,7 +419,7 @@ export class EventStore extends Context.Tag("@app/EventStore")<
  * The agent is scoped - when the scope closes, the agent shuts down gracefully.
  *
  * IMPLEMENTATION NOTE: Use Effect's Mailbox + Stream.broadcastDynamic pattern:
- * - Mailbox.make<AgentEvent>() for input
+ * - Mailbox.make<ContextEvent>() for input
  * - Stream.broadcastDynamic(Mailbox.toStream(mailbox), { capacity: "unbounded" })
  * - Each execution of the `events` stream creates a new subscriber (fan-out)
  * - Late subscribers miss events (live stream, not replay/event-sourcing)
@@ -417,7 +442,7 @@ export class MiniAgent extends Context.Tag("@app/MiniAgent")<
      * 3. Offer to mailbox (broadcasts to all subscribers)
      * 4. If event.triggersAgentTurn, starts debounce timer for processing
      */
-    readonly addEvent: (event: AgentEvent) => Effect.Effect<void, MiniAgentError>
+    readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentError>
 
     /**
      * Event stream - each execution creates a new subscriber.
@@ -428,13 +453,13 @@ export class MiniAgent extends Context.Tag("@app/MiniAgent")<
      * NOTE: This is a LIVE stream - late subscribers only receive events
      * published AFTER they subscribe. For historical events, use getEvents.
      */
-    readonly events: Stream.Stream<AgentEvent, never>
+    readonly events: Stream.Stream<ContextEvent, never>
 
     /**
      * Get all events currently in the agent (from in-memory state).
      * Use this for historical events since `events` stream is live-only.
      */
-    readonly getEvents: Effect.Effect<ReadonlyArray<AgentEvent>>
+    readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
 
     /**
      * Gracefully shutdown the agent.
@@ -525,7 +550,7 @@ export class MiniAgentApp extends Context.Tag("@app/MiniAgentApp")<
      */
     readonly addEvent: (
       agentName: AgentName,
-      event: AgentEvent
+      event: ContextEvent
     ) => Effect.Effect<void, MiniAgentError>
 
     /**
@@ -538,14 +563,14 @@ export class MiniAgentApp extends Context.Tag("@app/MiniAgentApp")<
      */
     readonly getEventStream: (
       agentName: AgentName
-    ) => Effect.Effect<Stream.Stream<AgentEvent, never>, MiniAgentError>
+    ) => Effect.Effect<Stream.Stream<ContextEvent, never>, MiniAgentError>
 
     /**
      * Get all events for an agent.
      */
     readonly getEvents: (
       agentName: AgentName
-    ) => Effect.Effect<ReadonlyArray<AgentEvent>, MiniAgentError>
+    ) => Effect.Effect<ReadonlyArray<ContextEvent>, MiniAgentError>
 
     /**
      * List all active agents.
@@ -639,6 +664,17 @@ export const sampleProgram = Effect.gen(function*() {
  * - Memory: SetMemoryConfigEvent (future - vector store, summarization)
  *
  * All these reduce to ReducedContext which drives the agent.
+ *
+ * FUTURE: Agent Forking
+ *
+ * The parentEventId field enables agent forking - where an agent can branch
+ * into multiple parallel execution paths. For example:
+ * - Event A (parentEventId: none)
+ *   - Event B (parentEventId: A) → continues main path
+ *   - Event C (parentEventId: A) → forks to explore alternative
+ *
+ * This allows exploring multiple reasoning paths, A/B testing responses,
+ * or running speculative computations in parallel.
  *
  * FUTURE: @effect/cluster Distribution
  *

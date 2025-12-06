@@ -6,6 +6,13 @@ Design an actor-based architecture for LLM request handling using Effect. Each a
 
 Philosophy: **"Agent events are all you need"** - Everything the agent does is driven by events.
 
+### Conceptual Model
+
+- **ContextEvent**: An event in a context (user message, assistant response, config change, lifecycle event)
+- **Context**: A list of ContextEvents - the event log that records everything that happened
+- **ReducedContext**: The reduced state ready for agent turn - derived from Context by the reducer
+- **MiniAgent**: The actor with an `agentName`, `context` (event log), and external interface (`addEvent`, event stream)
+
 ---
 
 ## MVP Requirements
@@ -20,10 +27,10 @@ Philosophy: **"Agent events are all you need"** - Everything the agent does is d
 ### Event Types
 
 All events share base fields:
-- `id` (EventId)
+- `id` (EventId) - Format: `{agentName}:{counter}` - globally unique within an agent's event log
 - `timestamp` (DateTimeUtc)
 - `agentName` (AgentName)
-- `parentEventId` (optional, for future forking)
+- `parentEventId` (optional EventId) - Enables future agent forking by linking to a parent event in another agent's context
 - `triggersAgentTurn` (Boolean) - Whether this event should trigger an LLM request
 
 **Content Events**:
@@ -41,10 +48,10 @@ All events share base fields:
 **Lifecycle Events**:
 - `SessionStartedEvent` - Emitted when actor starts
 - `SessionEndedEvent` - Emitted when actor shuts down
-- `AgentTurnStartedEvent` - Before agent turn begins
-- `AgentTurnCompletedEvent` - After successful turn (includes durationMs)
-- `AgentTurnInterruptedEvent` - When turn is cancelled (includes reason)
-- `AgentTurnFailedEvent` - When turn fails (includes error)
+- `AgentTurnStartedEvent` - Before agent turn begins (includes turnNumber: monotonic counter starting at 1)
+- `AgentTurnCompletedEvent` - After successful turn (includes turnNumber, durationMs)
+- `AgentTurnInterruptedEvent` - When turn is cancelled (includes turnNumber, reason)
+- `AgentTurnFailedEvent` - When turn fails (includes turnNumber, error)
 
 ### Request Interruption (Required)
 
@@ -139,6 +146,12 @@ Future capabilities defined as events:
 ### Advanced Reducers
 - Truncating reducer (keeps last N messages)
 - Summarizing reducer (uses LLM to summarize old context)
+
+### Agent Forking
+- **parentEventId** enables branching: create a new agent from a specific event in another agent's context
+- Both agents share history up to the fork point
+- Each continues independently with its own event log after the fork
+- Use cases: exploring alternate conversation paths, A/B testing different responses, parallel problem-solving
 
 ### Distribution
 - Replace MiniAgent with @effect/cluster Entity
