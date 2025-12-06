@@ -8,7 +8,7 @@ import { Effect } from "effect"
 import { describe } from "vitest"
 import { expect, runCli, test } from "./fixtures.ts"
 
-describe("Tracing failure resilience", () => {
+describe.concurrent("Tracing failure resilience", () => {
   test("completes with bogus hostname", async ({ testDir }) => {
     const result = await Effect.runPromise(
       runCli(["trace-test"], {

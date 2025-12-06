@@ -69,7 +69,7 @@ const extractJsonLines = (output: string): Array<string> => {
     .filter((line) => line.trim().startsWith("{") && line.includes("\"_tag\""))
 }
 
-describe("CLI", () => {
+describe.concurrent("CLI", () => {
   describe("--help", () => {
     test("shows help message with chat subcommand", async () => {
       const result = await Effect.runPromise(runCli(["--help"]))
@@ -341,7 +341,7 @@ describe("CLI", () => {
   })
 })
 
-describe("CLI options", () => {
+describe.concurrent("CLI options", () => {
   test("-n is alias for --name", async ({ testDir }) => {
     const result = await Effect.runPromise(runCli(["chat", "--help"], { cwd: testDir }))
     expect(result.stdout).toContain("-n")
@@ -373,7 +373,7 @@ describe("CLI options", () => {
   })
 })
 
-describe("CLI option aliases", () => {
+describe.concurrent("CLI option aliases", () => {
   test("-i is alias for --image", async () => {
     const result = await Effect.runPromise(runCli(["chat", "--help"]))
     expect(result.stdout).toContain("-i")
@@ -387,7 +387,7 @@ describe("CLI option aliases", () => {
   })
 })
 
-describe("Interrupted response context", () => {
+describe.concurrent("Interrupted response context", () => {
   test(
     "LLM receives context about interrupted response when continuing conversation",
     { timeout: 15000 },
@@ -436,7 +436,7 @@ describe("Interrupted response context", () => {
   )
 })
 
-describe("Logging", () => {
+describe.concurrent("Logging", () => {
   describe("stdout log level filtering", () => {
     test("info and debug messages hidden at warn level (default)", async ({ testDir }) => {
       const result = await Effect.runPromise(runCli(["log-test"], { cwd: testDir }))

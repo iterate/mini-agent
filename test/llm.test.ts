@@ -14,7 +14,7 @@ import { eventsToPrompt } from "../src/llm.ts"
 
 const testLayer = BunContext.layer
 
-describe("eventsToPrompt", () => {
+describe.concurrent("eventsToPrompt", () => {
   it.effect("converts basic conversation to prompt", () =>
     Effect.gen(function*() {
       const events = [

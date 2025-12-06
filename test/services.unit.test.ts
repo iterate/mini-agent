@@ -15,7 +15,7 @@ import { ContextRepository } from "../src/context.repository.js"
 // ContextRepository Tests
 // =============================================================================
 
-describe("ContextRepository", () => {
+describe.concurrent("ContextRepository", () => {
   describe("load", () => {
     it.effect("returns empty array for non-existent context", () =>
       Effect.gen(function*() {
@@ -118,7 +118,7 @@ describe("ContextRepository", () => {
 // State Isolation Tests
 // =============================================================================
 
-describe("Test Isolation", () => {
+describe.concurrent("Test Isolation", () => {
   it.effect("first test saves data", () =>
     Effect.gen(function*() {
       const repo = yield* ContextRepository

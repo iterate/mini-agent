@@ -111,7 +111,7 @@ const parseSSE = async (response: Response): Promise<Array<string>> => {
     .map((line) => line.slice(6))
 }
 
-describe("HTTP Server", () => {
+describe.concurrent("HTTP Server", () => {
   describe("serve command", () => {
     test("shows help with --help", async () => {
       const result = await Effect.runPromise(
@@ -304,7 +304,7 @@ describe("HTTP Server", () => {
   })
 })
 
-describe("Signature Verification", () => {
+describe.concurrent("Signature Verification", () => {
   test(
     "accepts request without signature when no secret configured",
     { timeout: 30000 },

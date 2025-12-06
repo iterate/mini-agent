@@ -15,7 +15,8 @@ export default defineConfig({
     poolOptions: {
       forks: {
         // Use all available CPUs for parallel execution
-        minForks: Math.max(1, Math.floor(numCpus / 2)),
+        // Start more forks eagerly for faster parallelism
+        minForks: numCpus,
         maxForks: numCpus,
         // Isolate each test file for safety
         isolate: true
