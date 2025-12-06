@@ -17,10 +17,6 @@ import {
 } from "./context.model.ts"
 import { ContextLoadError, ContextSaveError } from "./errors.ts"
 
-// =============================================================================
-// Event Decoding Helper
-// =============================================================================
-
 /**
  * Decode a plain object to a PersistedEvent class instance.
  * This ensures the event has all the methods defined on the class.
@@ -37,10 +33,6 @@ const decodeEvents = (rawEvents: Array<unknown>): Array<PersistedEventType> => r
  */
 const encodeEvent = Schema.encodeSync(PersistedEvent)
 
-// =============================================================================
-// Context Repository Service
-// =============================================================================
-
 export class ContextRepository extends Context.Tag("@app/ContextRepository")<
   ContextRepository,
   {
@@ -52,6 +44,11 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
       contextName: string,
       events: ReadonlyArray<PersistedEventType>
     ) => Effect.Effect<void, ContextSaveError>
+    /** Append events to existing context (load + save atomically) */
+    readonly append: (
+      contextName: string,
+      events: ReadonlyArray<PersistedEventType>
+    ) => Effect.Effect<void, ContextLoadError | ContextSaveError>
     readonly list: () => Effect.Effect<Array<string>, ContextLoadError>
     readonly getContextsDir: () => string
   }
@@ -174,6 +171,18 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
       )
 
       /**
+       * Append events to an existing context.
+       * Loads current events, appends new ones, and saves atomically.
+       */
+      const append = Effect.fn("ContextRepository.append")(
+        function*(contextName: string, newEvents: ReadonlyArray<PersistedEventType>) {
+          const existing = yield* load(contextName)
+          const combined = [...existing, ...newEvents]
+          yield* save(contextName, combined)
+        }
+      )
+
+      /**
        * List all existing context names, sorted by most recently modified first.
        */
       const list = Effect.fn("ContextRepository.list")(
@@ -222,6 +231,7 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
         load,
         loadOrCreate,
         save,
+        append,
         list,
         getContextsDir: () => contextsDir
       })
@@ -247,6 +257,11 @@ export class ContextRepository extends Context.Tag("@app/ContextRepository")<
         }),
       save: (contextName: string, events: ReadonlyArray<PersistedEventType>) =>
         Effect.sync(() => void store.set(contextName, [...events])),
+      append: (contextName: string, newEvents: ReadonlyArray<PersistedEventType>) =>
+        Effect.sync(() => {
+          const existing = store.get(contextName) ?? []
+          store.set(contextName, [...existing, ...newEvents])
+        }),
       list: () => Effect.sync(() => Array.from(store.keys()).sort()),
       getContextsDir: () => "/test/contexts"
     })
