@@ -18,7 +18,53 @@ import {
   type ReducedContext,
   type ReducerError
 } from "../domain.ts"
-import { type ChatController, runOpenTUIChat } from "./components/opentui-chat.tsx"
+import { type ChatController, type ChatEvent, runOpenTUIChat } from "./components/opentui-chat.tsx"
+
+/**
+ * Map a ContextEvent to the TUI ChatEvent format.
+ * Returns null for events that shouldn't be displayed.
+ */
+const mapEventToTui = (e: ContextEvent): ChatEvent | null => {
+  switch (e._tag) {
+    case "UserMessageEvent":
+      return { _tag: "UserMessage", content: e.content }
+    case "AssistantMessageEvent":
+      return { _tag: "AssistantMessage", content: e.content }
+    case "SystemPromptEvent":
+      return { _tag: "SystemPrompt", content: e.content }
+    case "TextDeltaEvent":
+      return { _tag: "TextDelta", delta: e.delta }
+    case "AgentTurnInterruptedEvent":
+      return {
+        _tag: "LLMRequestInterrupted",
+        requestId: e.id,
+        reason: e.reason,
+        partialResponse: Option.getOrElse(e.partialResponse, () => "")
+      }
+    case "FileAttachmentEvent": {
+      const fileName = Option.getOrUndefined(e.fileName)
+      return fileName
+        ? { _tag: "FileAttachment", source: e.source, fileName }
+        : { _tag: "FileAttachment", source: e.source }
+    }
+    case "SessionStartedEvent":
+      return { _tag: "SessionStarted" }
+    case "SessionEndedEvent":
+      return { _tag: "SessionEnded" }
+    case "AgentTurnStartedEvent":
+      return { _tag: "AgentTurnStarted", turnNumber: e.turnNumber }
+    case "AgentTurnCompletedEvent":
+      return { _tag: "AgentTurnCompleted", turnNumber: e.turnNumber, durationMs: e.durationMs }
+    case "AgentTurnFailedEvent":
+      return { _tag: "AgentTurnFailed", turnNumber: e.turnNumber, error: e.error }
+    case "SetLlmConfigEvent":
+      return { _tag: "SetLlmConfig", model: e.model, provider: e.providerId }
+    case "SetTimeoutEvent":
+      return { _tag: "SetTimeout", timeoutMs: e.timeoutMs }
+    default:
+      return null
+  }
+}
 
 type ChatSignal =
   | { readonly _tag: "Input"; readonly text: string }
@@ -45,25 +91,9 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
         const mailbox = yield* Mailbox.make<ChatSignal>()
 
         // Map ContextEvent to the format expected by OpenTUI chat
-        const tuiEvents = existingEvents.map((e) => {
-          switch (e._tag) {
-            case "UserMessageEvent":
-              return { _tag: "UserMessage" as const, content: e.content }
-            case "AssistantMessageEvent":
-              return { _tag: "AssistantMessage" as const, content: e.content }
-            case "SystemPromptEvent":
-              return { _tag: "SystemPrompt" as const, content: e.content }
-            case "AgentTurnInterruptedEvent":
-              return {
-                _tag: "LLMRequestInterrupted" as const,
-                requestId: e.id,
-                reason: e.reason,
-                partialResponse: Option.getOrElse(e.partialResponse, () => "")
-              }
-            default:
-              return null
-          }
-        }).filter((e): e is NonNullable<typeof e> => e !== null)
+        const tuiEvents = existingEvents.map((e) => mapEventToTui(e)).filter((e): e is NonNullable<typeof e> =>
+          e !== null
+        )
 
         const chat = yield* Effect.promise(() =>
           runOpenTUIChat(agentName, tuiEvents, {

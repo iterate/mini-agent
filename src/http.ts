@@ -64,6 +64,10 @@ const agentHandler = Effect.gen(function*() {
 
   // Get or create agent
   const agent = yield* registry.getOrCreate(agentName as AgentName)
+
+  // Get historical events (includes SessionStartedEvent, any prior events)
+  const historicalEvents = yield* agent.getEvents
+
   const ctx = yield* agent.getReducedContext
 
   // Prepare user event
@@ -75,7 +79,7 @@ const agentHandler = Effect.gen(function*() {
   )
 
   // Create SSE stream using the captured runtime
-  const sseStream = makeSseStream(runtime, agent, userEvent)
+  const sseStream = makeSseStream(runtime, agent, historicalEvents, userEvent)
 
   return HttpServerResponse.stream(sseStream, {
     contentType: "text/event-stream",
@@ -86,22 +90,24 @@ const agentHandler = Effect.gen(function*() {
   })
 })
 
-/** Create SSE stream that emits events until turn completes */
+/** Create SSE stream that emits all events (historical + new) until turn completes */
 const makeSseStream = (
   runtime: Runtime.Runtime<AgentRegistry>,
   agent: {
     events: Stream.Stream<ContextEvent, never>
     addEvent: (e: ContextEvent) => Effect.Effect<void, unknown>
   },
+  historicalEvents: ReadonlyArray<ContextEvent>,
   userEvent: ContextEvent
 ): Stream.Stream<Uint8Array, never> =>
   Stream.async<Uint8Array, never>((emit) => {
-    // Create the effect that will:
-    // 1. Subscribe to events
-    // 2. Add user event (triggering LLM turn)
-    // 3. Stream events until turn completes
     const runStream = Effect.gen(function*() {
-      // Fork the event subscription first - it will receive all events including userEvent
+      // First emit all historical events (SessionStartedEvent, any prior events)
+      for (const event of historicalEvents) {
+        emit.single(encodeSSE(event))
+      }
+
+      // Fork the event subscription to receive new events
       const streamFiber = yield* agent.events.pipe(
         Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
         Stream.tap((e) =>

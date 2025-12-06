@@ -30,6 +30,12 @@ export interface ChatEvent {
   source?: { type: "file"; path: string } | { type: "url"; url: string }
   fileName?: string
   requestId?: string
+  turnNumber?: number
+  durationMs?: number
+  error?: string
+  model?: string
+  provider?: string
+  timeoutMs?: number
 }
 
 /** User's message in the conversation */
@@ -68,6 +74,50 @@ class FileAttachmentItem extends Schema.TaggedClass<FileAttachmentItem>()("FileA
   isHistory: Schema.Boolean
 }) {}
 
+/** System prompt configuration */
+class SystemPromptItem extends Schema.TaggedClass<SystemPromptItem>()("SystemPromptItem", {
+  id: Schema.String,
+  content: Schema.String,
+  isHistory: Schema.Boolean
+}) {}
+
+/** Session started lifecycle event */
+class SessionStartedItem extends Schema.TaggedClass<SessionStartedItem>()("SessionStartedItem", {
+  id: Schema.String,
+  isHistory: Schema.Boolean
+}) {}
+
+/** Agent turn started lifecycle event */
+class AgentTurnStartedItem extends Schema.TaggedClass<AgentTurnStartedItem>()("AgentTurnStartedItem", {
+  id: Schema.String,
+  turnNumber: Schema.Number,
+  isHistory: Schema.Boolean
+}) {}
+
+/** Agent turn completed lifecycle event */
+class AgentTurnCompletedItem extends Schema.TaggedClass<AgentTurnCompletedItem>()("AgentTurnCompletedItem", {
+  id: Schema.String,
+  turnNumber: Schema.Number,
+  durationMs: Schema.Number,
+  isHistory: Schema.Boolean
+}) {}
+
+/** Agent turn failed lifecycle event */
+class AgentTurnFailedItem extends Schema.TaggedClass<AgentTurnFailedItem>()("AgentTurnFailedItem", {
+  id: Schema.String,
+  turnNumber: Schema.Number,
+  error: Schema.String,
+  isHistory: Schema.Boolean
+}) {}
+
+/** LLM config change event */
+class SetLlmConfigItem extends Schema.TaggedClass<SetLlmConfigItem>()("SetLlmConfigItem", {
+  id: Schema.String,
+  model: Schema.String,
+  provider: Schema.String,
+  isHistory: Schema.Boolean
+}) {}
+
 /** Fallback for unknown event types - displays muted warning */
 class UnknownEventItem extends Schema.TaggedClass<UnknownEventItem>()("UnknownEventItem", {
   id: Schema.String,
@@ -81,6 +131,12 @@ const FeedItem = Schema.Union(
   AssistantMessageItem,
   LLMInterruptionItem,
   FileAttachmentItem,
+  SystemPromptItem,
+  SessionStartedItem,
+  AgentTurnStartedItem,
+  AgentTurnCompletedItem,
+  AgentTurnFailedItem,
+  SetLlmConfigItem,
   UnknownEventItem
 )
 type FeedItem = typeof FeedItem.Type
@@ -157,7 +213,70 @@ function feedReducer(items: FeedItem[], action: FeedAction): FeedItem[] {
       ]
 
     case "SystemPrompt":
+      return [
+        ...items,
+        new SystemPromptItem({
+          id: crypto.randomUUID(),
+          content: event.content ?? "",
+          isHistory
+        })
+      ]
+
+    case "SessionStarted":
+      return [
+        ...items,
+        new SessionStartedItem({
+          id: crypto.randomUUID(),
+          isHistory
+        })
+      ]
+
+    case "AgentTurnStarted":
+      return [
+        ...items,
+        new AgentTurnStartedItem({
+          id: crypto.randomUUID(),
+          turnNumber: event.turnNumber ?? 0,
+          isHistory
+        })
+      ]
+
+    case "AgentTurnCompleted":
+      return [
+        ...items,
+        new AgentTurnCompletedItem({
+          id: crypto.randomUUID(),
+          turnNumber: event.turnNumber ?? 0,
+          durationMs: event.durationMs ?? 0,
+          isHistory
+        })
+      ]
+
+    case "AgentTurnFailed":
+      return [
+        ...items,
+        new AgentTurnFailedItem({
+          id: crypto.randomUUID(),
+          turnNumber: event.turnNumber ?? 0,
+          error: event.error ?? "Unknown error",
+          isHistory
+        })
+      ]
+
     case "SetLlmConfig":
+      return [
+        ...items,
+        new SetLlmConfigItem({
+          id: crypto.randomUUID(),
+          model: event.model ?? "",
+          provider: event.provider ?? "",
+          isHistory
+        })
+      ]
+
+    case "SessionEnded":
+    case "SetTimeout":
+      // Don't display these events in the UI
       return items
 
     default:
@@ -271,6 +390,66 @@ const FileAttachmentRenderer = memo<{ item: FileAttachmentItem }>(({ item }) => 
   )
 })
 
+const SystemPromptRenderer = memo<{ item: SystemPromptItem }>(({ item }) => {
+  const textColor = item.isHistory ? colors.dim : colors.yellow
+
+  return (
+    <box flexDirection="column" marginBottom={1}>
+      <text fg={textColor}>⚙️ System: {item.content.slice(0, 60)}{item.content.length > 60 ? "..." : ""}</text>
+    </box>
+  )
+})
+
+const SessionStartedRenderer = memo<{ item: SessionStartedItem }>(({ item }) => {
+  const textColor = item.isHistory ? colors.dim : colors.yellow
+
+  return (
+    <box marginBottom={1}>
+      <text fg={textColor}>🔵 Session started</text>
+    </box>
+  )
+})
+
+const AgentTurnStartedRenderer = memo<{ item: AgentTurnStartedItem }>(({ item }) => {
+  const textColor = item.isHistory ? colors.dim : colors.yellow
+
+  return (
+    <box marginBottom={1}>
+      <text fg={textColor}>▶️ Turn {item.turnNumber} started</text>
+    </box>
+  )
+})
+
+const AgentTurnCompletedRenderer = memo<{ item: AgentTurnCompletedItem }>(({ item }) => {
+  const textColor = item.isHistory ? colors.dim : colors.yellow
+
+  return (
+    <box marginBottom={1}>
+      <text fg={textColor}>✅ Turn {item.turnNumber} completed ({item.durationMs}ms)</text>
+    </box>
+  )
+})
+
+const AgentTurnFailedRenderer = memo<{ item: AgentTurnFailedItem }>(({ item }) => {
+  const textColor = item.isHistory ? colors.dimRed : colors.red
+
+  return (
+    <box marginBottom={1}>
+      <text fg={textColor}>❌ Turn {item.turnNumber} failed: {item.error}</text>
+    </box>
+  )
+})
+
+const SetLlmConfigRenderer = memo<{ item: SetLlmConfigItem }>(({ item }) => {
+  const textColor = item.isHistory ? colors.dim : colors.yellow
+
+  return (
+    <box marginBottom={1}>
+      <text fg={textColor}>🤖 LLM: {item.provider}:{item.model}</text>
+    </box>
+  )
+})
+
 const UnknownEventRenderer = memo<{ item: UnknownEventItem }>(({ item }) => {
   return (
     <box marginBottom={1}>
@@ -293,6 +472,18 @@ const FeedItemRenderer = memo<{ item: FeedItem }>(({ item }) => {
       return <LLMInterruptionRenderer item={item as LLMInterruptionItem} />
     case "FileAttachmentItem":
       return <FileAttachmentRenderer item={item as FileAttachmentItem} />
+    case "SystemPromptItem":
+      return <SystemPromptRenderer item={item as SystemPromptItem} />
+    case "SessionStartedItem":
+      return <SessionStartedRenderer item={item as SessionStartedItem} />
+    case "AgentTurnStartedItem":
+      return <AgentTurnStartedRenderer item={item as AgentTurnStartedItem} />
+    case "AgentTurnCompletedItem":
+      return <AgentTurnCompletedRenderer item={item as AgentTurnCompletedItem} />
+    case "AgentTurnFailedItem":
+      return <AgentTurnFailedRenderer item={item as AgentTurnFailedItem} />
+    case "SetLlmConfigItem":
+      return <SetLlmConfigRenderer item={item as SetLlmConfigItem} />
     case "UnknownEventItem":
       return <UnknownEventRenderer item={item as UnknownEventItem} />
     default:

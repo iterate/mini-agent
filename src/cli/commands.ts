@@ -70,9 +70,21 @@ const showEphemeralOption = Options.boolean("show-ephemeral").pipe(
   Options.withDefault(false)
 )
 
+/** CLI interaction modes */
+const ModeOption = Schema.Literal("tui", "script", "piped", "auto")
+type ModeOption = typeof ModeOption.Type
+
+const modeOption = Options.choice("mode", ["tui", "script", "piped", "auto"]).pipe(
+  Options.withDescription(
+    "Interaction mode: tui (interactive terminal), script (JSONL in/out), piped (plain text in/out), auto (detect)"
+  ),
+  Options.withDefault("auto" as const)
+)
+
+// Keep --script as an alias for --mode script for backwards compatibility
 const scriptOption = Options.boolean("script").pipe(
   Options.withAlias("s"),
-  Options.withDescription("Script mode: read JSONL events from stdin, output JSONL events"),
+  Options.withDescription("Alias for --mode script: read JSONL events from stdin, output JSONL events"),
   Options.withDefault(false)
 )
 
@@ -136,20 +148,48 @@ const handleEvent = (
   })
 
 /** CLI interaction mode - determines how input/output is handled */
-const InteractionMode = Schema.Literal("single-turn", "pipe", "script", "tty-interactive")
+const InteractionMode = Schema.Literal("single-turn", "piped", "script", "tui")
 type InteractionMode = typeof InteractionMode.Type
 
+/**
+ * Determine interaction mode from options.
+ *
+ * Mode precedence:
+ * 1. Explicit --mode (if not "auto")
+ * 2. --script flag (alias for --mode script)
+ * 3. -m message provided → single-turn
+ * 4. stdin is TTY → tui
+ * 5. stdin is piped → piped
+ */
 const determineMode = (options: {
+  mode: ModeOption
   message: Option.Option<string>
   script: boolean
 }): InteractionMode => {
+  // Explicit mode takes precedence (unless auto)
+  if (options.mode !== "auto") {
+    return options.mode
+  }
+
+  // --script flag is alias for --mode script
+  if (options.script) {
+    return "script"
+  }
+
+  // -m message means single-turn
   const hasMessage = Option.isSome(options.message) &&
     Option.getOrElse(options.message, () => "").trim() !== ""
+  if (hasMessage) {
+    return "single-turn"
+  }
 
-  if (hasMessage) return "single-turn"
-  if (options.script) return "script"
-  if (process.stdin.isTTY) return "tty-interactive"
-  return "pipe"
+  // TTY means interactive TUI
+  if (process.stdin.isTTY) {
+    return "tui"
+  }
+
+  // Otherwise piped stdin
+  return "piped"
 }
 
 const utf8Decoder = new TextDecoder("utf-8")
@@ -306,6 +346,15 @@ const runSingleTurn = (
   Effect.gen(function*() {
     const registry = yield* AgentRegistry
     const agent = yield* registry.getOrCreate(agentName)
+
+    // In raw mode, first output all historical events (including SessionStartedEvent)
+    if (options.raw) {
+      const historicalEvents = yield* agent.getEvents
+      for (const event of historicalEvents) {
+        yield* handleEvent(event, options)
+      }
+    }
+
     const ctx = yield* agent.getReducedContext
 
     // If there's an image, add it first
@@ -325,6 +374,10 @@ const runSingleTurn = (
         Option.some(fileName)
       )
       yield* agent.addEvent(fileEvent)
+      // Output the file event in raw mode
+      if (options.raw) {
+        yield* handleEvent(fileEvent, options)
+      }
     }
 
     // Get updated context after adding file
@@ -337,6 +390,9 @@ const runSingleTurn = (
       Stream.runDrain,
       Effect.fork
     )
+
+    // Small delay to ensure subscription is active
+    yield* Effect.sleep("10 millis")
 
     // Add user message with triggersAgentTurn=true
     const userEvent = EventBuilder.userMessage(
@@ -355,13 +411,15 @@ const runChat = (options: {
   name: Option.Option<string>
   message: Option.Option<string>
   image: Option.Option<string>
+  mode: ModeOption
   raw: boolean
   script: boolean
   showEphemeral: boolean
 }) =>
   Effect.gen(function*() {
-    yield* Effect.logDebug("Starting chat session")
     const mode = determineMode(options)
+    yield* Effect.logDebug("Starting chat session", { mode, explicitMode: options.mode })
+
     const contextName = Option.getOrElse(options.name, generateRandomContextName)
     const agentName = contextName as AgentName
     const imagePath = Option.getOrNull(options.image) ?? undefined
@@ -381,10 +439,10 @@ const runChat = (options: {
         break
       }
 
-      case "pipe": {
+      case "piped": {
         const input = yield* readAllStdin
         if (input !== "") {
-          yield* runSingleTurn(agentName, input, { raw: false, showEphemeral: false }, imagePath)
+          yield* runSingleTurn(agentName, input, outputOptions, imagePath)
         }
         break
       }
@@ -394,7 +452,7 @@ const runChat = (options: {
         break
       }
 
-      case "tty-interactive": {
+      case "tui": {
         const resolvedName = Option.isSome(options.name)
           ? contextName
           : yield* selectOrCreateContext
@@ -480,13 +538,18 @@ const chatCommand = Command.make(
     name: nameOption,
     message: messageOption,
     image: imageOption,
+    mode: modeOption,
     raw: rawOption,
     script: scriptOption,
     showEphemeral: showEphemeralOption
   },
-  ({ image, message, name, raw, script, showEphemeral }) =>
-    runChat({ image, message, name, raw, script, showEphemeral })
-).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
+  ({ image, message, mode, name, raw, script, showEphemeral }) =>
+    runChat({ image, message, mode: mode as ModeOption, name, raw, script, showEphemeral })
+).pipe(
+  Command.withDescription(
+    "Chat with an AI assistant. Modes: tui (interactive), script (JSONL), piped (plain text), auto (detect)"
+  )
+)
 
 const logTestCommand = Command.make(
   "log-test",
