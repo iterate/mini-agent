@@ -256,11 +256,12 @@ const FileAttachmentRenderer = memo<{ item: FileAttachmentItem }>(({ item }) => 
 
 const UnknownEventRenderer = memo<{ item: UnknownEventItem }>(({ item }) => {
   const timeStr = item.timestamp.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+  const color = item.isHistory ? colors.dim : colors.dimCyan
 
   return (
     <box marginBottom={1}>
-      <text fg={colors.dim}>
-        [{timeStr}] {item.eventTag}
+      <text fg={color}>
+        ◦ {item.eventTag} at {timeStr}
       </text>
     </box>
   )
