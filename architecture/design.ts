@@ -333,8 +333,8 @@ export class MiniAgentTurn extends Effect.Service<MiniAgentTurn>()("@mini-agent/
   succeed: {
     execute: (_ctx: ReducedContext): Stream.Stream<ContextEvent, AgentError> =>
       Stream.fail(new AgentError({ message: "MiniAgentTurn not implemented", provider: "none" as LlmProviderId, cause: Option.none() }))
-  },
-  accessors: true
+  }
+  // No accessors: true - access via yield* MiniAgentTurn
 }) {}
 
 /** Default stub config for design-time type checking */
@@ -377,8 +377,8 @@ export class EventReducer extends Effect.Service<EventReducer>()("@mini-agent/Ev
       _newEvents: ReadonlyArray<ContextEvent>
     ): Effect.Effect<ReducedContext, ReducerError> => Effect.succeed(current),
     initialReducedContext: stubReducedContext
-  },
-  accessors: true
+  }
+  // No accessors: true - access via yield* EventReducer
 }) {}
 
 /**
@@ -394,8 +394,8 @@ export class EventStore extends Effect.Service<EventStore>()("@mini-agent/EventS
       Effect.void,
     exists: (_contextName: ContextName): Effect.Effect<boolean> =>
       Effect.succeed(false)
-  },
-  accessors: true
+  }
+  // No accessors: true - access via yield* EventStore
 }) {}
 
 /**
@@ -449,10 +449,14 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
     shutdownAgent: (agentName: AgentName): Effect.Effect<void, AgentNotFoundError> =>
       Effect.fail(new AgentNotFoundError({ agentName })),
     shutdownAll: Effect.void
-  },
-  accessors: true
+  }
+  // No accessors: true - access via yield* AgentRegistry
 }) {}
 
+/**
+ * Sample program showing service usage patterns.
+ * NOTE: Uses `new Date() as never` for brevity - real code uses DateTime.unsafeNow()
+ */
 export const sampleProgram = Effect.gen(function*() {
   const registry = yield* AgentRegistry
   const agentName = "chat" as AgentName

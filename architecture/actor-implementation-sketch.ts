@@ -27,6 +27,8 @@ import {
   Mailbox,
   Option,
   Ref,
+  Schedule,
+  Sink,
   Stream
 } from "effect"
 import type {
@@ -113,8 +115,10 @@ const makeMiniAgent = (agentName: AgentName) =>
       // Convert mailbox to broadcast stream
       // KEY: broadcastDynamic creates internal PubSub, returns Stream
       // Each execution of the stream = new subscriber (fan-out)
+      // Bounded + sliding: TextDelta can drop, final AssistantMessage preserved
       const broadcast = yield* Stream.broadcastDynamic(Mailbox.toStream(mailbox), {
-        capacity: "unbounded"
+        capacity: 256,
+        strategy: "sliding"
       })
 
       // Background processing fiber - subscribes to broadcast for debouncing
@@ -194,10 +198,14 @@ const makeMiniAgent = (agentName: AgentName) =>
         })
 
       // Start background processing fiber
-      // Only debounce events with triggersAgentTurn=true
+      // aggregateWithin guarantees max 500ms wait (no starvation under continuous events)
+      // Sink.last takes latest event, Schedule.fixed sets max wait
       const processingFiber = yield* broadcast.pipe(
         Stream.filter((e) => e.triggersAgentTurn),
-        Stream.debounce(Duration.millis(100)),
+        Stream.aggregateWithin(
+          Sink.last<ContextEvent>(),
+          Schedule.fixed(Duration.millis(500))
+        ),
         Stream.mapEffect(() => processBatch),
         Stream.catchAll((error) =>
           Stream.fromEffect(
@@ -267,6 +275,10 @@ const makeMiniAgent = (agentName: AgentName) =>
  * (nextEventNumber, currentTurnNumber, agentTurnStartedAtEventId). The reducer
  * computes reducedContext from events - deterministic and testable.
  *
+ * ATOMICITY
+ * Use Ref.modify() for atomic read-modify-write (EventId generation, state updates).
+ * JS is single-threaded, so Ref.modify's core.sync() guarantees atomicity.
+ *
  * EVENT IDS
  * Format: {agentName}:{counter} e.g. "chat:0001". Counter from reducedContext.nextEventNumber.
  *
@@ -275,6 +287,14 @@ const makeMiniAgent = (agentName: AgentName) =>
  * - Option.isSome = turn in progress
  * - The EventId = parent for new events (automatic causal linking)
  * Reducer sets to Some on AgentTurnStartedEvent, resets to None on Completed/Failed.
+ *
+ * BROADCAST
+ * broadcastDynamic(256, "sliding") bounds memory. TextDelta can drop without
+ * data loss since final AssistantMessage contains complete response.
+ *
+ * BATCHING
+ * aggregateWithin(Sink.last(), Schedule.fixed(500ms)) replaces debounce.
+ * Guarantees max 500ms wait even under continuous events (no starvation).
  *
  * LIVE STREAMS
  * broadcastDynamic doesn't replay. Late subscribers miss events.
@@ -293,6 +313,6 @@ const makeMiniAgent = (agentName: AgentName) =>
  * ```
  *
  * SHUTDOWN
- * Emit SessionEndedEvent → mailbox.end → Fiber.interrupt(processingFiber).
- * Effect.addFinalizer handles cleanup on scope close.
+ * Coordinated: end → await(5s timeout) → shutdown.
+ * Ensures SessionEndedEvent is received before forced termination.
  */

@@ -82,8 +82,24 @@ No discriminator on ContextEvent - O(n) decode for 13 types.
 
 ## Decisions Made
 
-(Record decisions here as they're made)
+Researched via Effect codebase analysis. Prioritizing simplicity over adding code.
 
 | Issue | Decision | Rationale |
 |-------|----------|-----------|
-| | | |
+| 1. Effect.Service | **A) Remove `accessors: true`** | Effect's own packages (platform, ai) don't use accessors. Just yield* the tag. |
+| 2. Non-Atomic State | **A) `Ref.modify()`** | Single atomic primitive. Semaphore overkill for JS single-threaded runtime. |
+| 3. Schema Constructors | **B) Document** | design.ts is reference, not production. Real code uses `DateTime.unsafeNow()`. |
+| 4. Unbounded Memory | **A) Bounded sliding** | `{ capacity: 256, strategy: "sliding" }` - TextDelta can drop, final message preserved. |
+| 5. Fiber Interruption | **C) `Effect.uninterruptible`** | Wrap persistence calls. Effect's channel executor handles cleanup automatically. |
+| 6. Debounce Starvation | **A+B) `aggregateWithin`** | `Sink.last()` + `Schedule.fixed("500ms")` guarantees max wait, reads fresh context. |
+| 7. Shutdown Sequence | **A+B) Coordinated** | `end` → `await` with 5s timeout → `shutdown`. Simple and robust. |
+| 8. Union Performance | **B) Accept as-is** | TaggedClass unions auto-optimize via `_tag` discriminator. Already O(1) lookup. |
+
+### Key Insight
+
+Most "fixes" are config changes or removing code, not adding complexity:
+- Remove `accessors: true` (less code)
+- Change `capacity: "unbounded"` to `capacity: 256` (config)
+- Replace `debounce(100)` with `aggregateWithin(Sink.last(), Schedule.fixed("500ms"))` (same LOC)
+- Wrap persist in `Effect.uninterruptible()` (one wrapper)
+- Union already works (no change)

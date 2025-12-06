@@ -19,25 +19,32 @@ Reference: **[design.ts](./design.ts)** for complete service interfaces and type
 ┌──────────────────────────────────────────────────────────────────┐
 │                         MiniAgent                                 │
 │                                                                   │
-│  STATE: events[] + reducedContext (derived via reducer)           │
+│  STATE: Ref<{ events[], reducedContext }> with Ref.modify        │
 │                                                                   │
 │  INPUT:                                                           │
-│  addEvent(e) → persist → add to events → reduce → Mailbox.offer  │
+│  addEvent(e) → Ref.modify(atomic id) → uninterruptible(persist)  │
+│              → Ref.modify(reduce) → Mailbox.offer                │
 │                                                      │            │
-│  BROADCAST:                                          ▼            │
-│  agent.events ◀── Stream.broadcastDynamic ◀──────────┘            │
+│  BROADCAST: (bounded, sliding)                       ▼            │
+│  agent.events ◀── broadcastDynamic(256, sliding) ◀───┘            │
 │       │                                                           │
 │  PROCESSING (when event.triggersAgentTurn=true):                  │
-│       └──▶ debounce(100ms) ──▶ MiniAgentTurn.execute(ctx)        │
+│       └──▶ aggregateWithin(last, 500ms) ──▶ MiniAgentTurn        │
 │                                         │                         │
 │                                         ▼                         │
 │                         TextDeltaEvent... → AssistantMessageEvent │
 │                                         │                         │
-│                         persist → reduce → broadcast              │
+│                         uninterruptible(persist) → broadcast      │
+│                                                                   │
+│  SHUTDOWN: end → await(5s timeout) → shutdown                    │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-Key: Mailbox.offer broadcasts to ALL current subscribers via broadcastDynamic. Late subscribers miss historical events.
+Key changes from initial design:
+- `Ref.modify` for atomic state updates (no races)
+- `broadcastDynamic(256, "sliding")` bounds memory
+- `aggregateWithin` replaces debounce (no starvation)
+- `Effect.uninterruptible` protects persistence
 
 ## Services
 
@@ -71,6 +78,9 @@ MiniAgent is NOT a service - it's an interface returned by `AgentRegistry.getOrC
 ## Layer Composition
 
 ```typescript
+// Services use Context.Tag (not Effect.Service with accessors)
+// Access via: const reducer = yield* EventReducer
+
 // Production
 const MainLayer = AgentRegistry.Default  // includes all dependencies
 
