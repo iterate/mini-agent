@@ -23,6 +23,7 @@ import {
   AssistantMessageEvent,
   CODEMODE_SYSTEM_PROMPT,
   CodemodeResultEvent,
+  CodemodeValidationErrorEvent,
   type ContextEvent,
   DEFAULT_SYSTEM_PROMPT,
   type InputEvent,
@@ -150,7 +151,15 @@ export class ContextService extends Context.Tag("@app/ContextService")<
               // Check if there's a code block
               const codeOpt = yield* parseCodeBlock(assistantContent)
               if (Option.isNone(codeOpt)) {
-                return Stream.empty
+                // LLM didn't output codemode - emit validation error to trigger retry
+                yield* Effect.logWarning("LLM response missing codemode tags", {
+                  contentPreview: assistantContent.slice(0, 100)
+                })
+                const validationError = new CodemodeValidationErrorEvent({
+                  assistantContent
+                })
+                yield* persistEvent(validationError)
+                return Stream.make(validationError as ContextOrCodemodeEvent)
               }
 
               // Get the codemode stream

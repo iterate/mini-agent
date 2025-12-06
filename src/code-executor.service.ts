@@ -26,7 +26,7 @@ import {
 const MAIN_PATH = (() => {
   const thisFile = new URL(import.meta.url).pathname
   const srcDir = thisFile.substring(0, thisFile.lastIndexOf("/"))
-  return `${srcDir}/main.ts`
+  return `${srcDir}/cli/main.ts`
 })()
 
 /** Union of execution events for streaming */

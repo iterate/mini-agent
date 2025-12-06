@@ -310,7 +310,7 @@ const runEventStream = (
 
       if (!options.raw) {
         yield* Console.log(dim(`\n[Agent continuing... (iteration ${iteration})]`))
-        yield* Console.log(`\n${assistantLabel}`)
+        yield* Console.log(`\n${green("Assistant:")}`)
       }
 
       // Reset for next turn - the persisted CodemodeResult will trigger LLM

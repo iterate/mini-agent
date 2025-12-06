@@ -9,6 +9,7 @@ import { Clock, Effect, Option, pipe, Ref, Schema, Stream } from "effect"
 import {
   AssistantMessageEvent,
   CodemodeResultEvent,
+  CodemodeValidationErrorEvent,
   type ContextEvent,
   FileAttachmentEvent,
   LLMRequestInterruptedEvent,
@@ -29,6 +30,7 @@ const isUser = Schema.is(UserMessageEvent)
 const isFile = Schema.is(FileAttachmentEvent)
 const isInterrupted = Schema.is(LLMRequestInterruptedEvent)
 const isCodemodeResult = Schema.is(CodemodeResultEvent)
+const isCodemodeValidationError = Schema.is(CodemodeValidationErrorEvent)
 
 /**
  * Groups consecutive user events (messages + attachments) into single multi-part messages.
@@ -76,7 +78,7 @@ export const eventsToPrompt = (
           )
         }
         i++
-      } else if (isUser(event) || isFile(event) || isCodemodeResult(event)) {
+      } else if (isUser(event) || isFile(event) || isCodemodeResult(event) || isCodemodeValidationError(event)) {
         // Consecutive user/file/codemode events become a single multi-part user message
         const userParts: Array<Prompt.UserMessagePart> = []
 
@@ -106,6 +108,9 @@ export const eventsToPrompt = (
             userParts.push(Prompt.makePart("text", { text: e.content }))
             i++
           } else if (isCodemodeResult(e)) {
+            userParts.push(Prompt.makePart("text", { text: e.toLLMMessage().content }))
+            i++
+          } else if (isCodemodeValidationError(e)) {
             userParts.push(Prompt.makePart("text", { text: e.toLLMMessage().content }))
             i++
           } else {

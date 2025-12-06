@@ -130,6 +130,27 @@ export class CodemodeResultEvent extends Schema.TaggedClass<CodemodeResultEvent>
   }
 }
 
+/** Emitted when LLM response doesn't contain codemode when it should - triggers retry */
+export class CodemodeValidationErrorEvent extends Schema.TaggedClass<CodemodeValidationErrorEvent>()(
+  "CodemodeValidationError",
+  {
+    assistantContent: Schema.String,
+    triggerAgentTurn: Schema.optionalWith(TriggerAgentTurn, { default: () => "after-current-turn" as const })
+  }
+) {
+  toLLMMessage(): LLMMessage {
+    return {
+      role: "user",
+      content:
+        `ERROR: Your response MUST contain <codemode> tags with TypeScript code. You wrote plain text instead:\n\n"${
+          this.assistantContent.slice(0, 200)
+        }${
+          this.assistantContent.length > 200 ? "..." : ""
+        }"\n\nYou are a codemode agent. ALL responses must be TypeScript code wrapped in <codemode></codemode> tags. Use t.sendMessage() to communicate with the user. Try again.`
+    }
+  }
+}
+
 /** Events that get persisted to the context file */
 export const PersistedEvent = Schema.Union(
   SystemPromptEvent,
@@ -138,7 +159,8 @@ export const PersistedEvent = Schema.Union(
   LLMRequestInterruptedEvent,
   FileAttachmentEvent,
   SetLlmConfigEvent,
-  CodemodeResultEvent
+  CodemodeResultEvent,
+  CodemodeValidationErrorEvent
 )
 export type PersistedEvent = typeof PersistedEvent.Type
 
@@ -151,6 +173,7 @@ export const ContextEvent = Schema.Union(
   FileAttachmentEvent,
   SetLlmConfigEvent,
   CodemodeResultEvent,
+  CodemodeValidationErrorEvent,
   TextDeltaEvent
 )
 export type ContextEvent = typeof ContextEvent.Type
