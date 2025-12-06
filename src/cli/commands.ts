@@ -8,17 +8,20 @@ import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
 import { type Error as PlatformError, FileSystem, HttpServer, Terminal } from "@effect/platform"
 import { BunHttpServer, BunStream } from "@effect/platform-bun"
 import { Chunk, Console, Effect, Layer, Option, Schema, Stream } from "effect"
+import { codemodeCommand } from "../codemode-run.ts"
+import type { CodemodeStreamEvent } from "../codemode.service.ts"
 import { AppConfig, resolveBaseDir } from "../config.ts"
 import {
   AssistantMessageEvent,
-  type ContextEvent,
+  CodemodeResultEvent,
+  CodemodeValidationErrorEvent,
   FileAttachmentEvent,
   type InputEvent,
   SystemPromptEvent,
   TextDeltaEvent,
   UserMessageEvent
 } from "../context.model.ts"
-import { ContextService } from "../context.service.ts"
+import { type ContextOrCodemodeEvent, ContextService } from "../context.service.ts"
 import { makeRouter } from "../http.ts"
 import { layercodeCommand } from "../layercode/index.ts"
 import { AgentServer } from "../server.service.ts"
@@ -116,16 +119,108 @@ interface OutputOptions {
   showEphemeral: boolean
 }
 
-/**
- * Handle a single context event based on output options.
- */
-const handleEvent = (
-  event: ContextEvent,
+const green = (s: string) => `\x1b[32m${s}\x1b[0m`
+const yellow = (s: string) => `\x1b[33m${s}\x1b[0m`
+const red = (s: string) => `\x1b[31m${s}\x1b[0m`
+const dim = (s: string) => `\x1b[90m${s}\x1b[0m`
+
+/** Maximum agent loop iterations to prevent infinite loops */
+const MAX_AGENT_LOOP_ITERATIONS = 15
+
+/** Handle codemode streaming events with colored output */
+const handleCodemodeStreamEvent = (
+  event: CodemodeStreamEvent,
   options: OutputOptions
 ): Effect.Effect<void, PlatformError.PlatformError, Terminal.Terminal> =>
   Effect.gen(function*() {
     const terminal = yield* Terminal.Terminal
 
+    if (options.raw) {
+      yield* Console.log(JSON.stringify(event))
+      return
+    }
+
+    switch (event._tag) {
+      case "CodeBlock":
+        yield* Console.log(`\n${yellow("◆ Code block detected")} ${dim(`(attempt ${event.attempt})`)}`)
+        break
+      case "TypecheckStart":
+        yield* terminal.display(dim("  Typechecking..."))
+        break
+      case "TypecheckPass":
+        yield* Console.log(` ${green("✓")}`)
+        break
+      case "TypecheckFail":
+        yield* Console.log(` ${red("✗")}`)
+        yield* Console.log(red(event.errors))
+        break
+      case "ExecutionStart":
+        yield* Console.log(dim("  Executing..."))
+        break
+      case "ExecutionOutput":
+        if (event.stream === "stdout") {
+          yield* terminal.display(event.data)
+        } else {
+          yield* terminal.display(red(event.data))
+        }
+        break
+      case "ExecutionComplete":
+        if (event.exitCode === 0) {
+          yield* Console.log(dim(`  Exit: ${event.exitCode}`))
+        } else {
+          yield* Console.log(red(`  Exit: ${event.exitCode}`))
+        }
+        break
+      default:
+        break
+    }
+  })
+
+/** Check if an event is a codemode streaming event */
+const isCodemodeStreamEvent = (event: ContextOrCodemodeEvent): event is CodemodeStreamEvent =>
+  event._tag === "CodeBlock" ||
+  event._tag === "TypecheckStart" ||
+  event._tag === "TypecheckPass" ||
+  event._tag === "TypecheckFail" ||
+  event._tag === "ExecutionStart" ||
+  event._tag === "ExecutionOutput" ||
+  event._tag === "ExecutionComplete"
+
+/** Handle a single context or codemode event based on output options. */
+const handleEvent = (
+  event: ContextOrCodemodeEvent,
+  options: OutputOptions
+): Effect.Effect<void, PlatformError.PlatformError, Terminal.Terminal> =>
+  Effect.gen(function*() {
+    const terminal = yield* Terminal.Terminal
+
+    // Handle codemode streaming events
+    if (isCodemodeStreamEvent(event)) {
+      yield* handleCodemodeStreamEvent(event, options)
+      return
+    }
+
+    // Handle CodemodeResult (persisted result, shown differently)
+    if (Schema.is(CodemodeResultEvent)(event)) {
+      if (options.raw) {
+        yield* Console.log(JSON.stringify(event))
+      } else {
+        yield* Console.log(dim(`  [Result persisted to context]`))
+      }
+      return
+    }
+
+    // Handle CodemodeValidationError (LLM didn't output codemode)
+    if (Schema.is(CodemodeValidationErrorEvent)(event)) {
+      if (options.raw) {
+        yield* Console.log(JSON.stringify(event))
+      } else {
+        yield* Console.log(red(`\n⚠ LLM response missing <codemode> tags. Retrying...`))
+      }
+      return
+    }
+
+    // Handle standard context events
     if (options.raw) {
       if (Schema.is(TextDeltaEvent)(event) && !options.showEphemeral) {
         return
@@ -144,7 +239,15 @@ const handleEvent = (
     }
   })
 
-/** Run the event stream, handling each event */
+/**
+ * Run the event stream with agent loop.
+ *
+ * The agent loop handles codemode execution flow:
+ * 1. Initial user message triggers LLM response
+ * 2. If LLM outputs codemode, code is executed
+ * 3. If CodemodeResult has triggerAgentTurn="after-current-turn", loop continues
+ * 4. Loop continues until max iterations or no continuation needed
+ */
 const runEventStream = (
   contextName: string,
   userMessage: string,
@@ -180,9 +283,59 @@ const runEventStream = (
 
     inputEvents.push(new UserMessageEvent({ content: userMessage }))
 
-    yield* contextService.addEvents(contextName, inputEvents).pipe(
-      Stream.runForEach((event) => handleEvent(event, options))
+    // Track last CodemodeResult for agent loop decision
+    let lastCodemodeResult: CodemodeResultEvent | undefined
+
+    // Initial turn
+    yield* contextService.addEvents(contextName, inputEvents, { codemode: true }).pipe(
+      Stream.runForEach((event) =>
+        Effect.gen(function*() {
+          yield* handleEvent(event, options)
+          if (Schema.is(CodemodeResultEvent)(event)) {
+            lastCodemodeResult = event
+          }
+        })
+      )
     )
+
+    // Agent loop: continue if CodemodeResult requests another turn
+    let iteration = 1
+    while (
+      lastCodemodeResult &&
+      lastCodemodeResult.triggerAgentTurn === "after-current-turn" &&
+      iteration < MAX_AGENT_LOOP_ITERATIONS
+    ) {
+      iteration++
+      yield* Effect.logDebug(`Agent loop continuing (iteration ${iteration})`)
+
+      if (!options.raw) {
+        yield* Console.log(dim(`\n[Agent continuing... (iteration ${iteration})]`))
+        yield* Console.log(`\n${green("Assistant:")}`)
+      }
+
+      // Reset for next turn - the persisted CodemodeResult will trigger LLM
+      lastCodemodeResult = undefined
+
+      // Empty input events - the persisted CodemodeResult already triggers the turn
+      yield* contextService.addEvents(contextName, [], { codemode: true }).pipe(
+        Stream.runForEach((event) =>
+          Effect.gen(function*() {
+            yield* handleEvent(event, options)
+            if (Schema.is(CodemodeResultEvent)(event)) {
+              lastCodemodeResult = event
+            }
+          })
+        )
+      )
+    }
+
+    // Warn if max iterations reached
+    if (iteration >= MAX_AGENT_LOOP_ITERATIONS && lastCodemodeResult?.triggerAgentTurn === "after-current-turn") {
+      yield* Effect.logWarning(`Agent loop reached max iterations (${MAX_AGENT_LOOP_ITERATIONS}), stopping`)
+      if (!options.raw) {
+        yield* Console.log(yellow(`\n[Agent loop stopped: max iterations (${MAX_AGENT_LOOP_ITERATIONS}) reached]`))
+      }
+    }
   })
 
 /** CLI interaction mode - determines how input/output is handled */
@@ -233,7 +386,7 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
           yield* Console.log(JSON.stringify(event))
 
           if (Schema.is(UserMessageEvent)(event)) {
-            yield* contextService.addEvents(contextName, [event]).pipe(
+            yield* contextService.addEvents(contextName, [event], { codemode: true }).pipe(
               Stream.runForEach((outputEvent) => handleEvent(outputEvent, options))
             )
           } else if (Schema.is(SystemPromptEvent)(event)) {
@@ -327,7 +480,12 @@ const runChat = (options: {
       case "pipe": {
         const input = yield* readAllStdin
         if (input !== "") {
-          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false }, imagePath)
+          yield* runEventStream(
+            contextName,
+            input,
+            { raw: false, showEphemeral: false },
+            imagePath
+          )
         }
         break
       }
@@ -546,6 +704,7 @@ const rootCommand = Command.make(
   Command.withSubcommands([
     chatCommand,
     serveCommand,
+    codemodeCommand,
     layercodeCommand,
     logTestCommand,
     traceTestCommand,

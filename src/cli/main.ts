@@ -7,6 +7,9 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
+import { CodeExecutor } from "../code-executor.service.ts"
+import { CodemodeRepository } from "../codemode.repository.ts"
+import { CodemodeService } from "../codemode.service.ts"
 import {
   AppConfig,
   extractConfigPath,
@@ -21,6 +24,7 @@ import { CurrentLlmConfig, getApiKey, type LlmConfig, resolveLlmConfig } from ".
 import { createLoggingLayer } from "../logging.ts"
 import { OpenAiChatClient, OpenAiChatLanguageModel } from "../openai-chat-completions-client.ts"
 import { createTracingLayer } from "../tracing.ts"
+import { TypecheckService } from "../typechecker.service.ts"
 import { cli, GenAISpanTransformerLayer } from "./commands.ts"
 
 const makeLanguageModelLayer = (llmConfig: LlmConfig) => {
@@ -97,8 +101,16 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
         const languageModelLayer = makeLanguageModelLayer(llmConfig)
         const tracingLayer = createTracingLayer("mini-agent")
 
+        // Build codemode layer stack
+        const codemodeLayer = CodemodeService.layer.pipe(
+          Layer.provide(CodemodeRepository.layer),
+          Layer.provide(TypecheckService.layer),
+          Layer.provide(CodeExecutor.layer)
+        )
+
         return ContextService.layer.pipe(
           Layer.provideMerge(ContextRepository.layer),
+          Layer.provideMerge(codemodeLayer),
           Layer.provideMerge(languageModelLayer),
           Layer.provideMerge(llmConfigLayer),
           Layer.provideMerge(tracingLayer),
