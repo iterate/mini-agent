@@ -165,6 +165,30 @@ export const AcornValidatorLive = Layer.succeed(
 
         // Phase 4: Check for forbidden constructs
         walk.simple(ast, {
+          MemberExpression(node: AnyNode) {
+            const dangerousProps = [
+              "constructor",
+              "__proto__",
+              "__defineGetter__",
+              "__defineSetter__",
+              "__lookupGetter__",
+              "__lookupSetter__"
+            ]
+            const propName = node.property?.type === "Identifier"
+              ? node.property.name
+              : (node.property?.type === "Literal" ? node.property.value : null)
+
+            // Block access to dangerous prototype-related properties
+            if (propName && dangerousProps.includes(propName)) {
+              errors.push(
+                new ValidationError({
+                  type: "forbidden_construct",
+                  message: `Accessing .${propName} is forbidden (potential prototype manipulation)`,
+                  location: node.loc?.start
+                })
+              )
+            }
+          },
           ImportDeclaration(node: AnyNode) {
             errors.push(
               new ValidationError({
@@ -225,6 +249,20 @@ export const AcornValidatorLive = Layer.succeed(
                 })
               )
             }
+            // Block x.constructor() calls - constructor chain attacks
+            if (
+              node.callee?.type === "MemberExpression" &&
+              node.callee.property?.type === "Identifier" &&
+              node.callee.property.name === "constructor"
+            ) {
+              errors.push(
+                new ValidationError({
+                  type: "forbidden_construct",
+                  message: "Calling .constructor() is forbidden (potential Function constructor bypass)",
+                  location: node.loc?.start
+                })
+              )
+            }
           },
           NewExpression(node: AnyNode) {
             // Check for new Function()
@@ -233,6 +271,20 @@ export const AcornValidatorLive = Layer.succeed(
                 new ValidationError({
                   type: "forbidden_construct",
                   message: "new Function() is forbidden",
+                  location: node.loc?.start
+                })
+              )
+            }
+            // Block new X.constructor() - constructor chain attacks
+            if (
+              node.callee?.type === "MemberExpression" &&
+              node.callee.property?.type === "Identifier" &&
+              node.callee.property.name === "constructor"
+            ) {
+              errors.push(
+                new ValidationError({
+                  type: "forbidden_construct",
+                  message: "Accessing .constructor is forbidden (potential Function constructor bypass)",
                   location: node.loc?.start
                 })
               )
