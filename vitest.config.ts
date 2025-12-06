@@ -5,7 +5,7 @@ const numCpus = cpus().length
 
 export default defineConfig({
   test: {
-    include: ["./test/**/*.test.ts"],
+    include: ["./test/**/*.test.ts", "./src/**/*.test.ts"],
     globals: true,
     disableConsoleIntercept: true, // Show console.log during tests (for fixture path logging)
 
