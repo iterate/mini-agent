@@ -5,6 +5,9 @@
  * Tests spawn a real PTY and interact with the CLI like a real terminal.
  *
  * By default uses mock LLM server. Set USE_REAL_LLM=1 to use real APIs.
+ *
+ * NOTE: These tests require a real PTY and are skipped in CI environments
+ * (GitHub Actions, etc.) where no terminal is available.
  */
 import { Effect } from "effect"
 import { resolve } from "node:path"
@@ -22,7 +25,10 @@ const testEnv = (llmEnv: LlmEnv) => ({
   TERM: "xterm-256color"
 })
 
-describe("TTY Interactive Mode", () => {
+/** PTY tests don't work in CI - no real terminal available */
+const isCI = !!process.env.CI
+
+describe.skipIf(isCI)("TTY Interactive Mode", () => {
   // ============================================
   // UI-only tests (no LLM needed, fast)
   // ============================================
