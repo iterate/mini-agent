@@ -1,6 +1,5 @@
 {
-  "snapshot": "snapshot-20251206-ef47c3cf-6b46-4fe8-a420-39520d6fd6b9",
-  "install": "export DOPPLER_TOKEN=\"$MINI_AGENT_DOPPLER_TOKEN\" && bun install",
-  "start": "",
+  "snapshot": "snapshot-20251206-cf221b4e-e4cf-44bc-b8c8-a25f6547a5af",
+  "install": "bun install",
   "terminals": []
 }
