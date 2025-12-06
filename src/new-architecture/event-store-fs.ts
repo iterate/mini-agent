@@ -7,7 +7,7 @@
  */
 
 import { FileSystem, Path } from "@effect/platform"
-import { Effect, Layer, Option, Schema } from "effect"
+import { Deferred, Effect, Layer, Option, Queue, Ref, Schema } from "effect"
 import * as YAML from "yaml"
 import { AppConfig } from "../config.ts"
 import { ContextEvent, ContextLoadError, type ContextName, ContextSaveError } from "./domain.ts"
@@ -35,6 +35,48 @@ export const EventStoreFileSystem: Layer.Layer<
     const contextsDir = path.join(cwd, config.dataStorageDir, "contexts-v2")
 
     const getContextPath = (contextName: ContextName) => path.join(contextsDir, `${contextName}.yaml`)
+
+    // Per-context write queues to prevent concurrent writes to the same file
+    type WriteRequest = {
+      events: ReadonlyArray<ContextEvent>
+      deferred: Deferred.Deferred<void, ContextLoadError | ContextSaveError>
+    }
+    const contextQueues = yield* Ref.make(
+      new Map<ContextName, Queue.Queue<WriteRequest>>()
+    )
+
+    const getOrCreateQueue = (contextName: ContextName) =>
+      Effect.gen(function*() {
+        const queues = yield* Ref.get(contextQueues)
+        const existing = queues.get(contextName)
+        if (existing) {
+          return existing
+        }
+
+        const newQueue = yield* Queue.unbounded<WriteRequest>()
+
+        // Start a fiber to process writes sequentially for this context
+        yield* Effect.forkDaemon(
+          Effect.forever(
+            Effect.gen(function*() {
+              const request = yield* Queue.take(newQueue)
+              const result = yield* appendInternal(contextName, request.events).pipe(Effect.either)
+              if (result._tag === "Left") {
+                yield* Deferred.fail(request.deferred, result.left)
+              } else {
+                yield* Deferred.succeed(request.deferred, undefined)
+              }
+            })
+          )
+        )
+
+        yield* Ref.update(contextQueues, (m) => {
+          const newMap = new Map(m)
+          newMap.set(contextName, newQueue)
+          return newMap
+        })
+        return newQueue
+      })
 
     const load = (contextName: ContextName) =>
       Effect.gen(function*() {
@@ -72,7 +114,8 @@ export const EventStoreFileSystem: Layer.Layer<
         )
       })
 
-    const append = (contextName: ContextName, events: ReadonlyArray<ContextEvent>) =>
+    // Internal append that does the actual file operation (not queue-aware)
+    const appendInternal = (contextName: ContextName, events: ReadonlyArray<ContextEvent>) =>
       Effect.gen(function*() {
         const filePath = getContextPath(contextName)
 
@@ -100,6 +143,15 @@ export const EventStoreFileSystem: Layer.Layer<
             )
           )
         )
+      })
+
+    // Public append that uses queue for serialization
+    const append = (contextName: ContextName, events: ReadonlyArray<ContextEvent>) =>
+      Effect.gen(function*() {
+        const queue = yield* getOrCreateQueue(contextName)
+        const deferred = yield* Deferred.make<void, ContextLoadError | ContextSaveError>()
+        yield* Queue.offer(queue, { events, deferred })
+        yield* Deferred.await(deferred)
       })
 
     const exists = (contextName: ContextName) =>

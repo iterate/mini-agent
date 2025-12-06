@@ -283,7 +283,7 @@ export class MiniAgentTurn extends Effect.Service<MiniAgentTurn>()("@mini-agent/
 export interface MiniAgent {
   readonly agentName: AgentName
   readonly contextName: ContextName
-  readonly addEvent: (event: ContextEvent) => Effect.Effect<void, ContextLoadError | ContextSaveError>
+  readonly addEvent: (event: ContextEvent) => Effect.Effect<void, ReducerError | ContextSaveError>
   readonly events: Stream.Stream<ContextEvent, never>
   readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
   readonly getReducedContext: Effect.Effect<ReducedContext>

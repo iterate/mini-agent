@@ -9,7 +9,7 @@
  * Future: Replace with @effect/cluster Sharding
  */
 
-import { Effect, Exit, Layer, Ref, Scope } from "effect"
+import { Deferred, Effect, Exit, Layer, Ref, Scope } from "effect"
 import {
   type AgentName,
   AgentNotFoundError,
@@ -41,34 +41,97 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
     // Generate context name from agent name
     const makeContextName = (agentName: AgentName): ContextName => `${agentName}-v1` as ContextName
 
+    // Track in-progress creations using Deferred for proper synchronization
+    const creationLocks = yield* Ref.make(
+      new Map<AgentName, Deferred.Deferred<MiniAgent, MiniAgentError>>()
+    )
+
+    type CacheResult = { type: "cached"; agent: MiniAgent } | { type: "not-found" }
+    type LockResult =
+      | { type: "waiting"; deferred: Deferred.Deferred<MiniAgent, MiniAgentError> }
+      | { type: "create" }
+
     const getOrCreate = (agentName: AgentName): Effect.Effect<MiniAgent, MiniAgentError> =>
       Effect.gen(function*() {
-        const current = yield* Ref.get(agents)
-        const existing = current.get(agentName)
+        // Atomically check cache and in-progress, potentially creating a deferred
+        const result: CacheResult = yield* Ref.modify(agents, (agentsMap) => {
+          const existing = agentsMap.get(agentName)
+          if (existing) {
+            return [{ type: "cached" as const, agent: existing.agent } as CacheResult, agentsMap]
+          }
+          return [{ type: "not-found" as const } as CacheResult, agentsMap]
+        })
 
-        if (existing) {
-          return existing.agent
+        if (result.type === "cached") {
+          return result.agent
         }
 
-        // Create new agent with its own scope
-        const scope = yield* Scope.make()
-        const contextName = makeContextName(agentName)
+        // Check if creation is in progress or start new creation
+        const lockResult: LockResult = yield* Ref.modify(creationLocks, (locks) => {
+          const existing = locks.get(agentName)
+          if (existing) {
+            return [{ type: "waiting" as const, deferred: existing } as LockResult, locks]
+          }
+          return [{ type: "create" as const } as LockResult, locks]
+        })
 
-        const agent = yield* makeMiniAgent(agentName, contextName).pipe(
-          Effect.provideService(Scope.Scope, scope),
-          Effect.provideService(EventReducer, reducer),
-          Effect.provideService(EventStore, store),
-          Effect.provideService(MiniAgentTurn, turn)
-        )
+        if (lockResult.type === "waiting") {
+          return yield* Deferred.await(lockResult.deferred)
+        }
 
-        // Cache the agent
-        yield* Ref.update(agents, (map) => {
-          const newMap = new Map(map)
-          newMap.set(agentName, { agent, scope })
+        // We need to create - first make a deferred for others to wait on
+        const newDeferred = yield* Deferred.make<MiniAgent, MiniAgentError>()
+        yield* Ref.update(creationLocks, (m) => {
+          const newMap = new Map(m)
+          newMap.set(agentName, newDeferred)
           return newMap
         })
 
-        return agent
+        // Create the agent
+        const createResult = yield* Effect.gen(function*() {
+          // Double-check cache after acquiring deferred
+          const recheck = yield* Ref.get(agents)
+          const recheckExisting = recheck.get(agentName)
+          if (recheckExisting) {
+            return recheckExisting.agent
+          }
+
+          // Create new agent with its own scope
+          const scope = yield* Scope.make()
+          const contextName = makeContextName(agentName)
+
+          const agent = yield* makeMiniAgent(agentName, contextName).pipe(
+            Effect.provideService(Scope.Scope, scope),
+            Effect.provideService(EventReducer, reducer),
+            Effect.provideService(EventStore, store),
+            Effect.provideService(MiniAgentTurn, turn)
+          )
+
+          // Cache the agent
+          yield* Ref.update(agents, (map) => {
+            const newMap = new Map(map)
+            newMap.set(agentName, { agent, scope })
+            return newMap
+          })
+
+          return agent
+        }).pipe(Effect.either)
+
+        // Clean up the lock
+        yield* Ref.update(creationLocks, (m) => {
+          const newMap = new Map(m)
+          newMap.delete(agentName)
+          return newMap
+        })
+
+        // Complete the deferred and return
+        if (createResult._tag === "Left") {
+          yield* Deferred.fail(newDeferred, createResult.left)
+          return yield* Effect.fail(createResult.left)
+        } else {
+          yield* Deferred.succeed(newDeferred, createResult.right)
+          return createResult.right
+        }
       })
 
     const get = (agentName: AgentName): Effect.Effect<MiniAgent, AgentNotFoundError> =>

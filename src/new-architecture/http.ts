@@ -71,21 +71,23 @@ const agentHandler = Effect.gen(function*() {
     message.content
   )
 
-  // Use Stream.unwrap to ensure subscription happens before event is added
-  // The inner effect runs when stream consumption starts
-  const sseStream = Stream.unwrap(
-    Effect.gen(function*() {
-      // Fork stream consumption first to establish subscription
-      const eventsStream = agent.events.pipe(
-        Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
-        Stream.map(encodeSSE)
+  // Create an SSE stream that:
+  // 1. First emits the user event (so client sees it immediately)
+  // 2. Adds the event to the agent (which triggers the LLM turn)
+  // 3. Then streams all subsequent events until turn completes
+  const sseStream = Stream.concat(
+    // Emit user event immediately to client, then add it to agent
+    Stream.fromEffect(
+      agent.addEvent(userEvent).pipe(
+        Effect.as(encodeSSE(userEvent)),
+        Effect.catchAll(() => Effect.succeed(encodeSSE(userEvent)))
       )
-
-      // Now add the event
-      yield* agent.addEvent(userEvent)
-
-      return eventsStream
-    })
+    ),
+    // Stream remaining events (the broadcast will include events after UserMessage)
+    agent.events.pipe(
+      Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
+      Stream.map(encodeSSE)
+    )
   )
 
   return HttpServerResponse.stream(sseStream, {

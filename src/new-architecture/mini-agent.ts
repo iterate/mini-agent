@@ -8,7 +8,7 @@
  * - Debounced processing for triggersAgentTurn events
  */
 
-import { DateTime, Duration, Effect, Either, Fiber, Mailbox, Option, Ref, type Scope, Stream } from "effect"
+import { DateTime, Duration, Effect, Either, Fiber, Mailbox, Option, Queue, Ref, type Scope, Stream } from "effect"
 import {
   type AgentName,
   AgentTurnCompletedEvent,
@@ -118,10 +118,19 @@ export const makeMiniAgent = (
     const store = yield* EventStore
     const turnService = yield* MiniAgentTurn
 
-    // Initialize state
+    // Load existing events from store and replay them
+    const existingEvents = yield* store.load(contextName).pipe(
+      Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<ContextEvent>))
+    )
+
+    // Replay events to build initial state
+    const initialReducedContext = existingEvents.length > 0
+      ? yield* reducer.reduce(reducer.initialReducedContext, existingEvents)
+      : reducer.initialReducedContext
+
     const initialState: ActorState = {
-      events: [],
-      reducedContext: reducer.initialReducedContext
+      events: existingEvents,
+      reducedContext: initialReducedContext
     }
     const stateRef = yield* Ref.make(initialState)
 
@@ -137,20 +146,48 @@ export const makeMiniAgent = (
     // Track current turn fiber for interruption
     const turnFiberRef = yield* Ref.make<Option.Option<Fiber.RuntimeFiber<void, never>>>(Option.none())
 
-    // Helper: Add event to state and broadcast
-    const addEventInternal = (event: ContextEvent) =>
-      Effect.gen(function*() {
-        // 1. Update state
-        const state = yield* Ref.get(stateRef)
-        const newEvents = [...state.events, event]
-        const newReducedContext = yield* reducer.reduce(state.reducedContext, [event])
-        yield* Ref.set(stateRef, { events: newEvents, reducedContext: newReducedContext })
+    // Queue to serialize event processing and prevent race conditions
+    const eventQueue = yield* Queue.unbounded<{
+      event: ContextEvent
+      complete: (result: Effect.Effect<void, MiniAgentError>) => void
+    }>()
 
-        // 2. Persist
-        yield* store.append(contextName, [event])
+    // Process events sequentially from the queue
+    const eventProcessorFiber = yield* Stream.fromQueue(eventQueue).pipe(
+      Stream.mapEffect(({ complete, event }) =>
+        Effect.gen(function*() {
+          const result = yield* Effect.gen(function*() {
+            // 1. Update state atomically
+            const state = yield* Ref.get(stateRef)
+            const newEvents = [...state.events, event]
+            const newReducedContext = yield* reducer.reduce(state.reducedContext, [event])
+            yield* Ref.set(stateRef, { events: newEvents, reducedContext: newReducedContext })
 
-        // 3. Broadcast
-        yield* mailbox.offer(event)
+            // 2. Persist
+            yield* store.append(contextName, [event])
+
+            // 3. Broadcast
+            yield* mailbox.offer(event)
+          }).pipe(Effect.either)
+
+          if (result._tag === "Left") {
+            complete(Effect.fail(result.left))
+          } else {
+            complete(Effect.void)
+          }
+        })
+      ),
+      Stream.runDrain,
+      Effect.fork
+    )
+
+    // Helper: Add event to state and broadcast (via queue for serialization)
+    const addEventInternal = (event: ContextEvent): Effect.Effect<void, MiniAgentError> =>
+      Effect.async<void, MiniAgentError>((resume) => {
+        const complete = (result: Effect.Effect<void, MiniAgentError>) => {
+          resume(result)
+        }
+        Effect.runSync(Queue.offer(eventQueue, { event, complete }))
       })
 
     const executeTurn = makeExecuteTurn({
@@ -194,6 +231,53 @@ export const makeMiniAgent = (
       Effect.fork
     )
 
+    // Track if shutdown has been called to prevent duplicate cleanup
+    const isShutdownRef = yield* Ref.make(false)
+
+    // Internal shutdown logic - only runs once
+    const performShutdown = Effect.gen(function*() {
+      const alreadyShutdown = yield* Ref.getAndSet(isShutdownRef, true)
+      if (alreadyShutdown) {
+        return
+      }
+
+      // Cancel any in-flight turn
+      const fiber = yield* Ref.get(turnFiberRef)
+      if (Option.isSome(fiber)) {
+        yield* Fiber.interrupt(fiber.value)
+      }
+
+      // Emit session ended and persist it
+      const state = yield* Ref.get(stateRef)
+      const sessionEndEvent = new SessionEndedEvent({
+        id: makeEventId(contextName, state.reducedContext.nextEventNumber),
+        timestamp: DateTime.unsafeNow(),
+        agentName,
+        parentEventId: Option.none(),
+        triggersAgentTurn: false
+      })
+
+      // Persist the session ended event directly (not through queue since we're shutting down)
+      yield* store.append(contextName, [sessionEndEvent]).pipe(
+        Effect.catchAll(() => Effect.void)
+      )
+
+      // Broadcast the event
+      yield* mailbox.offer(sessionEndEvent).pipe(
+        Effect.catchAll(() => Effect.void)
+      )
+
+      // Shutdown the event queue
+      yield* Queue.shutdown(eventQueue)
+
+      // End mailbox
+      yield* mailbox.end
+
+      // Cancel fibers
+      yield* Fiber.interrupt(eventProcessorFiber)
+      yield* Fiber.interrupt(processingFiber)
+    })
+
     // Emit session started
     const sessionStartEvent = new SessionStartedEvent({
       id: makeEventId(contextName, 0),
@@ -205,40 +289,14 @@ export const makeMiniAgent = (
     yield* addEventInternal(sessionStartEvent)
 
     // Cleanup on scope close
-    yield* Effect.addFinalizer(() =>
-      Effect.gen(function*() {
-        // Cancel any in-flight turn
-        const fiber = yield* Ref.get(turnFiberRef)
-        if (Option.isSome(fiber)) {
-          yield* Fiber.interrupt(fiber.value)
-        }
-
-        // Emit session ended
-        const state = yield* Ref.get(stateRef)
-        const sessionEndEvent = new SessionEndedEvent({
-          id: makeEventId(contextName, state.reducedContext.nextEventNumber),
-          timestamp: DateTime.unsafeNow(),
-          agentName,
-          parentEventId: Option.none(),
-          triggersAgentTurn: false
-        })
-
-        // Don't go through addEventInternal to avoid potential issues during shutdown
-        yield* mailbox.offer(sessionEndEvent)
-        yield* mailbox.end
-        yield* Fiber.interrupt(processingFiber)
-      })
-    )
+    yield* Effect.addFinalizer(() => performShutdown)
 
     // Return the MiniAgent interface
     const agent: MiniAgent = {
       agentName,
       contextName,
 
-      addEvent: (event) =>
-        addEventInternal(event).pipe(
-          Effect.catchAll((error) => Effect.logError("addEvent failed", { error }).pipe(Effect.as(undefined)))
-        ) as Effect.Effect<void, never>,
+      addEvent: (event) => addEventInternal(event),
 
       events: broadcast,
 
@@ -246,26 +304,7 @@ export const makeMiniAgent = (
 
       getReducedContext: Ref.get(stateRef).pipe(Effect.map((s) => s.reducedContext)),
 
-      shutdown: Effect.gen(function*() {
-        // Emit session ended
-        const state = yield* Ref.get(stateRef)
-        const sessionEndEvent = new SessionEndedEvent({
-          id: makeEventId(contextName, state.reducedContext.nextEventNumber),
-          timestamp: DateTime.unsafeNow(),
-          agentName,
-          parentEventId: Option.none(),
-          triggersAgentTurn: false
-        })
-        yield* addEventInternal(sessionEndEvent).pipe(
-          Effect.catchAll(() => Effect.void)
-        )
-
-        // End mailbox
-        yield* mailbox.end
-
-        // Cancel processing
-        yield* Fiber.interrupt(processingFiber)
-      }) as Effect.Effect<void>
+      shutdown: performShutdown
     }
 
     return agent

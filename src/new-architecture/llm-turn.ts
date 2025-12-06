@@ -6,12 +6,14 @@
  */
 
 import { type AiError, LanguageModel, Prompt } from "@effect/ai"
-import { Effect, Layer, Option, pipe, Ref, Stream } from "effect"
+import { DateTime, Effect, Layer, Option, pipe, Ref, Stream } from "effect"
 import { CurrentLlmConfig } from "../llm-config.ts"
 import {
   AgentError,
+  type AgentName,
   AssistantMessageEvent,
   type ContextEvent,
+  type EventId,
   type LlmProviderId,
   MiniAgentTurn,
   type ReducedContext,
@@ -37,6 +39,10 @@ const mapAiError = (providerId: LlmProviderId) => (error: AiError.AiError): Agen
 /**
  * Production MiniAgentTurn layer.
  * Captures LanguageModel and CurrentLlmConfig at layer creation time.
+ *
+ * Note: Events created here use placeholder IDs and agentName since the turn service
+ * doesn't have access to agent context. The IDs are unique via timestamp+counter
+ * and events are persisted by the agent which assigns them to the correct context.
  */
 export const LlmTurnLive: Layer.Layer<
   MiniAgentTurn,
@@ -49,11 +55,15 @@ export const LlmTurnLive: Layer.Layer<
     const model = yield* LanguageModel.LanguageModel
     const llmConfig = yield* CurrentLlmConfig
 
+    // Global counter for unique event IDs within this turn service instance
+    let eventCounter = 0
+
     return {
       execute: (ctx: ReducedContext): Stream.Stream<ContextEvent, AgentError> =>
         Stream.unwrap(
           Effect.gen(function*() {
             const fullResponseRef = yield* Ref.make("")
+            const turnStartTime = Date.now()
 
             const prompt = contextToPrompt(ctx)
             const providerId = llmConfig.apiFormat as LlmProviderId
@@ -64,6 +74,14 @@ export const LlmTurnLive: Layer.Layer<
               messageCount: ctx.messages.length
             })
 
+            // Placeholder context for events created during LLM turn
+            const placeholderAgentName = "llm-turn" as AgentName
+
+            const makeEventId = (): EventId => {
+              eventCounter++
+              return `llm-${turnStartTime}-${eventCounter}` as EventId
+            }
+
             return pipe(
               model.streamText({ prompt }),
               Stream.filterMap((part) => part.type === "text-delta" ? Option.some(part.delta) : Option.none()),
@@ -71,9 +89,9 @@ export const LlmTurnLive: Layer.Layer<
                 Ref.update(fullResponseRef, (t) => t + delta).pipe(
                   Effect.as(
                     new TextDeltaEvent({
-                      id: `delta-${Date.now()}` as never,
-                      timestamp: new Date() as never,
-                      agentName: "" as never,
+                      id: makeEventId(),
+                      timestamp: DateTime.unsafeNow(),
+                      agentName: placeholderAgentName,
                       parentEventId: Option.none(),
                       triggersAgentTurn: false,
                       delta
@@ -87,9 +105,9 @@ export const LlmTurnLive: Layer.Layer<
                     Effect.map(
                       (content) =>
                         new AssistantMessageEvent({
-                          id: `assistant-${Date.now()}` as never,
-                          timestamp: new Date() as never,
-                          agentName: "" as never,
+                          id: makeEventId(),
+                          timestamp: DateTime.unsafeNow(),
+                          agentName: placeholderAgentName,
                           parentEventId: Option.none(),
                           triggersAgentTurn: false,
                           content
