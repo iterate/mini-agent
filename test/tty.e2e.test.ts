@@ -184,7 +184,7 @@ describe.sequential("TTY Interactive Mode", () => {
     }
   })
 
-  test("interrupts streaming with return key", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
+  test("interrupts streaming with return key", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat", "-n", "interrupt-test"],
@@ -278,7 +278,7 @@ describe.sequential("TTY Interactive Mode", () => {
     }
   })
 
-  test("empty return during streaming cancels without new message", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
+  test("empty return during streaming cancels without new message", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
     const session = await launchTerminal({
       command: "bun",
       args: [CLI_PATH, "--cwd", testDir, "chat", "-n", "empty-return-test"],

@@ -203,6 +203,37 @@ describe("MiniAgent", () => {
       ))
   })
 
+  describe("context resumption", () => {
+    it.effect("SessionStartedEvent uses correct ID when resuming context with existing events", () =>
+      Effect.gen(function*() {
+        const store = yield* EventStore
+        const contextName = "resume-test-context" as ContextName
+
+        // Pre-populate store with events (simulating a prior session)
+        const existingEvents = [
+          EventBuilder.systemPrompt(testAgentName, contextName, 0, "System prompt"),
+          EventBuilder.userMessage(testAgentName, contextName, 1, "Hello"),
+          EventBuilder.assistantMessage(testAgentName, contextName, 2, "Hi there")
+        ]
+        yield* store.append(contextName, existingEvents)
+
+        // Create agent that loads the existing events
+        const agent = yield* makeMiniAgent(testAgentName, contextName)
+        const events = yield* agent.getEvents
+
+        // Should have 3 existing + 1 new SessionStartedEvent = 4 events
+        expect(events.length).toBe(4)
+
+        // The new SessionStartedEvent should have ID 3 (next after existing 0,1,2)
+        const sessionStarted = events.find((e) => e._tag === "SessionStartedEvent")
+        expect(sessionStarted).toBeDefined()
+        expect(sessionStarted!.id).toBe(`${contextName}:0003`)
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(TestLayer)
+      ))
+  })
+
   describe("executeTurn", () => {
     it.effect("emits AgentTurnFailedEvent when MiniAgentTurn fails", () =>
       Effect.gen(function*() {

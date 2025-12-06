@@ -278,9 +278,10 @@ export const makeMiniAgent = (
       yield* Fiber.interrupt(processingFiber)
     })
 
-    // Emit session started
+    // Emit session started (use current nextEventNumber to avoid collision with loaded events)
+    const state = yield* Ref.get(stateRef)
     const sessionStartEvent = new SessionStartedEvent({
-      id: makeEventId(contextName, 0),
+      id: makeEventId(contextName, state.reducedContext.nextEventNumber),
       timestamp: DateTime.unsafeNow(),
       agentName,
       parentEventId: Option.none(),
