@@ -4,17 +4,26 @@
  * The main domain service for working with Contexts.
  *
  * A Context is a named, ordered list of events representing a conversation.
- * The only supported operation is `addEvents`:
+ * The `addEvents` operation handles a single turn:
  * 1. Appends input events (typically UserMessage) to the context
  * 2. Triggers an LLM request with the full event history
  * 3. Streams back new events (TextDelta ephemeral, AssistantMessage persisted)
- * 4. Persists the new events to the context file
+ * 4. If codemode enabled, executes code blocks and streams codemode events
+ * 5. Persists new events as they complete
+ *
+ * The agent loop (iteration based on triggerAgentTurn) is handled by CLI.
  */
 import type { AiError, LanguageModel } from "@effect/ai"
 import type { Error as PlatformError, FileSystem } from "@effect/platform"
-import { Context, Effect, Layer, pipe, Schema, Stream } from "effect"
+import { Context, Effect, Layer, Option, pipe, Schema, Stream } from "effect"
+import { parseCodeBlock } from "./codemode.model.ts"
+import type { CodemodeStreamEvent } from "./codemode.service.ts"
+import { CodemodeService } from "./codemode.service.ts"
 import {
   AssistantMessageEvent,
+  CODEMODE_SYSTEM_PROMPT,
+  CodemodeResultEvent,
+  CodemodeValidationErrorEvent,
   type ContextEvent,
   DEFAULT_SYSTEM_PROMPT,
   type InputEvent,
@@ -22,37 +31,44 @@ import {
   type PersistedEvent as PersistedEventType,
   SetLlmConfigEvent,
   SystemPromptEvent,
-  TextDeltaEvent,
-  UserMessageEvent
+  TextDeltaEvent
 } from "./context.model.ts"
 import { ContextRepository } from "./context.repository.ts"
-import type { ContextLoadError, ContextSaveError } from "./errors.ts"
+import type { CodeStorageError, ContextLoadError, ContextSaveError } from "./errors.ts"
 import { CurrentLlmConfig, LlmConfig } from "./llm-config.ts"
 import { streamLLMResponse } from "./llm.ts"
 
-// =============================================================================
-// Context Service
-// =============================================================================
+/** Options for addEvents */
+export interface AddEventsOptions {
+  readonly codemode?: boolean
+}
+
+/** Union of context events and codemode streaming events */
+export type ContextOrCodemodeEvent = ContextEvent | CodemodeStreamEvent
 
 export class ContextService extends Context.Tag("@app/ContextService")<
   ContextService,
   {
     /**
-     * Add events to a context, triggering LLM processing if UserMessage present.
+     * Add events to a context, triggering LLM processing for a single turn.
      *
-     * This is the core operation on a Context:
+     * This handles one turn of the conversation:
      * 1. Loads existing events (or creates context with system prompt)
-     * 2. Appends the input events (UserMessage and/or FileAttachment)
-     * 3. Runs LLM with full history (only if UserMessage present)
+     * 2. Appends the input events (UserMessage, FileAttachment, CodemodeResult)
+     * 3. Runs LLM with full history (only if an event has triggerAgentTurn)
      * 4. Streams back TextDelta (ephemeral) and AssistantMessage (persisted)
-     * 5. Persists new events as they complete
+     * 5. If codemode enabled, executes code blocks and streams codemode events
+     * 6. Persists new events as they complete (including CodemodeResult)
+     *
+     * The caller (CLI) is responsible for iterating based on CodemodeResult.triggerAgentTurn.
      */
     readonly addEvents: (
       contextName: string,
-      inputEvents: ReadonlyArray<InputEvent>
+      inputEvents: ReadonlyArray<InputEvent>,
+      options?: AddEventsOptions
     ) => Stream.Stream<
-      ContextEvent,
-      AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
+      ContextOrCodemodeEvent,
+      AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
       LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
     >
 
@@ -67,6 +83,12 @@ export class ContextService extends Context.Tag("@app/ContextService")<
       contextName: string,
       event: PersistedEventType
     ) => Effect.Effect<void, ContextLoadError | ContextSaveError>
+
+    /** Save events to a context (used by CLI for persisting CodemodeResult) */
+    readonly save: (
+      contextName: string,
+      events: ReadonlyArray<PersistedEventType>
+    ) => Effect.Effect<void, ContextSaveError>
   }
 >() {
   /**
@@ -76,20 +98,177 @@ export class ContextService extends Context.Tag("@app/ContextService")<
     ContextService,
     Effect.gen(function*() {
       const repo = yield* ContextRepository
-
-      // Service methods wrapped with Effect.fn for call-site tracing
-      // See: https://www.effect.solutions/services-and-layers
+      const codemodeService = yield* CodemodeService
 
       const addEvents = (
         contextName: string,
-        inputEvents: ReadonlyArray<InputEvent>
+        inputEvents: ReadonlyArray<InputEvent>,
+        options?: AddEventsOptions
       ): Stream.Stream<
-        ContextEvent,
-        AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
+        ContextOrCodemodeEvent,
+        AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
         LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
       > => {
-        // Check if any UserMessage is present (triggers LLM)
-        const hasUserMessage = inputEvents.some(Schema.is(UserMessageEvent))
+        // Check if any input event should trigger an agent turn
+        const inputTriggers = inputEvents.some(
+          (e) => "triggerAgentTurn" in e && e.triggerAgentTurn === "after-current-turn"
+        )
+        const codemodeEnabled = options?.codemode ?? false
+
+        /** Check if the last event in context triggers a turn (for agent loop continuation) */
+        const contextTriggers = (events: ReadonlyArray<PersistedEventType>): boolean => {
+          if (events.length === 0) return false
+          const lastEvent = events[events.length - 1]
+          return lastEvent !== undefined &&
+            "triggerAgentTurn" in lastEvent &&
+            lastEvent.triggerAgentTurn === "after-current-turn"
+        }
+
+        /** Persist a single event to the context */
+        const persistEvent = (event: PersistedEventType) =>
+          Effect.gen(function*() {
+            const current = yield* repo.load(contextName)
+            yield* repo.save(contextName, [...current, event])
+          })
+
+        /** Check if stdout has non-whitespace output (determines agent loop continuation) */
+        const hasNonWhitespaceOutput = (stdout: string): boolean => stdout.trim().length > 0
+
+        /** Process codemode if enabled and assistant has code blocks */
+        const processCodemodeIfNeeded = (
+          assistantContent: string
+        ): Stream.Stream<
+          ContextOrCodemodeEvent,
+          PlatformError.PlatformError | CodeStorageError | ContextLoadError | ContextSaveError,
+          never
+        > => {
+          if (!codemodeEnabled) {
+            return Stream.empty
+          }
+
+          return Stream.unwrap(
+            Effect.gen(function*() {
+              // Check if there's a code block
+              const codeOpt = yield* parseCodeBlock(assistantContent)
+              if (Option.isNone(codeOpt)) {
+                // LLM didn't output codemode - emit validation error to trigger retry
+                yield* Effect.logWarning("LLM response missing codemode tags", {
+                  contentPreview: assistantContent.slice(0, 100)
+                })
+                const validationError = new CodemodeValidationErrorEvent({
+                  assistantContent
+                })
+                yield* persistEvent(validationError)
+                return Stream.make(validationError as ContextOrCodemodeEvent)
+              }
+
+              // Get the codemode stream
+              const streamOpt = yield* codemodeService.processResponse(contextName, assistantContent)
+              if (Option.isNone(streamOpt)) {
+                return Stream.empty
+              }
+
+              // Track stdout/stderr/exitCode for CodemodeResult
+              let stdout = ""
+              let stderr = ""
+              let exitCode = 0
+              let typecheckFailed = false
+              let typecheckErrors = ""
+
+              // Process codemode events and collect output
+              return pipe(
+                streamOpt.value,
+                Stream.tap((event) =>
+                  Effect.sync(() => {
+                    switch (event._tag) {
+                      case "ExecutionOutput":
+                        if (event.stream === "stdout") {
+                          stdout += event.data
+                        } else {
+                          stderr += event.data
+                        }
+                        break
+                      case "ExecutionComplete":
+                        exitCode = event.exitCode
+                        break
+                      case "TypecheckFail":
+                        typecheckFailed = true
+                        typecheckErrors = event.errors
+                        break
+                    }
+                  })
+                ),
+                // After codemode stream completes, emit CodemodeResult
+                Stream.concat(
+                  Stream.fromEffect(
+                    Effect.gen(function*() {
+                      if (typecheckFailed) {
+                        // Typecheck failed - create result with errors so LLM can retry
+                        const result = new CodemodeResultEvent({
+                          stdout: "",
+                          stderr: `TypeScript errors:\n${typecheckErrors}`,
+                          exitCode: 1,
+                          triggerAgentTurn: "after-current-turn" // Continue loop so LLM can fix
+                        })
+                        yield* persistEvent(result)
+                        return result as ContextOrCodemodeEvent
+                      }
+
+                      const result = new CodemodeResultEvent({
+                        stdout,
+                        stderr,
+                        exitCode,
+                        triggerAgentTurn: hasNonWhitespaceOutput(stdout) ? "after-current-turn" : "never"
+                      })
+                      yield* persistEvent(result)
+                      return result as ContextOrCodemodeEvent
+                    })
+                  )
+                )
+              )
+            })
+          )
+        }
+
+        /** Single turn: LLM response + codemode processing (no iteration) */
+        const singleTurnStream = (
+          currentEvents: ReadonlyArray<PersistedEventType>
+        ): Stream.Stream<
+          ContextOrCodemodeEvent,
+          AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError | CodeStorageError,
+          LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
+        > =>
+          pipe(
+            streamLLMResponse(currentEvents),
+            Stream.tap((event) =>
+              Schema.is(PersistedEvent)(event) ? persistEvent(event as PersistedEventType) : Effect.void
+            ),
+            // After AssistantMessage, process codemode if enabled
+            Stream.flatMap((event) =>
+              Schema.is(AssistantMessageEvent)(event)
+                ? pipe(
+                  Stream.make(event as ContextOrCodemodeEvent),
+                  Stream.concat(processCodemodeIfNeeded(event.content))
+                )
+                : Stream.make(event as ContextOrCodemodeEvent)
+            )
+          )
+
+        /** Replace the system prompt with codemode prompt if codemode is enabled */
+        const ensureCodemodePrompt = (events: Array<PersistedEventType>): Array<PersistedEventType> => {
+          if (!codemodeEnabled) return events
+          if (events.length === 0) return events
+
+          // If first event is a SystemPrompt, replace it with codemode prompt
+          const first = events[0]
+          if (first && Schema.is(SystemPromptEvent)(first)) {
+            return [
+              new SystemPromptEvent({ content: CODEMODE_SYSTEM_PROMPT }),
+              ...events.slice(1)
+            ]
+          }
+          return events
+        }
 
         return pipe(
           // Load or create context, append input events
@@ -110,25 +289,23 @@ export class ContextService extends Context.Tag("@app/ContextService")<
 
             const newPersistedInputs = inputEvents.filter(Schema.is(PersistedEvent)) as Array<PersistedEventType>
 
+            // Apply codemode system prompt if needed
+            const eventsWithPrompt = ensureCodemodePrompt(baseEvents)
+
             if (isNewContext || newPersistedInputs.length > 0) {
-              const allEvents = [...baseEvents, ...newPersistedInputs]
+              const allEvents = [...eventsWithPrompt, ...newPersistedInputs]
               yield* repo.save(contextName, allEvents)
               return allEvents
             }
-            return baseEvents
+            return eventsWithPrompt
           })(),
-          // Only stream LLM response if there's a UserMessage
-          Effect.andThen((events) => hasUserMessage ? streamLLMResponse(events) : Stream.empty),
-          Stream.unwrap,
-          // Persist events as they complete (only persisted ones)
-          Stream.tap((event) =>
-            Schema.is(PersistedEvent)(event)
-              ? Effect.gen(function*() {
-                const current = yield* repo.load(contextName)
-                yield* repo.save(contextName, [...current, event])
-              })
-              : Effect.void
-          )
+          // Only stream LLM response if an event triggers agent turn
+          // This can be from input events OR from the last event in context (for agent loop continuation)
+          Effect.andThen((events) => {
+            const shouldTrigger = inputTriggers || contextTriggers(events)
+            return shouldTrigger ? singleTurnStream(events) : Stream.empty
+          }),
+          Stream.unwrap
         )
       }
 
@@ -151,18 +328,24 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         }
       )
 
+      const save = Effect.fn("ContextService.save")(
+        function*(contextName: string, events: ReadonlyArray<PersistedEventType>) {
+          yield* repo.save(contextName, [...events])
+        }
+      )
+
       return ContextService.of({
         addEvents,
         load,
         list,
-        persistEvent
+        persistEvent,
+        save
       })
     })
   )
 
   /**
    * Test layer with mock LLM responses for unit tests.
-   * See: https://www.effect.solutions/testing
    */
   static readonly testLayer = Layer.sync(ContextService, () => {
     // In-memory store for test contexts
@@ -179,8 +362,9 @@ export class ContextService extends Context.Tag("@app/ContextService")<
     return ContextService.of({
       addEvents: (
         contextName: string,
-        inputEvents: ReadonlyArray<InputEvent>
-      ): Stream.Stream<ContextEvent, never, never> => {
+        inputEvents: ReadonlyArray<InputEvent>,
+        _options?: AddEventsOptions
+      ): Stream.Stream<ContextOrCodemodeEvent, never, never> => {
         // Load or create context
         let events = store.get(contextName)
         if (!events) {
@@ -198,27 +382,30 @@ export class ContextService extends Context.Tag("@app/ContextService")<
           store.set(contextName, events)
         }
 
-        // Check if any UserMessage is present
-        const hasUserMessage = inputEvents.some(Schema.is(UserMessageEvent))
+        // Check if any event should trigger an agent turn
+        const shouldTriggerAgent = inputEvents.some(
+          (e) => "triggerAgentTurn" in e && e.triggerAgentTurn === "after-current-turn"
+        )
 
-        // Only generate mock LLM response if there's a UserMessage
-        if (!hasUserMessage) {
+        // Only generate mock LLM response if an event triggers agent turn
+        if (!shouldTriggerAgent) {
           return Stream.empty
         }
 
-        // Mock LLM response stream
+        // Mock LLM response stream (codemode not implemented in test layer)
         const mockResponse = "This is a mock response for testing."
         const assistantEvent = new AssistantMessageEvent({ content: mockResponse })
 
-        return Stream.make(
-          new TextDeltaEvent({ delta: mockResponse }),
-          assistantEvent
-        ).pipe(
+        return pipe(
+          Stream.make(
+            new TextDeltaEvent({ delta: mockResponse }) as ContextOrCodemodeEvent,
+            assistantEvent as ContextOrCodemodeEvent
+          ),
           Stream.tap((event) =>
             Schema.is(PersistedEvent)(event)
               ? Effect.sync(() => {
                 const current = store.get(contextName) ?? []
-                store.set(contextName, [...current, event])
+                store.set(contextName, [...current, event as PersistedEventType])
               })
               : Effect.void
           )
@@ -233,6 +420,11 @@ export class ContextService extends Context.Tag("@app/ContextService")<
         Effect.sync(() => {
           const current = store.get(contextName) ?? []
           store.set(contextName, [...current, event])
+        }),
+
+      save: (contextName: string, events: ReadonlyArray<PersistedEventType>) =>
+        Effect.sync(() => {
+          store.set(contextName, [...events])
         })
     })
   })

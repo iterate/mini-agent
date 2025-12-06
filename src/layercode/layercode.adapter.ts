@@ -18,7 +18,8 @@ import { LanguageModel } from "@effect/ai"
 import { FileSystem, HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Effect, Option, Schema, Stream } from "effect"
 import { AppConfig } from "../config.ts"
-import { AssistantMessageEvent, type ContextEvent, TextDeltaEvent, UserMessageEvent } from "../context.model.ts"
+import { AssistantMessageEvent, TextDeltaEvent, UserMessageEvent } from "../context.model.ts"
+import type { ContextOrCodemodeEvent } from "../context.service.ts"
 import { CurrentLlmConfig } from "../llm-config.ts"
 import { AgentServer } from "../server.service.ts"
 import { maybeVerifySignature } from "./signature.ts"
@@ -86,7 +87,7 @@ const encodeLayerCodeSSE = (response: LayerCodeResponse): Uint8Array =>
 
 /** Convert our ContextEvent to LayerCode response */
 const toLayerCodeResponse = (
-  event: ContextEvent,
+  event: ContextOrCodemodeEvent,
   turnId: string
 ): LayerCodeResponse | null => {
   if (Schema.is(TextDeltaEvent)(event)) {
@@ -166,7 +167,7 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
         // Convert to our format
         const userMessage = new UserMessageEvent({ content: webhookEvent.text })
 
-        // Stream SSE events directly - provide services to remove context requirements
+        // Stream SSE events - provide services to remove context requirements
         const sseStream = agentServer.handleRequest(contextName, [userMessage]).pipe(
           Stream.map((event) => toLayerCodeResponse(event, turnId)),
           Stream.filter((r): r is LayerCodeResponse => r !== null),

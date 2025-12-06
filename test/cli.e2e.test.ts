@@ -112,11 +112,14 @@ describe("CLI", () => {
 
       expect(result.stdout.length).toBeGreaterThan(0)
 
-      // Context file should exist with random name (chat-xxxxx pattern)
+      // Context directory should exist with random name (chat-xxxxx pattern)
       const contextsDir = path.join(testDir, ".mini-agent", "contexts")
-      const files = fs.readdirSync(contextsDir)
-      expect(files.length).toBe(1)
-      expect(files[0]).toMatch(/^chat-[a-z0-9]{5}\.yaml$/)
+      const dirs = fs.readdirSync(contextsDir)
+      expect(dirs.length).toBe(1)
+      expect(dirs[0]).toMatch(/^chat-[a-z0-9]{5}$/)
+      // Verify it contains events.yaml
+      const eventsPath = path.join(contextsDir, dirs[0]!, "events.yaml")
+      expect(fs.existsSync(eventsPath)).toBe(true)
     })
   })
 
@@ -302,8 +305,8 @@ describe("CLI", () => {
         runCli(["chat", "-n", TEST_CONTEXT, "-m", "Hello"], { cwd: testDir, env: llmEnv })
       )
 
-      // Context file should exist in testDir/.mini-agent/contexts/
-      const contextPath = path.join(testDir, ".mini-agent", "contexts", `${TEST_CONTEXT}.yaml`)
+      // Context directory should exist with events.yaml inside
+      const contextPath = path.join(testDir, ".mini-agent", "contexts", TEST_CONTEXT, "events.yaml")
       expect(fs.existsSync(contextPath)).toBe(true)
     })
 

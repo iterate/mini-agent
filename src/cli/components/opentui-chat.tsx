@@ -15,8 +15,9 @@ import { Option, Schema } from "effect"
 import { createCliRenderer, TextAttributes } from "@opentui/core"
 import { createRoot } from "@opentui/react/renderer"
 import { memo, useCallback, useMemo, useReducer, useRef, useState } from "react"
-import type { ContextEvent, PersistedEvent } from "../../context.model.ts"
+import type { PersistedEvent } from "../../context.model.ts"
 import { AttachmentSource } from "../../context.model.ts"
+import type { ContextOrCodemodeEvent } from "../../context.service.ts"
 
 /** User's message in the conversation */
 class UserMessageItem extends Schema.TaggedClass<UserMessageItem>()("UserMessageItem", {
@@ -54,6 +55,21 @@ class FileAttachmentItem extends Schema.TaggedClass<FileAttachmentItem>()("FileA
   isHistory: Schema.Boolean
 }) {}
 
+/** Codemode execution result */
+class CodemodeResultItem extends Schema.TaggedClass<CodemodeResultItem>()("CodemodeResultItem", {
+  id: Schema.String,
+  stdout: Schema.String,
+  stderr: Schema.String,
+  exitCode: Schema.Number,
+  isHistory: Schema.Boolean
+}) {}
+
+/** Codemode validation error - LLM didn't output codemode */
+class CodemodeValidationErrorItem extends Schema.TaggedClass<CodemodeValidationErrorItem>()("CodemodeValidationErrorItem", {
+  id: Schema.String,
+  isHistory: Schema.Boolean
+}) {}
+
 /** Fallback for unknown event types - displays muted warning */
 class UnknownEventItem extends Schema.TaggedClass<UnknownEventItem>()("UnknownEventItem", {
   id: Schema.String,
@@ -67,11 +83,13 @@ const FeedItem = Schema.Union(
   AssistantMessageItem,
   LLMInterruptionItem,
   FileAttachmentItem,
+  CodemodeResultItem,
+  CodemodeValidationErrorItem,
   UnknownEventItem
 )
 type FeedItem = typeof FeedItem.Type
 
-type FeedAction = { event: ContextEvent; isHistory: boolean }
+type FeedAction = { event: ContextOrCodemodeEvent; isHistory: boolean }
 
 /**
  * Folds a context event into accumulated feed items.
@@ -141,8 +159,39 @@ function feedReducer(items: FeedItem[], action: FeedAction): FeedItem[] {
         })
       ]
 
+    case "CodemodeResult":
+      return [
+        ...items,
+        new CodemodeResultItem({
+          id: crypto.randomUUID(),
+          stdout: event.stdout,
+          stderr: event.stderr,
+          exitCode: event.exitCode,
+          isHistory
+        })
+      ]
+
+    case "CodemodeValidationError":
+      return [
+        ...items,
+        new CodemodeValidationErrorItem({
+          id: crypto.randomUUID(),
+          isHistory
+        })
+      ]
+
     case "SystemPrompt":
     case "SetLlmConfig":
+      return items
+
+    // Codemode streaming events - ephemeral, don't display in feed
+    case "CodeBlock":
+    case "TypecheckStart":
+    case "TypecheckPass":
+    case "TypecheckFail":
+    case "ExecutionStart":
+    case "ExecutionOutput":
+    case "ExecutionComplete":
       return items
 
     default:
@@ -256,6 +305,36 @@ const FileAttachmentRenderer = memo<{ item: FileAttachmentItem }>(({ item }) => 
   )
 })
 
+const CodemodeResultRenderer = memo<{ item: CodemodeResultItem }>(({ item }) => {
+  const labelColor = item.isHistory ? colors.dim : colors.yellow
+  const textColor = item.isHistory ? colors.dim : colors.white
+  const hasOutput = item.stdout || item.stderr
+  const isError = item.exitCode !== 0
+
+  return (
+    <box flexDirection="column" marginBottom={1}>
+      <text fg={labelColor}>
+        {isError ? "⚠ Code execution failed" : "✓ Code executed"} (exit: {item.exitCode})
+      </text>
+      {hasOutput && (
+        <box flexDirection="column" marginLeft={2}>
+          {item.stdout && <text fg={textColor}>{item.stdout}</text>}
+          {item.stderr && <text fg={colors.red}>{item.stderr}</text>}
+        </box>
+      )}
+    </box>
+  )
+})
+
+const CodemodeValidationErrorRenderer = memo<{ item: CodemodeValidationErrorItem }>(({ item }) => {
+  const textColor = item.isHistory ? colors.dim : colors.red
+  return (
+    <box marginBottom={1}>
+      <text fg={textColor}>⚠ LLM response missing codemode tags. Retrying...</text>
+    </box>
+  )
+})
+
 const UnknownEventRenderer = memo<{ item: UnknownEventItem }>(({ item }) => {
   return (
     <box marginBottom={1}>
@@ -276,6 +355,10 @@ const FeedItemRenderer = memo<{ item: FeedItem }>(({ item }) => {
       return <LLMInterruptionRenderer item={item} />
     case "FileAttachmentItem":
       return <FileAttachmentRenderer item={item} />
+    case "CodemodeResultItem":
+      return <CodemodeResultRenderer item={item} />
+    case "CodemodeValidationErrorItem":
+      return <CodemodeValidationErrorRenderer item={item} />
     case "UnknownEventItem":
       return <UnknownEventRenderer item={item} />
   }
@@ -310,7 +393,7 @@ export interface ChatCallbacks {
 }
 
 export interface ChatController {
-  addEvent: (event: ContextEvent) => void
+  addEvent: (event: ContextOrCodemodeEvent) => void
   cleanup: () => void
 }
 
@@ -353,7 +436,7 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
   // Set up controller synchronously during first render
   if (!controllerRef.current) {
     controllerRef.current = {
-      addEvent(event: ContextEvent) {
+      addEvent(event: ContextOrCodemodeEvent) {
         dispatchRef.current({ event, isHistory: false })
       },
       cleanup() {
@@ -462,7 +545,7 @@ export async function runOpenTUIChat(
   renderer.start()
 
   return {
-    addEvent(event: ContextEvent) {
+    addEvent(event: ContextOrCodemodeEvent) {
       controllerRef.current?.addEvent(event)
     },
     cleanup() {
