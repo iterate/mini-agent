@@ -44,6 +44,14 @@ export const BunWorkerExecutorLive = Layer.succeed(
     ) =>
       Effect.async<ExecutionResult<TResult>, ExecutionError | TimeoutError>((resume) => {
         const start = performance.now()
+        let completed = false
+
+        // Safe resume that prevents double-calling
+        const safeResume = (effect: Effect.Effect<ExecutionResult<TResult>, ExecutionError | TimeoutError>) => {
+          if (completed) return
+          completed = true
+          resume(effect)
+        }
 
         // Worker code that executes user code and proxies callbacks
         const workerCode = `
@@ -123,7 +131,7 @@ export const BunWorkerExecutorLive = Layer.succeed(
         const timeoutId = setTimeout(() => {
           worker.terminate()
           URL.revokeObjectURL(url)
-          resume(Effect.fail(new TimeoutError({ timeoutMs: config.timeoutMs })))
+          safeResume(Effect.fail(new TimeoutError({ timeoutMs: config.timeoutMs })))
         }, config.timeoutMs)
 
         // Message handling
@@ -163,7 +171,7 @@ export const BunWorkerExecutorLive = Layer.succeed(
               clearTimeout(timeoutId)
               worker.terminate()
               URL.revokeObjectURL(url)
-              resume(
+              safeResume(
                 Effect.succeed({
                   value: payload.value as TResult,
                   durationMs: performance.now() - start,
@@ -177,7 +185,7 @@ export const BunWorkerExecutorLive = Layer.succeed(
               clearTimeout(timeoutId)
               worker.terminate()
               URL.revokeObjectURL(url)
-              resume(
+              safeResume(
                 Effect.fail(
                   new ExecutionError({
                     message: payload.message || "Unknown error",
@@ -194,7 +202,7 @@ export const BunWorkerExecutorLive = Layer.succeed(
           clearTimeout(timeoutId)
           worker.terminate()
           URL.revokeObjectURL(url)
-          resume(
+          safeResume(
             Effect.fail(
               new ExecutionError({
                 message: error.message || "Worker error",
@@ -210,6 +218,14 @@ export const BunWorkerExecutorLive = Layer.succeed(
           javascript,
           data: parentContext.data,
           callbackNames
+        })
+
+        // Return cleanup function for Effect interruption
+        return Effect.sync(() => {
+          completed = true
+          clearTimeout(timeoutId)
+          worker.terminate()
+          URL.revokeObjectURL(url)
         })
       })
   })

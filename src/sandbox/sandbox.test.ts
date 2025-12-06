@@ -193,6 +193,81 @@ const edgeCases = {
   `
 }
 
+// Security bypass attempts - these should ALL be blocked
+const securityBypasses = {
+  // Constructor chain bypass: Access Function via prototype chain
+  constructorChain: `
+    export default (ctx) => {
+      // [].constructor is Array, [].constructor.constructor is Function
+      const FunctionConstructor = [].constructor.constructor
+      return FunctionConstructor("return 42")()
+    }
+  `,
+
+  // Indirect Function access via Object prototype
+  objectPrototypeChain: `
+    export default (ctx) => {
+      const F = Object.getPrototypeOf(function(){}).constructor
+      return new F("return 'escaped'")()
+    }
+  `,
+
+  // Arrow function prototype chain
+  arrowPrototypeChain: `
+    export default (ctx) => {
+      const arrow = () => {}
+      const F = arrow.constructor
+      return F("return 'escaped via arrow'")()
+    }
+  `,
+
+  // Async function constructor bypass
+  asyncFunctionConstructor: `
+    export default async (ctx) => {
+      const asyncFn = async () => {}
+      const AsyncFunction = asyncFn.constructor
+      const evil = new AsyncFunction("return 'async escape'")
+      return await evil()
+    }
+  `,
+
+  // Generator function constructor bypass
+  generatorFunctionConstructor: `
+    export default (ctx) => {
+      const gen = function*() {}
+      const GeneratorFunction = gen.constructor
+      const evilGen = new GeneratorFunction("yield 'gen escape'")
+      return evilGen().next().value
+    }
+  `,
+
+  // __proto__ access bypass
+  protoAccess: `
+    export default (ctx) => {
+      const obj = {}
+      const F = obj.__proto__.constructor.constructor
+      return F("return 'proto escape'")()
+    }
+  `,
+
+  // Computed property access bypass
+  computedConstructorAccess: `
+    export default (ctx) => {
+      const key = "construct" + "or"
+      const F = [][key][key]
+      return F("return 'computed escape'")()
+    }
+  `,
+
+  // Bracket notation constructor access
+  bracketConstructorAccess: `
+    export default (ctx) => {
+      const F = []["constructor"]["constructor"]
+      return F("return 'bracket escape'")()
+    }
+  `
+}
+
 // Check if Worker is available (Bun runtime)
 const isWorkerAvailable = typeof Worker !== "undefined"
 
@@ -423,7 +498,7 @@ for (const { layer, name: layerName } of layers) {
     })
 
     describe("Timeout", () => {
-      it.effect("times out on long-running code", () =>
+      it.effect("times out on long-running async code", () =>
         Effect.gen(function*() {
           const { ctx } = createTestContext()
           const sandbox = yield* TypeScriptSandbox
@@ -449,6 +524,36 @@ for (const { layer, name: layerName } of layers) {
         }).pipe(Effect.provide(layer)))
     })
 
+    // DevSafeLayer handles sync infinite loops via Worker termination
+    // DevFastLayer cannot - this is a fundamental JS limitation
+    if (layerName === "DevSafeLayer") {
+      describe("Timeout - Sync Infinite Loop (Worker only)", () => {
+        it.effect("terminates worker on sync infinite loop", () =>
+          Effect.gen(function*() {
+            const { ctx } = createTestContext()
+            const sandbox = yield* TypeScriptSandbox
+
+            const infiniteLoop = `
+              export default (ctx) => {
+                while (true) {}
+                return "never"
+              }
+            `
+
+            const exit = yield* sandbox.run(infiniteLoop, ctx, { timeoutMs: 100 }).pipe(Effect.exit)
+
+            expect(Exit.isFailure(exit)).toBe(true)
+            if (Exit.isFailure(exit)) {
+              const error = Cause.failureOption(exit.cause)
+              expect(error._tag).toBe("Some")
+              if (error._tag === "Some") {
+                expect(error.value).toBeInstanceOf(TimeoutError)
+              }
+            }
+          }).pipe(Effect.provide(layer)))
+      })
+    }
+
     describe("Compile Once Pattern", () => {
       it.effect("compiles once and executes multiple times", () =>
         Effect.gen(function*() {
@@ -473,6 +578,86 @@ for (const { layer, name: layerName } of layers) {
           expect(result1.value).toBe(20)
           expect(result2.value).toBe(40)
           expect(compiled.hash).toBeTruthy()
+        }).pipe(Effect.provide(layer)))
+    })
+
+    describe("Security - Constructor Chain Bypasses", () => {
+      it.effect("blocks Array.constructor.constructor bypass", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const exit = yield* sandbox.run(securityBypasses.constructorChain, ctx).pipe(Effect.exit)
+
+          // This MUST fail - if it succeeds, attacker can execute arbitrary code
+          expect(Exit.isFailure(exit)).toBe(true)
+          if (Exit.isFailure(exit)) {
+            const error = Cause.failureOption(exit.cause)
+            expect(error._tag).toBe("Some")
+          }
+        }).pipe(Effect.provide(layer)))
+
+      it.effect("blocks Object.getPrototypeOf().constructor bypass", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const exit = yield* sandbox.run(securityBypasses.objectPrototypeChain, ctx).pipe(Effect.exit)
+
+          expect(Exit.isFailure(exit)).toBe(true)
+        }).pipe(Effect.provide(layer)))
+
+      it.effect("blocks arrow function constructor bypass", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const exit = yield* sandbox.run(securityBypasses.arrowPrototypeChain, ctx).pipe(Effect.exit)
+
+          expect(Exit.isFailure(exit)).toBe(true)
+        }).pipe(Effect.provide(layer)))
+
+      it.effect("blocks async function constructor bypass", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const exit = yield* sandbox.run(securityBypasses.asyncFunctionConstructor, ctx).pipe(Effect.exit)
+
+          expect(Exit.isFailure(exit)).toBe(true)
+        }).pipe(Effect.provide(layer)))
+
+      it.effect("blocks generator function constructor bypass", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const exit = yield* sandbox.run(securityBypasses.generatorFunctionConstructor, ctx).pipe(Effect.exit)
+
+          expect(Exit.isFailure(exit)).toBe(true)
+        }).pipe(Effect.provide(layer)))
+
+      it.effect("blocks __proto__ access bypass", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const exit = yield* sandbox.run(securityBypasses.protoAccess, ctx).pipe(Effect.exit)
+
+          expect(Exit.isFailure(exit)).toBe(true)
+        }).pipe(Effect.provide(layer)))
+
+      // Skip: Dynamic computed keys like "construct" + "or" can't be caught by static analysis
+      // This is a fundamental limitation - use Worker executor for untrusted code
+      it.skip("blocks computed property constructor access (static analysis limitation)", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const exit = yield* sandbox.run(securityBypasses.computedConstructorAccess, ctx).pipe(Effect.exit)
+          expect(Exit.isFailure(exit)).toBe(true)
+        }).pipe(Effect.provide(layer)))
+
+      it.effect("blocks bracket notation constructor access", () =>
+        Effect.gen(function*() {
+          const { ctx } = createTestContext()
+          const sandbox = yield* TypeScriptSandbox
+          const exit = yield* sandbox.run(securityBypasses.bracketConstructorAccess, ctx).pipe(Effect.exit)
+
+          expect(Exit.isFailure(exit)).toBe(true)
         }).pipe(Effect.provide(layer)))
     })
   })

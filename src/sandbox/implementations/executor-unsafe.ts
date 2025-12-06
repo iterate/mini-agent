@@ -25,6 +25,16 @@ export const UnsafeExecutorLive = Layer.succeed(
     ) =>
       Effect.async<ExecutionResult<TResult>, ExecutionError | TimeoutError>((resume) => {
         const start = performance.now()
+        let completed = false
+        let timeoutId: ReturnType<typeof setTimeout> | undefined
+
+        // Safe resume that prevents double-calling
+        const safeResume = (effect: Effect.Effect<ExecutionResult<TResult>, ExecutionError | TimeoutError>) => {
+          if (completed) return
+          completed = true
+          if (timeoutId) clearTimeout(timeoutId)
+          resume(effect)
+        }
 
         // Wrap user code to extract and call the default export
         const wrappedCode = `
@@ -42,11 +52,8 @@ export const UnsafeExecutorLive = Layer.succeed(
           })
         `
 
-        let timeoutId: ReturnType<typeof setTimeout> | undefined
-
         try {
           // Create the function (this is essentially eval)
-
           const fn = eval(wrappedCode) as (ctx: ParentContext<TCallbacks, TData>) => unknown
 
           // Set up timeout
@@ -65,8 +72,7 @@ export const UnsafeExecutorLive = Layer.succeed(
             timeoutPromise
           ])
             .then((value) => {
-              if (timeoutId) clearTimeout(timeoutId)
-              resume(
+              safeResume(
                 Effect.succeed({
                   value: value as TResult,
                   durationMs: performance.now() - start,
@@ -75,12 +81,11 @@ export const UnsafeExecutorLive = Layer.succeed(
               )
             })
             .catch((err) => {
-              if (timeoutId) clearTimeout(timeoutId)
               if (err instanceof TimeoutError) {
-                resume(Effect.fail(err))
+                safeResume(Effect.fail(err))
               } else {
                 const e = err as Error
-                resume(
+                safeResume(
                   Effect.fail(
                     new ExecutionError({
                       message: e.message,
@@ -91,9 +96,8 @@ export const UnsafeExecutorLive = Layer.succeed(
               }
             })
         } catch (e) {
-          if (timeoutId) clearTimeout(timeoutId)
           const err = e as Error
-          resume(
+          safeResume(
             Effect.fail(
               new ExecutionError({
                 message: err.message,
@@ -102,6 +106,12 @@ export const UnsafeExecutorLive = Layer.succeed(
             )
           )
         }
+
+        // Return cleanup function for Effect interruption
+        return Effect.sync(() => {
+          completed = true
+          if (timeoutId) clearTimeout(timeoutId)
+        })
       })
   })
 )
