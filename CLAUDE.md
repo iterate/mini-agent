@@ -22,7 +22,7 @@ See README.md for context
 - import using .ts extension; no .js
 - Use comments sparingly to explain any additional context and "why" that isn't evident from the code. Don't redundantly describe the code below.
 - No banner comments (e.g. `// ===== Section Name =====`). Use whitespace and JSDoc to organize code.
-- DO NOT use nodejs imports like node:fs etc - you must use @effect/platform/FileSystem and @effect/platform/Path instead (read source if you need to grok it)
+- DO NOT use nodejs imports like node:fs etc - you must use @effect/platform/FileSystem and @effect/platform/Path instead (read source if you need to grok it). Exception: test fixtures in `test/fixtures.ts` may use node:* imports for test infrastructure.
 - Acronyms in identifiers use PascalCase, not ALL_CAPS: `LlmConfig` not `LLMConfig`, `HttpClient` not `HTTPClient`
 
 ## Scripts

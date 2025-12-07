@@ -9,8 +9,6 @@
 
 // Domain types and events
 export {
-  // Config types
-  AgentConfig,
   // Error types
   AgentError,
   // Branded types
@@ -22,18 +20,18 @@ export {
   AgentTurnInterruptedEvent,
   AgentTurnNumber,
   AgentTurnStartedEvent,
+  ApiFormat,
   AssistantMessageEvent,
   ContextEvent,
   ContextLoadError,
   ContextName,
   ContextSaveError,
-  defaultAgentConfig,
   // Utilities
-  EventBuilder,
   EventId,
   InterruptReason,
-  LlmProviderConfig,
-  LlmProviderId,
+  // Config types
+  LlmConfig,
+  makeBaseEventFields,
   makeEventId,
   // Service types
   type MiniAgent,
@@ -45,7 +43,6 @@ export {
   SessionEndedEvent,
   SessionStartedEvent,
   SetLlmConfigEvent,
-  SetTimeoutEvent,
   SystemPromptEvent,
   TextDeltaEvent,
   UserMessageEvent

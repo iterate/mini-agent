@@ -45,13 +45,13 @@ const fetchWithRetry = async (
 const startServer = async (
   cwd: string,
   llmEnv: LlmEnv,
-  subcommand: "serve" | "layercode serve" = "serve",
+  subcommand: "server" | "layercode serve" = "server",
   maxRetries = 3
 ): Promise<{ port: number; cleanup: () => Promise<void> }> => {
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const port = getRandomPort()
-    const args = subcommand === "serve"
-      ? [CLI_PATH, "--cwd", cwd, "serve", "--port", String(port)]
+    const args = subcommand === "server"
+      ? [CLI_PATH, "--cwd", cwd, "server", "--port", String(port)]
       : [CLI_PATH, "--cwd", cwd, "layercode", "serve", "--port", String(port), "--no-tunnel"]
 
     const proc = spawn("bun", args, {
@@ -112,10 +112,10 @@ const parseSSE = async (response: Response): Promise<Array<string>> => {
 }
 
 describe("HTTP Server", () => {
-  describe("serve command", () => {
+  describe("server command", () => {
     test("shows help with --help", async () => {
       const result = await Effect.runPromise(
-        Command.make("bun", CLI_PATH, "serve", "--help").pipe(
+        Command.make("bun", CLI_PATH, "server", "--help").pipe(
           Command.string,
           Effect.provide(BunContext.layer)
         )
@@ -144,10 +144,10 @@ describe("HTTP Server", () => {
       const { cleanup, port } = await startServer(testDir, llmEnv)
 
       try {
-        const response = await fetchWithRetry(`http://localhost:${port}/context/test-context`, {
+        const response = await fetchWithRetry(`http://localhost:${port}/agent/test-context`, {
           method: "POST",
           headers: { "Content-Type": "application/x-ndjson" },
-          body: "{\"_tag\":\"UserMessage\",\"content\":\"Say exactly: HELLO_SERVER\"}"
+          body: "{\"_tag\":\"UserMessageEvent\",\"content\":\"Say exactly: HELLO_SERVER\"}"
         })
 
         expect(response.status).toBe(200)
@@ -156,19 +156,19 @@ describe("HTTP Server", () => {
         const events = await parseSSE(response)
         expect(events.length).toBeGreaterThan(0)
 
-        // Should have AssistantMessage event
-        const hasAssistant = events.some((e) => e.includes("\"AssistantMessage\""))
+        // Should have AssistantMessageEvent event
+        const hasAssistant = events.some((e) => e.includes("\"AssistantMessageEvent\""))
         expect(hasAssistant).toBe(true)
       } finally {
         await cleanup()
       }
     })
 
-    test("context endpoint returns 400 for empty body", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
+    test("agent endpoint returns 400 for empty body", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
       const { cleanup, port } = await startServer(testDir, llmEnv)
 
       try {
-        const response = await fetchWithRetry(`http://localhost:${port}/context/test-context`, {
+        const response = await fetchWithRetry(`http://localhost:${port}/agent/test-context`, {
           method: "POST",
           headers: { "Content-Type": "application/x-ndjson" },
           body: ""

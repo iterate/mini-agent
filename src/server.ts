@@ -1,7 +1,7 @@
 /**
- * HTTP Server entry point for new architecture.
+ * HTTP Server entry point.
  *
- * Usage: bun run src/new-architecture/server.ts [--port PORT]
+ * Usage: bun run src/server.ts [--port PORT]
  */
 
 import { AnthropicClient, AnthropicLanguageModel } from "@effect/ai-anthropic"
@@ -10,15 +10,15 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient, HttpServer } from "@effect/platform"
 import { BunContext, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { ConfigProvider, Effect, Layer, LogLevel, Option } from "effect"
-import { AppConfig, type MiniAgentConfig } from "../config.ts"
-import { CurrentLlmConfig, getApiKey, type LlmConfig, resolveLlmConfig } from "../llm-config.ts"
-import { createLoggingLayer } from "../logging.ts"
-import { OpenAiChatClient, OpenAiChatLanguageModel } from "../openai-chat-completions-client.ts"
 import { AgentRegistry } from "./agent-registry.ts"
+import { AppConfig, type MiniAgentConfig } from "./config.ts"
 import { EventReducer } from "./event-reducer.ts"
 import { EventStoreFileSystem } from "./event-store-fs.ts"
-import { makeRouterV2 } from "./http.ts"
+import { makeRouter } from "./http-routes.ts"
+import { CurrentLlmConfig, getApiKey, type LlmConfig, resolveLlmConfig } from "./llm-config.ts"
 import { LlmTurnLive } from "./llm-turn.ts"
+import { createLoggingLayer } from "./logging.ts"
+import { OpenAiChatClient, OpenAiChatLanguageModel } from "./openai-chat-completions-client.ts"
 
 const makeLanguageModelLayer = (llmConfig: LlmConfig) => {
   const apiKey = getApiKey(llmConfig)
@@ -74,6 +74,7 @@ const port = (() => {
 // Default config for server
 const defaultConfig: MiniAgentConfig = {
   llm: "openai:gpt-4o-mini",
+  systemPrompt: "You are a helpful assistant.",
   dataStorageDir: ".mini-agent",
   configFile: "mini-agent.config.yaml",
   cwd: Option.none(),
@@ -107,7 +108,7 @@ const program = Effect.gen(function*() {
   )
 
   // HTTP server layer
-  const serverLayer = HttpServer.serve(makeRouterV2).pipe(
+  const serverLayer = HttpServer.serve(makeRouter).pipe(
     Layer.provide(BunHttpServer.layer({ port })),
     Layer.provide(serviceLayer)
   )

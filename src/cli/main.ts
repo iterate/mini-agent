@@ -7,6 +7,7 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
+import { AgentRegistry } from "../agent-registry.ts"
 import {
   AppConfig,
   extractConfigPath,
@@ -15,9 +16,10 @@ import {
   type MiniAgentConfig as MiniAgentConfigType,
   resolveBaseDir
 } from "../config.ts"
-import { ContextRepository } from "../context.repository.ts"
-import { ContextService } from "../context.service.ts"
+import { EventReducer } from "../event-reducer.ts"
+import { EventStoreFileSystem } from "../event-store-fs.ts"
 import { CurrentLlmConfig, getApiKey, type LlmConfig, resolveLlmConfig } from "../llm-config.ts"
+import { LlmTurnLive } from "../llm-turn.ts"
 import { createLoggingLayer } from "../logging.ts"
 import { OpenAiChatClient, OpenAiChatLanguageModel } from "../openai-chat-completions-client.ts"
 import { createTracingLayer } from "../tracing.ts"
@@ -97,10 +99,13 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
         const languageModelLayer = makeLanguageModelLayer(llmConfig)
         const tracingLayer = createTracingLayer("mini-agent")
 
-        return ContextService.layer.pipe(
-          Layer.provideMerge(ContextRepository.layer),
+        // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
+        return AgentRegistry.Default.pipe(
+          Layer.provideMerge(LlmTurnLive),
           Layer.provideMerge(languageModelLayer),
           Layer.provideMerge(llmConfigLayer),
+          Layer.provideMerge(EventStoreFileSystem),
+          Layer.provideMerge(EventReducer.Default),
           Layer.provideMerge(tracingLayer),
           Layer.provideMerge(appConfigLayer),
           Layer.provideMerge(configProviderLayer),

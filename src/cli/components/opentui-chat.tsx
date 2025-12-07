@@ -7,16 +7,15 @@
  * - Feed component renders feedItems (pure render, knows nothing about events)
  *
  * Key reducer transitions:
- * - TextDelta: create/append to InProgressAssistant
- * - AssistantMessage: remove InProgressAssistant, add AssistantMessage
- * - LLMRequestInterrupted: remove InProgressAssistant, add LLMInterruption
+ * - TextDeltaEvent: create/append to InProgressAssistant
+ * - AssistantMessageEvent: remove InProgressAssistant, add AssistantMessage
+ * - AgentTurnInterruptedEvent: remove InProgressAssistant, add LLMInterruption
  */
 import { Option, Schema } from "effect"
 import { createCliRenderer, TextAttributes } from "@opentui/core"
 import { createRoot } from "@opentui/react/renderer"
 import { memo, useCallback, useMemo, useReducer, useRef, useState } from "react"
-import type { ContextEvent, PersistedEvent } from "../../context.model.ts"
-import { AttachmentSource } from "../../context.model.ts"
+import type { ContextEvent } from "../../domain.ts"
 
 /** User's message in the conversation */
 class UserMessageItem extends Schema.TaggedClass<UserMessageItem>()("UserMessageItem", {
@@ -46,14 +45,6 @@ class LLMInterruptionItem extends Schema.TaggedClass<LLMInterruptionItem>()("LLM
   isHistory: Schema.Boolean
 }) {}
 
-/** File or image attachment */
-class FileAttachmentItem extends Schema.TaggedClass<FileAttachmentItem>()("FileAttachmentItem", {
-  id: Schema.String,
-  source: AttachmentSource,
-  fileName: Schema.OptionFromNullOr(Schema.String),
-  isHistory: Schema.Boolean
-}) {}
-
 /** Fallback for unknown event types - displays muted warning */
 class UnknownEventItem extends Schema.TaggedClass<UnknownEventItem>()("UnknownEventItem", {
   id: Schema.String,
@@ -66,7 +57,6 @@ const FeedItem = Schema.Union(
   InProgressAssistantItem,
   AssistantMessageItem,
   LLMInterruptionItem,
-  FileAttachmentItem,
   UnknownEventItem
 )
 type FeedItem = typeof FeedItem.Type
@@ -81,7 +71,7 @@ function feedReducer(items: FeedItem[], action: FeedAction): FeedItem[] {
   const { event, isHistory } = action
 
   switch (event._tag) {
-    case "TextDelta": {
+    case "TextDeltaEvent": {
       const last = items.at(-1)
       if (last?._tag === "InProgressAssistantItem") {
         return [
@@ -95,7 +85,7 @@ function feedReducer(items: FeedItem[], action: FeedAction): FeedItem[] {
       ]
     }
 
-    case "AssistantMessage": {
+    case "AssistantMessageEvent": {
       const filtered = items.filter((i) => i._tag !== "InProgressAssistantItem")
       return [
         ...filtered,
@@ -107,20 +97,23 @@ function feedReducer(items: FeedItem[], action: FeedAction): FeedItem[] {
       ]
     }
 
-    case "LLMRequestInterrupted": {
+    case "AgentTurnInterruptedEvent": {
       const filtered = items.filter((i) => i._tag !== "InProgressAssistantItem")
+      const partialResponse = Option.isSome(event.partialResponse)
+        ? event.partialResponse.value
+        : ""
       return [
         ...filtered,
         new LLMInterruptionItem({
           id: crypto.randomUUID(),
-          partialResponse: event.partialResponse,
+          partialResponse,
           reason: event.reason,
           isHistory
         })
       ]
     }
 
-    case "UserMessage":
+    case "UserMessageEvent":
       return [
         ...items,
         new UserMessageItem({
@@ -130,19 +123,14 @@ function feedReducer(items: FeedItem[], action: FeedAction): FeedItem[] {
         })
       ]
 
-    case "FileAttachment":
-      return [
-        ...items,
-        new FileAttachmentItem({
-          id: crypto.randomUUID(),
-          source: event.source,
-          fileName: Option.fromNullable(event.fileName),
-          isHistory
-        })
-      ]
-
-    case "SystemPrompt":
-    case "SetLlmConfig":
+    // Lifecycle events - don't display
+    case "SystemPromptEvent":
+    case "SetLlmConfigEvent":
+    case "SessionStartedEvent":
+    case "SessionEndedEvent":
+    case "AgentTurnStartedEvent":
+    case "AgentTurnCompletedEvent":
+    case "AgentTurnFailedEvent":
       return items
 
     default:
@@ -240,22 +228,6 @@ const LLMInterruptionRenderer = memo<{ item: LLMInterruptionItem }>(({ item }) =
   )
 })
 
-const FileAttachmentRenderer = memo<{ item: FileAttachmentItem }>(({ item }) => {
-  const textColor = item.isHistory ? colors.dim : colors.yellow
-  const name =
-    item.fileName._tag === "Some"
-      ? item.fileName.value
-      : item.source.type === "file"
-        ? item.source.path
-        : item.source.url
-
-  return (
-    <box marginBottom={1}>
-      <text fg={textColor}>📎 {name}</text>
-    </box>
-  )
-})
-
 const UnknownEventRenderer = memo<{ item: UnknownEventItem }>(({ item }) => {
   return (
     <box marginBottom={1}>
@@ -274,8 +246,6 @@ const FeedItemRenderer = memo<{ item: FeedItem }>(({ item }) => {
       return <AssistantMessageRenderer item={item} />
     case "LLMInterruptionItem":
       return <LLMInterruptionRenderer item={item} />
-    case "FileAttachmentItem":
-      return <FileAttachmentRenderer item={item} />
     case "UnknownEventItem":
       return <UnknownEventRenderer item={item} />
   }
@@ -316,7 +286,7 @@ export interface ChatController {
 
 interface ChatAppProps {
   contextName: string
-  initialEvents: PersistedEvent[]
+  initialEvents: ReadonlyArray<ContextEvent>
   callbacks: ChatCallbacks
   controllerRef: React.MutableRefObject<ChatController | null>
 }
@@ -421,7 +391,7 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
 
 export async function runOpenTUIChat(
   contextName: string,
-  initialEvents: PersistedEvent[],
+  initialEvents: ReadonlyArray<ContextEvent>,
   callbacks: ChatCallbacks
 ): Promise<ChatController> {
   let exitSignaled = false

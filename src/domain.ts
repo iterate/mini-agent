@@ -8,7 +8,7 @@
  */
 
 import type { Prompt } from "@effect/ai"
-import { DateTime, Effect, Option, Redacted, Schema, Stream } from "effect"
+import { DateTime, Effect, Option, Schema, Stream } from "effect"
 
 // -----------------------------------------------------------------------------
 // Branded Types
@@ -22,9 +22,6 @@ export type ContextName = typeof ContextName.Type
 
 export const EventId = Schema.String.pipe(Schema.brand("EventId"))
 export type EventId = typeof EventId.Type
-
-export const LlmProviderId = Schema.String.pipe(Schema.brand("LlmProviderId"))
-export type LlmProviderId = typeof LlmProviderId.Type
 
 export const AgentTurnNumber = Schema.Number.pipe(Schema.brand("AgentTurnNumber"))
 export type AgentTurnNumber = typeof AgentTurnNumber.Type
@@ -44,6 +41,11 @@ export const BaseEventFields = {
   id: EventId,
   timestamp: Schema.DateTimeUtc,
   agentName: AgentName,
+  /**
+   * Forms a blockchain-style chain where each event points to its predecessor.
+   * The first event (genesis) has parentEventId = None.
+   * Future: forking will allow multiple events to share the same parent.
+   */
   parentEventId: Schema.optionalWith(EventId, { as: "Option" }),
   triggersAgentTurn: Schema.Boolean
 }
@@ -52,30 +54,19 @@ export const BaseEventFields = {
 // Config Types
 // -----------------------------------------------------------------------------
 
-export class LlmProviderConfig extends Schema.Class<LlmProviderConfig>("LlmProviderConfig")({
-  providerId: LlmProviderId,
+export const ApiFormat = Schema.Literal("openai-responses", "openai-chat-completions", "anthropic", "gemini")
+export type ApiFormat = typeof ApiFormat.Type
+
+/**
+ * LLM configuration - stored on ReducedContext.
+ * Uses apiKeyEnvVar (env var name) not actual keys.
+ */
+export class LlmConfig extends Schema.Class<LlmConfig>("LlmConfig")({
+  apiFormat: ApiFormat,
   model: Schema.String,
-  apiKey: Schema.Redacted(Schema.String),
-  baseUrl: Schema.optionalWith(Schema.String, { as: "Option" })
+  baseUrl: Schema.String,
+  apiKeyEnvVar: Schema.String
 }) {}
-
-export class AgentConfig extends Schema.Class<AgentConfig>("AgentConfig")({
-  primary: LlmProviderConfig,
-  fallback: Schema.optionalWith(LlmProviderConfig, { as: "Option" }),
-  timeoutMs: Schema.Number.pipe(Schema.positive())
-}) {}
-
-// Default config for initial state
-export const defaultAgentConfig = new AgentConfig({
-  primary: new LlmProviderConfig({
-    providerId: "openai" as LlmProviderId,
-    model: "gpt-4o-mini",
-    apiKey: Redacted.make(""),
-    baseUrl: Option.none()
-  }),
-  fallback: Option.none(),
-  timeoutMs: 30000
-})
 
 // -----------------------------------------------------------------------------
 // Event Types - Content
@@ -109,24 +100,18 @@ export class SetLlmConfigEvent extends Schema.TaggedClass<SetLlmConfigEvent>()(
   "SetLlmConfigEvent",
   {
     ...BaseEventFields,
-    providerId: LlmProviderId,
+    apiFormat: ApiFormat,
     model: Schema.String,
-    apiKey: Schema.Redacted(Schema.String),
-    baseUrl: Schema.optionalWith(Schema.String, { as: "Option" }),
-    asFallback: Schema.Boolean
+    baseUrl: Schema.String,
+    apiKeyEnvVar: Schema.String
   }
-) {}
-
-export class SetTimeoutEvent extends Schema.TaggedClass<SetTimeoutEvent>()(
-  "SetTimeoutEvent",
-  { ...BaseEventFields, timeoutMs: Schema.Number }
 ) {}
 
 // -----------------------------------------------------------------------------
 // Event Types - Lifecycle
 // -----------------------------------------------------------------------------
 
-export const InterruptReason = Schema.Literal("user_cancel", "user_new_message", "timeout")
+export const InterruptReason = Schema.Literal("user_cancel", "user_new_message", "timeout", "session_ended")
 export type InterruptReason = typeof InterruptReason.Type
 
 export class SessionStartedEvent extends Schema.TaggedClass<SessionStartedEvent>()(
@@ -174,7 +159,6 @@ export const ContextEvent = Schema.Union(
   AssistantMessageEvent,
   TextDeltaEvent,
   SetLlmConfigEvent,
-  SetTimeoutEvent,
   SessionStartedEvent,
   SessionEndedEvent,
   AgentTurnStartedEvent,
@@ -190,7 +174,7 @@ export type ContextEvent = typeof ContextEvent.Type
 
 export interface ReducedContext {
   readonly messages: ReadonlyArray<Prompt.Message>
-  readonly config: AgentConfig
+  readonly llmConfig: Option.Option<LlmConfig>
   readonly nextEventNumber: number
   readonly currentTurnNumber: AgentTurnNumber
   readonly agentTurnStartedAtEventId: Option.Option<EventId>
@@ -199,12 +183,14 @@ export interface ReducedContext {
 export const ReducedContext = {
   isAgentTurnInProgress: (ctx: ReducedContext): boolean => Option.isSome(ctx.agentTurnStartedAtEventId),
 
+  canMakeLlmCalls: (ctx: ReducedContext): boolean => Option.isSome(ctx.llmConfig),
+
   nextEventId: (ctx: ReducedContext, contextName: ContextName): EventId =>
     makeEventId(contextName, ctx.nextEventNumber),
 
-  initial: (config: AgentConfig = defaultAgentConfig): ReducedContext => ({
+  initial: (llmConfig: Option.Option<LlmConfig> = Option.none()): ReducedContext => ({
     messages: [],
-    config,
+    llmConfig,
     nextEventNumber: 0,
     currentTurnNumber: 0 as AgentTurnNumber,
     agentTurnStartedAtEventId: Option.none()
@@ -219,7 +205,7 @@ export class AgentError extends Schema.TaggedError<AgentError>()(
   "AgentError",
   {
     message: Schema.String,
-    provider: LlmProviderId,
+    apiFormat: Schema.optionalWith(ApiFormat, { as: "Option" }),
     cause: Schema.optionalWith(Schema.Defect, { as: "Option" })
   }
 ) {}
@@ -269,7 +255,7 @@ export class MiniAgentTurn extends Effect.Service<MiniAgentTurn>()("@mini-agent/
       Stream.fail(
         new AgentError({
           message: "MiniAgentTurn not implemented",
-          provider: "none" as LlmProviderId,
+          apiFormat: Option.none(),
           cause: Option.none()
         })
       )
@@ -287,103 +273,38 @@ export interface MiniAgent {
   readonly events: Stream.Stream<ContextEvent, never>
   readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
   readonly getReducedContext: Effect.Effect<ReducedContext>
+  /** Gracefully end session: emit SessionEndedEvent (with AgentTurnInterruptedEvent if mid-turn), then close mailbox */
+  readonly endSession: Effect.Effect<void>
+  /** True when no LLM turn is in progress */
+  readonly isIdle: Effect.Effect<boolean>
+  /** @deprecated Use endSession instead. Kept for internal cleanup. */
   readonly shutdown: Effect.Effect<void>
 }
 
 // -----------------------------------------------------------------------------
-// Event Builders
+// Event Field Helpers
 // -----------------------------------------------------------------------------
 
-export const EventBuilder = {
-  makeBase: (
-    agentName: AgentName,
-    contextName: ContextName,
-    nextEventNumber: number,
-    triggersAgentTurn: boolean,
-    parentEventId: Option.Option<EventId> = Option.none()
-  ) => ({
-    id: makeEventId(contextName, nextEventNumber),
-    timestamp: DateTime.unsafeNow(),
-    agentName,
-    parentEventId,
-    triggersAgentTurn
-  }),
+/** Creates the common base fields for all events */
+export const makeBaseEventFields = (
+  agentName: AgentName,
+  contextName: ContextName,
+  nextEventNumber: number,
+  triggersAgentTurn: boolean,
+  parentEventId: Option.Option<EventId> = Option.none()
+) => ({
+  id: makeEventId(contextName, nextEventNumber),
+  timestamp: DateTime.unsafeNow(),
+  agentName,
+  parentEventId,
+  triggersAgentTurn
+})
 
-  userMessage: (
-    agentName: AgentName,
-    contextName: ContextName,
-    nextEventNumber: number,
-    content: string,
-    triggersAgentTurn = true
-  ) =>
-    new UserMessageEvent({
-      ...EventBuilder.makeBase(agentName, contextName, nextEventNumber, triggersAgentTurn),
-      content
-    }),
-
-  systemPrompt: (
-    agentName: AgentName,
-    contextName: ContextName,
-    nextEventNumber: number,
-    content: string
-  ) =>
-    new SystemPromptEvent({
-      ...EventBuilder.makeBase(agentName, contextName, nextEventNumber, false),
-      content
-    }),
-
-  assistantMessage: (
-    agentName: AgentName,
-    contextName: ContextName,
-    nextEventNumber: number,
-    content: string,
-    parentEventId: Option.Option<EventId> = Option.none()
-  ) =>
-    new AssistantMessageEvent({
-      ...EventBuilder.makeBase(agentName, contextName, nextEventNumber, false, parentEventId),
-      content
-    }),
-
-  sessionStarted: (
-    agentName: AgentName,
-    contextName: ContextName,
-    nextEventNumber: number
-  ) =>
-    new SessionStartedEvent({
-      ...EventBuilder.makeBase(agentName, contextName, nextEventNumber, false)
-    }),
-
-  sessionEnded: (
-    agentName: AgentName,
-    contextName: ContextName,
-    nextEventNumber: number
-  ) =>
-    new SessionEndedEvent({
-      ...EventBuilder.makeBase(agentName, contextName, nextEventNumber, false)
-    }),
-
-  agentTurnStarted: (
-    agentName: AgentName,
-    contextName: ContextName,
-    nextEventNumber: number,
-    turnNumber: AgentTurnNumber
-  ) =>
-    new AgentTurnStartedEvent({
-      ...EventBuilder.makeBase(agentName, contextName, nextEventNumber, false),
-      turnNumber
-    }),
-
-  agentTurnCompleted: (
-    agentName: AgentName,
-    contextName: ContextName,
-    nextEventNumber: number,
-    turnNumber: AgentTurnNumber,
-    durationMs: number,
-    parentEventId: Option.Option<EventId> = Option.none()
-  ) =>
-    new AgentTurnCompletedEvent({
-      ...EventBuilder.makeBase(agentName, contextName, nextEventNumber, false, parentEventId),
-      turnNumber,
-      durationMs
-    })
-}
+/**
+ * Set parentEventId on a ContextEvent.
+ * Schema.TaggedClass uses _tag for discrimination (not instanceof), so spread is safe.
+ */
+export const withParentEventId = <E extends ContextEvent>(
+  event: E,
+  parentEventId: Option.Option<EventId>
+): E => ({ ...event, parentEventId }) as E

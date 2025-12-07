@@ -13,6 +13,7 @@ import { Deferred, Effect, Exit, Layer, Ref, Scope } from "effect"
 import {
   type AgentName,
   AgentNotFoundError,
+  type ContextLoadError,
   type ContextName,
   type ContextSaveError,
   type MiniAgent,
@@ -23,7 +24,7 @@ import { EventReducer } from "./event-reducer.ts"
 import { EventStore } from "./event-store.ts"
 import { makeMiniAgent } from "./mini-agent.ts"
 
-type MiniAgentError = ReducerError | ContextSaveError
+type MiniAgentCreationError = ReducerError | ContextLoadError | ContextSaveError
 
 /**
  * AgentRegistry manages MiniAgent instances.
@@ -43,15 +44,15 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
 
     // Track in-progress creations using Deferred for proper synchronization
     const creationLocks = yield* Ref.make(
-      new Map<AgentName, Deferred.Deferred<MiniAgent, MiniAgentError>>()
+      new Map<AgentName, Deferred.Deferred<MiniAgent, MiniAgentCreationError>>()
     )
 
     type CacheResult = { type: "cached"; agent: MiniAgent } | { type: "not-found" }
     type LockResult =
-      | { type: "waiting"; deferred: Deferred.Deferred<MiniAgent, MiniAgentError> }
+      | { type: "waiting"; deferred: Deferred.Deferred<MiniAgent, MiniAgentCreationError> }
       | { type: "create" }
 
-    const getOrCreate = (agentName: AgentName): Effect.Effect<MiniAgent, MiniAgentError> =>
+    const getOrCreate = (agentName: AgentName): Effect.Effect<MiniAgent, MiniAgentCreationError> =>
       Effect.gen(function*() {
         // Atomically check cache and in-progress, potentially creating a deferred
         const result: CacheResult = yield* Ref.modify(agents, (agentsMap) => {
@@ -80,7 +81,7 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
         }
 
         // We need to create - first make a deferred for others to wait on
-        const newDeferred = yield* Deferred.make<MiniAgent, MiniAgentError>()
+        const newDeferred = yield* Deferred.make<MiniAgent, MiniAgentCreationError>()
         yield* Ref.update(creationLocks, (m) => {
           const newMap = new Map(m)
           newMap.set(agentName, newDeferred)
@@ -159,8 +160,7 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
           return yield* Effect.fail(new AgentNotFoundError({ agentName }))
         }
 
-        // Shutdown the agent
-        yield* existing.agent.shutdown
+        // Close scope - this triggers the finalizer which handles cleanup and SessionEndedEvent
         yield* Scope.close(existing.scope, Exit.void)
 
         // Remove from cache
@@ -174,11 +174,8 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
     const shutdownAll: Effect.Effect<void> = Effect.gen(function*() {
       const current = yield* Ref.get(agents)
 
-      // Shutdown all agents
+      // Close all scopes - each finalizer handles cleanup and SessionEndedEvent
       for (const [, entry] of current) {
-        yield* entry.agent.shutdown.pipe(
-          Effect.catchAll(() => Effect.void)
-        )
         yield* Scope.close(entry.scope, Exit.void)
       }
 

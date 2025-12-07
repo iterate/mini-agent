@@ -10,10 +10,10 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer, Stream } from "effect"
-import { AgentRegistry } from "./agent-registry.ts"
-import { type AgentName, type ContextEvent, MiniAgentTurn, type ReducedContext } from "./domain.ts"
-import { EventReducer } from "./event-reducer.ts"
-import { EventStore } from "./event-store.ts"
+import { AgentRegistry } from "../src/agent-registry.ts"
+import { type AgentName, type ContextEvent, MiniAgentTurn, type ReducedContext } from "../src/domain.ts"
+import { EventReducer } from "../src/event-reducer.ts"
+import { EventStore } from "../src/event-store.ts"
 
 // Mock MiniAgentTurn
 const MockTurn = Layer.sync(MiniAgentTurn, () =>

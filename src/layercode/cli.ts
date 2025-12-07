@@ -9,8 +9,7 @@ import { Command as PlatformCommand, HttpRouter, HttpServer } from "@effect/plat
 import { BunHttpServer } from "@effect/platform-bun"
 import { Console, Effect, Layer, Option, Stream } from "effect"
 import { AppConfig } from "../config.ts"
-import { makeRouter } from "../http.ts"
-import { AgentServer } from "../server.service.ts"
+import { makeRouter } from "../http-routes.ts"
 import { makeLayerCodeRouter } from "./layercode.adapter.ts"
 
 const portOption = Options.integer("port").pipe(
@@ -144,23 +143,17 @@ const layercodeServeCommand = CliCommand.make(
         makeLayerCodeRouter(welcomeMessage)
       )
 
-      // Create server layer with configured port/host
-      const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost })
-
-      const layers = Layer.mergeAll(
-        serverLayer,
-        AgentServer.layer
-      )
+      // Set a high idleTimeout for SSE streaming - Bun defaults to 10s which kills long-running streams
+      const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost, idleTimeout: 120 })
 
       // Start the tunnel if enabled (fork it to run concurrently with server)
       if (tunnelEnabled && Option.isSome(agentId)) {
         yield* startTunnel(agentId.value, actualPort).pipe(Effect.fork)
       }
 
-      // Use Layer.launch to keep the server running (blocks forever)
       return yield* Layer.launch(
         HttpServer.serve(combinedRouter).pipe(
-          Layer.provide(layers)
+          Layer.provide(serverLayer)
         )
       )
     })

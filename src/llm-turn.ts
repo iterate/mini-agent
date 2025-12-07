@@ -7,18 +7,18 @@
 
 import { type AiError, LanguageModel, Prompt } from "@effect/ai"
 import { DateTime, Effect, Layer, Option, pipe, Ref, Stream } from "effect"
-import { CurrentLlmConfig } from "../llm-config.ts"
 import {
   AgentError,
   type AgentName,
+  type ApiFormat,
   AssistantMessageEvent,
   type ContextEvent,
   type EventId,
-  type LlmProviderId,
   MiniAgentTurn,
   type ReducedContext,
   TextDeltaEvent
 } from "./domain.ts"
+import { CurrentLlmConfig } from "./llm-config.ts"
 
 /**
  * Convert ReducedContext messages to @effect/ai Prompt.
@@ -29,10 +29,10 @@ const contextToPrompt = (ctx: ReducedContext): Prompt.Prompt => Prompt.make(ctx.
 /**
  * Map @effect/ai errors to our AgentError type.
  */
-const mapAiError = (providerId: LlmProviderId) => (error: AiError.AiError): AgentError =>
+const mapAiError = (apiFormat: ApiFormat) => (error: AiError.AiError): AgentError =>
   new AgentError({
     message: `LLM request failed: ${error.message}`,
-    provider: providerId,
+    apiFormat: Option.some(apiFormat),
     cause: Option.some(error)
   })
 
@@ -66,7 +66,6 @@ export const LlmTurnLive: Layer.Layer<
             const turnStartTime = Date.now()
 
             const prompt = contextToPrompt(ctx)
-            const providerId = llmConfig.apiFormat as LlmProviderId
 
             yield* Effect.logDebug("Streaming LLM response", {
               model: llmConfig.model,
@@ -116,7 +115,7 @@ export const LlmTurnLive: Layer.Layer<
                   )
                 )
               ),
-              Stream.mapError(mapAiError(providerId))
+              Stream.mapError(mapAiError(llmConfig.apiFormat))
             )
           })
         )

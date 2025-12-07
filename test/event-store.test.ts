@@ -6,9 +6,9 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { DateTime, Effect, Option } from "effect"
-import type { AgentName, ContextName } from "./domain.ts"
-import { makeEventId, UserMessageEvent } from "./domain.ts"
-import { EventStore } from "./event-store.ts"
+import type { AgentName, ContextName } from "../src/domain.ts"
+import { makeEventId, UserMessageEvent } from "../src/domain.ts"
+import { EventStore } from "../src/event-store.ts"
 
 const testAgentName = "test-agent" as AgentName
 const testContextName = "test-context" as ContextName
