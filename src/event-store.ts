@@ -3,7 +3,7 @@
  *
  * Pluggable implementations:
  * - InMemory: For tests (fresh state per layer creation)
- * - Future: Yaml files, Postgres, Redis
+ * - FileSystem: For production (YAML files)
  */
 
 import { Effect, Layer } from "effect"
@@ -18,7 +18,8 @@ export class EventStore extends Effect.Service<EventStore>()("@mini-agent/EventS
       Effect.succeed([]),
     append: (_contextName: ContextName, _events: ReadonlyArray<ContextEvent>): Effect.Effect<void, ContextSaveError> =>
       Effect.void,
-    exists: (_contextName: ContextName): Effect.Effect<boolean> => Effect.succeed(false)
+    exists: (_contextName: ContextName): Effect.Effect<boolean> => Effect.succeed(false),
+    list: (): Effect.Effect<ReadonlyArray<ContextName>> => Effect.succeed([])
   },
   accessors: true
 }) {
@@ -38,7 +39,9 @@ export class EventStore extends Effect.Service<EventStore>()("@mini-agent/EventS
           store.set(contextName, [...existing, ...events])
         }),
 
-      exists: (contextName: ContextName) => Effect.sync(() => store.has(contextName))
+      exists: (contextName: ContextName) => Effect.sync(() => store.has(contextName)),
+
+      list: () => Effect.sync(() => Array.from(store.keys()))
     } as unknown as EventStore
   })
 }

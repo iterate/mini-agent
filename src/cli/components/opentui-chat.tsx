@@ -2,7 +2,7 @@
  * OpenTUI Chat Component
  *
  * Architecture:
- * - ContextEvent[] dispatched via controller.addEvent()
+ * - DisplayEvent[] dispatched via controller.addEvent()
  * - feedReducer folds each event into FeedItem[] (accumulated state)
  * - Feed component renders feedItems (pure render, knows nothing about events)
  *
@@ -15,8 +15,23 @@ import { Option, Schema } from "effect"
 import { createCliRenderer, TextAttributes } from "@opentui/core"
 import { createRoot } from "@opentui/react/renderer"
 import { memo, useCallback, useMemo, useReducer, useRef, useState } from "react"
-import type { ContextEvent, PersistedEvent } from "../../context.model.ts"
-import { AttachmentSource } from "../../context.model.ts"
+
+/** Simple display events for the UI - decoupled from domain events */
+export type DisplayEvent =
+  | { _tag: "UserMessage"; content: string }
+  | { _tag: "AssistantMessage"; content: string }
+  | { _tag: "SystemPrompt"; content: string }
+  | { _tag: "TextDelta"; delta: string }
+  | { _tag: "LLMRequestInterrupted"; partialResponse: string; reason: string }
+  | { _tag: "FileAttachment"; source: AttachmentSource; fileName?: string }
+  | { _tag: "SetLlmConfig" }
+
+/** Attachment source - local file path or remote URL */
+const AttachmentSource = Schema.Union(
+  Schema.Struct({ type: Schema.Literal("file"), path: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("url"), url: Schema.String })
+)
+type AttachmentSource = typeof AttachmentSource.Type
 
 /** User's message in the conversation */
 class UserMessageItem extends Schema.TaggedClass<UserMessageItem>()("UserMessageItem", {
@@ -71,7 +86,7 @@ const FeedItem = Schema.Union(
 )
 type FeedItem = typeof FeedItem.Type
 
-type FeedAction = { event: ContextEvent; isHistory: boolean }
+type FeedAction = { event: DisplayEvent; isHistory: boolean }
 
 /**
  * Folds a context event into accumulated feed items.
@@ -310,13 +325,13 @@ export interface ChatCallbacks {
 }
 
 export interface ChatController {
-  addEvent: (event: ContextEvent) => void
+  addEvent: (event: DisplayEvent) => void
   cleanup: () => void
 }
 
 interface ChatAppProps {
   contextName: string
-  initialEvents: PersistedEvent[]
+  initialEvents: DisplayEvent[]
   callbacks: ChatCallbacks
   controllerRef: React.MutableRefObject<ChatController | null>
 }
@@ -353,7 +368,7 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
   // Set up controller synchronously during first render
   if (!controllerRef.current) {
     controllerRef.current = {
-      addEvent(event: ContextEvent) {
+      addEvent(event: DisplayEvent) {
         dispatchRef.current({ event, isHistory: false })
       },
       cleanup() {
@@ -421,7 +436,7 @@ function ChatApp({ contextName, initialEvents, callbacks, controllerRef }: ChatA
 
 export async function runOpenTUIChat(
   contextName: string,
-  initialEvents: PersistedEvent[],
+  initialEvents: DisplayEvent[],
   callbacks: ChatCallbacks
 ): Promise<ChatController> {
   let exitSignaled = false
@@ -462,7 +477,7 @@ export async function runOpenTUIChat(
   renderer.start()
 
   return {
-    addEvent(event: ContextEvent) {
+    addEvent(event: DisplayEvent) {
       controllerRef.current?.addEvent(event)
     },
     cleanup() {

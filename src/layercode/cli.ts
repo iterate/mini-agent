@@ -8,8 +8,12 @@ import type { CommandExecutor } from "@effect/platform"
 import { Command as PlatformCommand, HttpRouter, HttpServer } from "@effect/platform"
 import { BunHttpServer } from "@effect/platform-bun"
 import { Console, Effect, Layer, Option, Stream } from "effect"
+import { AgentRegistry } from "../agent-registry.ts"
 import { AppConfig } from "../config.ts"
+import { EventReducer } from "../event-reducer.ts"
+import { EventStoreFileSystem } from "../event-store-fs.ts"
 import { makeRouter } from "../http.ts"
+import { LlmTurnLive } from "../llm-turn.ts"
 import { AgentServer } from "../server.service.ts"
 import { makeLayerCodeRouter } from "./layercode.adapter.ts"
 
@@ -147,9 +151,17 @@ const layercodeServeCommand = CliCommand.make(
       // Create server layer with configured port/host
       const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost })
 
+      // Create agent layer (AgentServer needs AgentRegistry)
+      const agentLayer = AgentServer.layer.pipe(
+        Layer.provide(AgentRegistry.Default),
+        Layer.provide(LlmTurnLive),
+        Layer.provide(EventStoreFileSystem),
+        Layer.provide(EventReducer.Default)
+      )
+
       const layers = Layer.mergeAll(
         serverLayer,
-        AgentServer.layer
+        agentLayer
       )
 
       // Start the tunnel if enabled (fork it to run concurrently with server)
