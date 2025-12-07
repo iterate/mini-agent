@@ -1,20 +1,15 @@
 /**
- * LLM Configuration
+ * LLM Configuration utilities.
  *
  * Supports two ways to specify an LLM:
  * 1. Provider prefix: "openai:gpt-4.1-mini", "groq:llama-3.3-70b-versatile"
  * 2. JSON config: '{"apiFormat":"openai-responses","model":"...","baseUrl":"...","apiKeyEnvVar":"..."}'
  */
-import { Config, Context, Effect, Layer, Redacted, Schema } from "effect"
+import { Config, Context, Effect, Layer, Redacted } from "effect"
+import { type ApiFormat, LlmConfig } from "./domain.ts"
 
-export type ApiFormat = "openai-responses" | "openai-chat-completions" | "anthropic" | "gemini"
-
-export class LlmConfig extends Schema.Class<LlmConfig>("LlmConfig")({
-  apiFormat: Schema.Literal("openai-responses", "openai-chat-completions", "anthropic", "gemini"),
-  model: Schema.String,
-  baseUrl: Schema.String,
-  apiKeyEnvVar: Schema.String
-}) {}
+// Re-export for convenience
+export { LlmConfig }
 
 /** Provider presets define common provider configurations */
 interface ProviderPreset {

@@ -82,6 +82,7 @@ export const testAppConfigLayer = Layer.succeed(
   AppConfig,
   {
     llm: "openai:gpt-4o-mini",
+    systemPrompt: "You are a helpful assistant.",
     dataStorageDir: ".mini-agent-test",
     configFile: "mini-agent.config.yaml",
     cwd: Option.none(),

@@ -5,24 +5,25 @@
  */
 import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
-import { type Error as PlatformError, FileSystem, HttpServer, Terminal } from "@effect/platform"
+import { type Error as PlatformError, FileSystem, HttpServer, type Terminal } from "@effect/platform"
 import { BunHttpServer, BunStream } from "@effect/platform-bun"
-import { Chunk, Console, Effect, Layer, Option, Schema, Stream } from "effect"
+import { Chunk, Console, DateTime, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { AgentRegistry } from "../agent-registry.ts"
 import { AppConfig, resolveBaseDir } from "../config.ts"
 import {
-  AssistantMessageEvent,
-  type ContextEvent,
-  FileAttachmentEvent,
-  type InputEvent,
-  SystemPromptEvent,
-  TextDeltaEvent,
+  type AgentName,
+  type AssistantMessageEvent,
+  ContextEvent,
+  makeEventId,
+  type TextDeltaEvent,
   UserMessageEvent
-} from "../context.model.ts"
-import { ContextService } from "../context.service.ts"
-import { makeRouter } from "../http.ts"
+} from "../domain.ts"
+import { EventStore } from "../event-store.ts"
+import { makeRouter } from "../http-routes.ts"
 import { layercodeCommand } from "../layercode/index.ts"
-import { AgentServer } from "../server.service.ts"
 import { printTraceLinks } from "../tracing.ts"
+
+const encodeEvent = Schema.encodeSync(ContextEvent)
 
 export const configFileOption = Options.file("config").pipe(
   Options.withAlias("c"),
@@ -85,31 +86,11 @@ const scriptOption = Options.boolean("script").pipe(
   Options.withDefault(false)
 )
 
-const imageOption = Options.text("image").pipe(
+const imageOption = Options.file("image").pipe(
   Options.withAlias("i"),
-  Options.withDescription("Path to local image file or URL to share with the AI"),
-  Options.optional
+  Options.withDescription("Path to an image file to include with the message"),
+  Options.repeated
 )
-
-const MIME_TYPES: Record<string, string> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".gif": "image/gif",
-  ".webp": "image/webp"
-}
-
-const getMediaType = (filePath: string): string => {
-  const ext = filePath.toLowerCase().slice(filePath.lastIndexOf("."))
-  return MIME_TYPES[ext] ?? "application/octet-stream"
-}
-
-const getFileName = (filePath: string): string => {
-  const lastSlash = Math.max(filePath.lastIndexOf("/"), filePath.lastIndexOf("\\"))
-  return lastSlash >= 0 ? filePath.slice(lastSlash + 1) : filePath
-}
-
-const isUrl = (input: string): boolean => input.startsWith("http://") || input.startsWith("https://")
 
 interface OutputOptions {
   raw: boolean
@@ -124,22 +105,20 @@ const handleEvent = (
   options: OutputOptions
 ): Effect.Effect<void, PlatformError.PlatformError, Terminal.Terminal> =>
   Effect.gen(function*() {
-    const terminal = yield* Terminal.Terminal
-
     if (options.raw) {
-      if (Schema.is(TextDeltaEvent)(event) && !options.showEphemeral) {
-        return
-      }
-      yield* Console.log(JSON.stringify(event))
+      // Raw mode outputs all events as JSON (no filtering)
+      yield* Console.log(JSON.stringify(encodeEvent(event)))
       return
     }
 
-    if (Schema.is(TextDeltaEvent)(event)) {
-      yield* terminal.display(event.delta)
+    // Non-raw mode: output streaming deltas and final message
+    // Use _tag check directly since events from stream may be plain objects
+    if (event._tag === "TextDeltaEvent") {
+      yield* Console.log((event as TextDeltaEvent).delta)
       return
     }
-    if (Schema.is(AssistantMessageEvent)(event)) {
-      yield* Console.log("")
+    if (event._tag === "AssistantMessageEvent") {
+      yield* Console.log((event as AssistantMessageEvent).content)
       return
     }
   })
@@ -149,40 +128,57 @@ const runEventStream = (
   contextName: string,
   userMessage: string,
   options: OutputOptions,
-  imageInput?: string
+  images: ReadonlyArray<string> = []
 ) =>
   Effect.gen(function*() {
-    const contextService = yield* ContextService
-    const inputEvents: Array<InputEvent> = []
+    const registry = yield* AgentRegistry
+    const agent = yield* registry.getOrCreate(contextName as AgentName)
 
-    if (imageInput) {
-      const mediaType = getMediaType(imageInput)
-      const fileName = getFileName(imageInput)
-
-      if (isUrl(imageInput)) {
-        inputEvents.push(
-          new FileAttachmentEvent({
-            source: { type: "url", url: imageInput },
-            mediaType,
-            fileName
-          })
-        )
-      } else {
-        inputEvents.push(
-          new FileAttachmentEvent({
-            source: { type: "file", path: imageInput },
-            mediaType,
-            fileName
-          })
-        )
-      }
+    // Get existing events first (includes SessionStartedEvent emitted during agent creation)
+    const existingEvents = yield* agent.getEvents
+    for (const event of existingEvents) {
+      yield* handleEvent(event, options)
     }
 
-    inputEvents.push(new UserMessageEvent({ content: userMessage }))
+    // Get current context to build proper event
+    const ctx = yield* agent.getReducedContext
 
-    yield* contextService.addEvents(contextName, inputEvents).pipe(
-      Stream.runForEach((event) => handleEvent(event, options))
+    // Create user event with triggersAgentTurn=true
+    const userEvent = new UserMessageEvent({
+      id: makeEventId(agent.contextName, ctx.nextEventNumber),
+      timestamp: DateTime.unsafeNow(),
+      agentName: agent.agentName,
+      parentEventId: Option.none(),
+      triggersAgentTurn: true,
+      content: userMessage,
+      images: images.length > 0 ? images : undefined
+    })
+
+    // Subscribe to events - wait for turn completion first
+    const turnFiber = yield* agent.events.pipe(
+      Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
+      Stream.runForEach((event) => handleEvent(event, options)),
+      Effect.fork
     )
+
+    // Add event to agent - triggers LLM turn
+    yield* agent.addEvent(userEvent)
+
+    // Wait for turn to complete
+    yield* Fiber.join(turnFiber).pipe(Effect.catchAllCause(() => Effect.void))
+
+    // Subscribe to capture SessionEndedEvent
+    const sessionEndFiber = yield* agent.events.pipe(
+      Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
+      Stream.runForEach((event) => handleEvent(event, options)),
+      Effect.fork
+    )
+
+    // End session (emits SessionEndedEvent)
+    yield* agent.endSession
+
+    // Wait for SessionEndedEvent
+    yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
   })
 
 /** CLI interaction mode - determines how input/output is handled */
@@ -210,7 +206,17 @@ const readAllStdin: Effect.Effect<string> = BunStream.stdin.pipe(
   Effect.map((chunks) => Chunk.join(chunks, "").trim())
 )
 
-const ScriptInputEvent = Schema.Union(UserMessageEvent, SystemPromptEvent)
+/** Simple input message schema - accepts minimal fields */
+const SimpleInputMessage = Schema.Struct({
+  _tag: Schema.Union(
+    Schema.Literal("UserMessage"),
+    Schema.Literal("UserMessageEvent"),
+    Schema.Literal("SystemPrompt"),
+    Schema.Literal("SystemPromptEvent")
+  ),
+  content: Schema.String
+})
+type SimpleInputMessage = typeof SimpleInputMessage.Type
 
 const stdinEvents = BunStream.stdin.pipe(
   Stream.mapChunks(Chunk.map((bytes) => utf8Decoder.decode(bytes))),
@@ -218,51 +224,93 @@ const stdinEvents = BunStream.stdin.pipe(
   Stream.filter((line) => line.trim() !== ""),
   Stream.mapEffect((line) =>
     Effect.try(() => JSON.parse(line) as unknown).pipe(
-      Effect.flatMap((json) => Schema.decodeUnknown(ScriptInputEvent)(json))
+      Effect.flatMap((json) => Schema.decodeUnknown(SimpleInputMessage)(json))
     )
   )
 )
 
 const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
   Effect.gen(function*() {
-    const contextService = yield* ContextService
+    const registry = yield* AgentRegistry
+    const agent = yield* registry.getOrCreate(contextName as AgentName)
+
+    // Output existing events first (includes SessionStartedEvent)
+    const existingEvents = yield* agent.getEvents
+    for (const event of existingEvents) {
+      yield* handleEvent(event, options)
+    }
 
     yield* stdinEvents.pipe(
-      Stream.mapEffect((event) =>
+      Stream.mapEffect((inputMsg) =>
         Effect.gen(function*() {
-          yield* Console.log(JSON.stringify(event))
+          yield* Console.log(JSON.stringify(inputMsg))
 
-          if (Schema.is(UserMessageEvent)(event)) {
-            yield* contextService.addEvents(contextName, [event]).pipe(
-              Stream.runForEach((outputEvent) => handleEvent(outputEvent, options))
+          const isUserMessage = inputMsg._tag === "UserMessage" || inputMsg._tag === "UserMessageEvent"
+
+          if (isUserMessage) {
+            // Get current context
+            const ctx = yield* agent.getReducedContext
+
+            // Create proper event with triggersAgentTurn
+            const userEvent = new UserMessageEvent({
+              id: makeEventId(agent.contextName, ctx.nextEventNumber),
+              timestamp: DateTime.unsafeNow(),
+              agentName: agent.agentName,
+              parentEventId: Option.none(),
+              triggersAgentTurn: true,
+              content: inputMsg.content
+            })
+
+            // Subscribe to events - wait for turn completion to process next message
+            const eventFiber = yield* agent.events.pipe(
+              Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
+              Stream.runForEach((outputEvent) => handleEvent(outputEvent, options)),
+              Effect.fork
             )
-          } else if (Schema.is(SystemPromptEvent)(event)) {
+
+            yield* agent.addEvent(userEvent)
+            yield* Fiber.join(eventFiber).pipe(Effect.catchAllCause(() => Effect.void))
+          } else {
             yield* Effect.logDebug("SystemPrompt events in script mode are echoed but not persisted")
           }
         })
       ),
       Stream.runDrain
     )
+
+    // Subscribe to capture SessionEndedEvent
+    const sessionEndFiber = yield* agent.events.pipe(
+      Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
+      Stream.runForEach((event) => handleEvent(event, options)),
+      Effect.fork
+    )
+
+    yield* agent.endSession
+    yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
   })
 
 const NEW_CONTEXT_VALUE = "__new__"
 
 const selectOrCreateContext = Effect.gen(function*() {
-  const contextService = yield* ContextService
-  const contexts = yield* contextService.list()
+  const store = yield* EventStore
+  const contextNames = yield* store.list()
+  // Convert context names (e.g. "my-agent-v1") to agent names (e.g. "my-agent")
+  const agentNames = contextNames
+    .map((name) => name.replace(/-v1$/, ""))
+    .filter((name, index, arr) => arr.indexOf(name) === index) as Array<AgentName>
 
-  if (contexts.length === 0) {
+  if (agentNames.length === 0) {
     yield* Console.log("No existing contexts found.")
     return yield* CliPrompt.text({ message: "Enter a name for your new context" })
   }
 
   const choices = [
     {
-      title: "➕ New context",
+      title: "+ New context",
       value: NEW_CONTEXT_VALUE,
       description: "Start fresh with a new context"
     },
-    ...contexts.map((name) => ({
+    ...agentNames.map((name) => ({
       title: name,
       value: name,
       description: "Continue with this context"
@@ -291,33 +339,58 @@ const makeChatUILayer = () =>
   Layer.unwrapEffect(
     Effect.gen(function*() {
       const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))
-      return ChatUI.layer
+      return ChatUI.Default
     })
   )
+
+/** Read an image file and return as base64 data URI */
+const readImageAsDataUri = (imagePath: string) =>
+  Effect.gen(function*() {
+    const fs = yield* FileSystem.FileSystem
+    const data = yield* fs.readFile(imagePath)
+
+    // Detect media type from extension
+    const ext = imagePath.toLowerCase().split(".").pop() ?? ""
+    const mediaType = ext === "png" ?
+      "image/png"
+      : ext === "gif" ?
+      "image/gif"
+      : ext === "webp" ?
+      "image/webp"
+      : "image/jpeg"
+
+    // Convert to base64
+    const base64 = Buffer.from(data).toString("base64")
+    return `data:${mediaType};base64,${base64}`
+  })
 
 const runChat = (options: {
   name: Option.Option<string>
   message: Option.Option<string>
-  image: Option.Option<string>
   raw: boolean
   script: boolean
   showEphemeral: boolean
+  images: ReadonlyArray<string>
 }) =>
   Effect.gen(function*() {
     yield* Effect.logDebug("Starting chat session")
     const mode = determineMode(options)
     const contextName = Option.getOrElse(options.name, generateRandomContextName)
-    const imagePath = Option.getOrNull(options.image) ?? undefined
 
     const outputOptions: OutputOptions = {
       raw: mode === "script" || options.raw,
       showEphemeral: mode === "script" || options.showEphemeral
     }
 
+    // Convert image paths to data URIs
+    const imageDataUris = options.images.length > 0
+      ? yield* Effect.all(options.images.map(readImageAsDataUri))
+      : []
+
     switch (mode) {
       case "single-turn": {
         const message = Option.getOrElse(options.message, () => "")
-        yield* runEventStream(contextName, message, outputOptions, imagePath)
+        yield* runEventStream(contextName, message, outputOptions, imageDataUris)
         if (!outputOptions.raw) {
           yield* printTraceLinks
         }
@@ -327,7 +400,7 @@ const runChat = (options: {
       case "pipe": {
         const input = yield* readAllStdin
         if (input !== "") {
-          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false }, imagePath)
+          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false }, imageDataUris)
         }
         break
       }
@@ -422,13 +495,13 @@ const chatCommand = Command.make(
   {
     name: nameOption,
     message: messageOption,
-    image: imageOption,
     raw: rawOption,
     script: scriptOption,
-    showEphemeral: showEphemeralOption
+    showEphemeral: showEphemeralOption,
+    images: imageOption
   },
-  ({ image, message, name, raw, script, showEphemeral }) =>
-    runChat({ image, message, name, raw, script, showEphemeral })
+  ({ images, message, name, raw, script, showEphemeral }) =>
+    runChat({ images, message, name, raw, script, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
 const logTestCommand = Command.make(
@@ -485,7 +558,7 @@ const hostOption = Options.text("host").pipe(
   Options.optional
 )
 
-/** Generic serve command - starts HTTP server with /context/:name endpoint */
+/** Generic serve command - starts HTTP server with /agent/:agentName endpoint */
 export const serveCommand = Command.make(
   "serve",
   {
@@ -501,32 +574,32 @@ export const serveCommand = Command.make(
       yield* Console.log(`Starting HTTP server on http://${actualHost}:${actualPort}`)
       yield* Console.log("")
       yield* Console.log("Endpoints:")
-      yield* Console.log("  POST /context/:contextName")
-      yield* Console.log("       Send JSONL events, receive SSE stream")
-      yield* Console.log("       Content-Type: application/x-ndjson")
+      yield* Console.log("  POST /agent/:agentName")
+      yield* Console.log("       Send user message, receive SSE stream of events")
+      yield* Console.log("")
+      yield* Console.log("  GET  /agent/:agentName/events")
+      yield* Console.log("       Subscribe to agent event stream (SSE)")
+      yield* Console.log("")
+      yield* Console.log("  GET  /agent/:agentName/state")
+      yield* Console.log("       Get current agent state")
       yield* Console.log("")
       yield* Console.log("  GET  /health")
       yield* Console.log("       Health check endpoint")
       yield* Console.log("")
       yield* Console.log("Example:")
-      yield* Console.log(`  curl -X POST http://${actualHost}:${actualPort}/context/test \\`)
-      yield* Console.log(`    -H "Content-Type: application/x-ndjson" \\`)
-      yield* Console.log(`    -d '{"_tag":"UserMessage","content":"hello"}'`)
+      yield* Console.log(`  curl -X POST http://${actualHost}:${actualPort}/agent/test \\`)
+      yield* Console.log(`    -H "Content-Type: application/json" \\`)
+      yield* Console.log(`    -d '{"_tag":"UserMessageEvent","content":"hello"}'`)
       yield* Console.log("")
 
       // Create server layer with configured port/host
-      const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost })
-
-      // Create layers for the server
-      const layers = Layer.mergeAll(
-        serverLayer,
-        AgentServer.layer
-      )
+      // Set idleTimeout high for SSE streaming - Bun defaults to 10s which kills long-running streams
+      const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost, idleTimeout: 120 })
 
       // Use Layer.launch to keep the server running
       return yield* Layer.launch(
         HttpServer.serve(makeRouter).pipe(
-          Layer.provide(layers)
+          Layer.provide(serverLayer)
         )
       )
     })

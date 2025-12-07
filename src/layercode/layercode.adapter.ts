@@ -7,20 +7,25 @@
  *   { "type": "message", "text": "hello", "session_id": "abc", "turn_id": "123" }
  *
  * We translate to:
- *   { "_tag": "UserMessage", "content": "hello" }
+ *   { "_tag": "UserMessageEvent", "content": "hello" }
  *
  * And translate our responses back:
- *   { "_tag": "TextDelta", "delta": "Hi" }
+ *   { "_tag": "TextDeltaEvent", "delta": "Hi" }
  *   →
  *   data: {"type":"response.tts","content":"Hi","turn_id":"123"}
  */
-import { LanguageModel } from "@effect/ai"
-import { FileSystem, HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Effect, Option, Schema, Stream } from "effect"
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
+import { Chunk, Effect, Fiber, Option, Schema, Stream } from "effect"
+import { AgentRegistry } from "../agent-registry.ts"
 import { AppConfig } from "../config.ts"
-import { AssistantMessageEvent, type ContextEvent, TextDeltaEvent, UserMessageEvent } from "../context.model.ts"
-import { CurrentLlmConfig } from "../llm-config.ts"
-import { AgentServer } from "../server.service.ts"
+import {
+  type AgentName,
+  type ContextEvent,
+  type ContextName,
+  makeBaseEventFields,
+  type TextDeltaEvent,
+  UserMessageEvent
+} from "../domain.ts"
 import { maybeVerifySignature } from "./signature.ts"
 
 /** LayerCode incoming webhook event types */
@@ -77,8 +82,8 @@ interface LayerCodeEndResponse {
 
 type LayerCodeResponse = LayerCodeTTSResponse | LayerCodeEndResponse
 
-/** Convert context name from session_id */
-const sessionToContextName = (sessionId: string): string => `layercode-session-${sessionId}`
+/** Convert session_id to agent name */
+const sessionToAgentName = (sessionId: string): AgentName => `layercode-session-${sessionId}` as AgentName
 
 /** Encode LayerCode response as SSE */
 const encodeLayerCodeSSE = (response: LayerCodeResponse): Uint8Array =>
@@ -89,15 +94,16 @@ const toLayerCodeResponse = (
   event: ContextEvent,
   turnId: string
 ): LayerCodeResponse | null => {
-  if (Schema.is(TextDeltaEvent)(event)) {
+  // Use _tag for discrimination - more reliable than Schema.is()
+  if (event._tag === "TextDeltaEvent") {
     return {
       type: "response.tts",
-      content: event.delta,
+      content: (event as TextDeltaEvent).delta,
       turn_id: turnId
     }
   }
 
-  if (Schema.is(AssistantMessageEvent)(event)) {
+  if (event._tag === "AssistantMessageEvent") {
     return {
       type: "response.end",
       turn_id: turnId
@@ -112,13 +118,8 @@ const toLayerCodeResponse = (
 const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
   Effect.gen(function*() {
     const request = yield* HttpServerRequest.HttpServerRequest
-    const agentServer = yield* AgentServer
+    const registry = yield* AgentRegistry
     const config = yield* AppConfig
-
-    // Get context services to provide to the stream
-    const langModel = yield* LanguageModel.LanguageModel
-    const fs = yield* FileSystem.FileSystem
-    const llmConfig = yield* CurrentLlmConfig
 
     yield* Effect.logDebug("POST /layercode/webhook")
 
@@ -160,21 +161,55 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
     // Handle different event types
     switch (webhookEvent.type) {
       case "message": {
-        const contextName = sessionToContextName(webhookEvent.session_id)
+        const agentName = sessionToAgentName(webhookEvent.session_id)
+        const contextName = `${agentName}-v1` as ContextName
         const turnId = webhookEvent.turn_id
 
-        // Convert to our format
-        const userMessage = new UserMessageEvent({ content: webhookEvent.text })
+        const agent = yield* registry.getOrCreate(agentName)
+        const ctx = yield* agent.getReducedContext
 
-        // Stream SSE events directly - provide services to remove context requirements
-        const sseStream = agentServer.handleRequest(contextName, [userMessage]).pipe(
-          Stream.map((event) => toLayerCodeResponse(event, turnId)),
-          Stream.filter((r): r is LayerCodeResponse => r !== null),
-          Stream.map(encodeLayerCodeSSE),
-          Stream.provideService(LanguageModel.LanguageModel, langModel),
-          Stream.provideService(FileSystem.FileSystem, fs),
-          Stream.provideService(CurrentLlmConfig, llmConfig)
+        const userEvent = new UserMessageEvent({
+          ...makeBaseEventFields(agentName, contextName, ctx.nextEventNumber, true),
+          content: webhookEvent.text
+        })
+
+        // Subscribe to events - subscription is guaranteed established when this completes
+        const eventStream = yield* agent.subscribe
+        const eventFiber = yield* eventStream.pipe(
+          Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
+          Stream.runCollect,
+          Effect.fork
         )
+
+        // Add the user event to trigger the turn (no delay needed - subscription is guaranteed)
+        yield* agent.addEvent(userEvent)
+
+        // Wait for the turn to complete and get all new events
+        const newEventsChunk = yield* Fiber.join(eventFiber).pipe(
+          Effect.catchAll(() => Effect.succeed(Chunk.empty<ContextEvent>()))
+        )
+        const newEvents = Chunk.toArray(newEventsChunk)
+        yield* Effect.logDebug("LayerCode collected events", {
+          count: newEvents.length,
+          tags: newEvents.map((e) => e._tag)
+        })
+
+        // Convert events to LayerCode responses
+        const layerCodeResponses: Array<Uint8Array> = []
+        for (const event of newEvents) {
+          const response = toLayerCodeResponse(event, turnId)
+          if (response) {
+            layerCodeResponses.push(encodeLayerCodeSSE(response))
+          }
+        }
+
+        // Always end with response.end if not already present
+        const hasEndResponse = newEvents.some((e) => e._tag === "AssistantMessageEvent")
+        if (!hasEndResponse) {
+          layerCodeResponses.push(encodeLayerCodeSSE({ type: "response.end", turn_id: turnId }))
+        }
+
+        const sseStream = Stream.fromIterable(layerCodeResponses)
 
         return HttpServerResponse.stream(sseStream, {
           contentType: "text/event-stream",
@@ -279,11 +314,8 @@ export const makeLayerCodeRouter = (
   welcomeMessage: Option.Option<string>
 ): HttpRouter.HttpRouter<
   never,
-  | AgentServer
+  | AgentRegistry
   | AppConfig
-  | LanguageModel.LanguageModel
-  | FileSystem.FileSystem
-  | CurrentLlmConfig
 > =>
   HttpRouter.empty.pipe(
     HttpRouter.post("/layercode/webhook", layercodeWebhookHandler(welcomeMessage))

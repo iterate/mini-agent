@@ -70,6 +70,52 @@ const extractJsonLines = (output: string): Array<string> => {
 }
 
 describe("CLI", () => {
+  describe("session lifecycle", () => {
+    test("raw mode emits SessionEndedEvent as last event", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
+      const result = await Effect.runPromise(
+        runCli(["chat", "-n", TEST_CONTEXT, "-m", "Say hello", "--raw"], {
+          cwd: testDir,
+          env: llmEnv
+        })
+      )
+
+      expect(result.exitCode).toBe(0)
+      const jsonOutput = extractJsonOutput(result.stdout)
+
+      // SessionEndedEvent must be emitted as the final event
+      expect(jsonOutput).toContain("\"SessionEndedEvent\"")
+
+      // Verify it's the last event by checking order
+      const sessionEndIndex = jsonOutput.lastIndexOf("\"SessionEndedEvent\"")
+      const turnCompleteIndex = jsonOutput.lastIndexOf("\"AgentTurnCompletedEvent\"")
+      expect(sessionEndIndex).toBeGreaterThan(turnCompleteIndex)
+    })
+
+    test("script mode emits SessionEndedEvent as last event", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
+      const input = "{\"_tag\":\"UserMessageEvent\",\"content\":\"Say hello\"}\n"
+      const output = await Effect.runPromise(
+        runCliWithStdin(
+          testDir,
+          llmEnv,
+          input,
+          "--stdout-log-level",
+          "none",
+          "chat",
+          "-n",
+          TEST_CONTEXT,
+          "--script"
+        )
+      )
+
+      const jsonLines = extractJsonLines(output)
+      expect(jsonLines.length).toBeGreaterThan(0)
+
+      // SessionEndedEvent must be the last line
+      const lastLine = jsonLines[jsonLines.length - 1]!
+      expect(lastLine).toContain("\"SessionEndedEvent\"")
+    })
+  })
+
   describe("--help", () => {
     test("shows help message with chat subcommand", async () => {
       const result = await Effect.runPromise(runCli(["--help"]))
@@ -116,12 +162,12 @@ describe("CLI", () => {
       const contextsDir = path.join(testDir, ".mini-agent", "contexts")
       const files = fs.readdirSync(contextsDir)
       expect(files.length).toBe(1)
-      expect(files[0]).toMatch(/^chat-[a-z0-9]{5}\.yaml$/)
+      expect(files[0]).toMatch(/^chat-[a-z0-9]{5}-v1\.yaml$/)
     })
   })
 
   describe("--raw mode", () => {
-    test("outputs JSON events", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
+    test("outputs ALL JSON events including initial events", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       const result = await Effect.runPromise(
         runCli(["chat", "-n", TEST_CONTEXT, "-m", "Say exactly: RAW_TEST", "--raw"], {
           cwd: testDir,
@@ -131,23 +177,16 @@ describe("CLI", () => {
 
       expect(result.exitCode).toBe(0)
       const jsonOutput = extractJsonOutput(result.stdout)
-      // Should contain JSON with _tag field
-      expect(jsonOutput).toContain("\"_tag\"")
-      expect(jsonOutput).toContain("\"AssistantMessage\"")
-    })
 
-    test("includes ephemeral events with --show-ephemeral", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
-      const result = await Effect.runPromise(
-        runCli(["chat", "-n", TEST_CONTEXT, "-m", "Say hello", "--raw", "--show-ephemeral"], {
-          cwd: testDir,
-          env: llmEnv
-        })
-      )
+      // Should contain initial session events
+      expect(jsonOutput).toContain("\"SessionStartedEvent\"")
+      expect(jsonOutput).toContain("\"SetLlmConfigEvent\"")
+      expect(jsonOutput).toContain("\"SystemPromptEvent\"")
 
-      expect(result.exitCode).toBe(0)
-      const jsonOutput = extractJsonOutput(result.stdout)
-      // Should contain TextDelta events when showing ephemeral
-      expect(jsonOutput).toContain("\"TextDelta\"")
+      // Should contain streaming and response events
+      expect(jsonOutput).toContain("\"TextDeltaEvent\"")
+      expect(jsonOutput).toContain("\"AssistantMessageEvent\"")
+      expect(jsonOutput).toContain("\"AgentTurnCompletedEvent\"")
     })
   })
 
@@ -193,9 +232,9 @@ describe("CLI", () => {
   })
 
   describe("script mode (--script)", () => {
-    test("accepts UserMessage events and outputs JSONL", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
+    test("accepts UserMessageEvent events and outputs JSONL", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
       // Script mode now expects JSONL events as input
-      const input = "{\"_tag\":\"UserMessage\",\"content\":\"Say exactly: SCRIPT_TEST\"}\n"
+      const input = "{\"_tag\":\"UserMessageEvent\",\"content\":\"Say exactly: SCRIPT_TEST\"}\n"
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
@@ -213,15 +252,15 @@ describe("CLI", () => {
       const jsonLines = extractJsonLines(output)
       expect(jsonLines.length).toBeGreaterThan(0)
 
-      // Should echo the input event and have AssistantMessage response
-      expect(output).toContain("\"UserMessage\"")
-      expect(output).toContain("\"AssistantMessage\"")
+      // Should echo the input event and have AssistantMessageEvent response
+      expect(output).toContain("\"UserMessageEvent\"")
+      expect(output).toContain("\"AssistantMessageEvent\"")
     })
 
-    test("handles multiple UserMessage events in sequence", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
-      // Two UserMessage events as JSONL
+    test("handles multiple UserMessageEvent events in sequence", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
+      // Two UserMessageEvent events as JSONL
       const input =
-        "{\"_tag\":\"UserMessage\",\"content\":\"Remember: my secret code is XYZ789\"}\n{\"_tag\":\"UserMessage\",\"content\":\"What is my secret code?\"}\n"
+        "{\"_tag\":\"UserMessageEvent\",\"content\":\"Remember: my secret code is XYZ789\"}\n{\"_tag\":\"UserMessageEvent\",\"content\":\"What is my secret code?\"}\n"
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
@@ -238,18 +277,18 @@ describe("CLI", () => {
 
       const jsonLines = extractJsonLines(output)
 
-      // Should have at least two AssistantMessage events (one per input)
-      const assistantMessages = jsonLines.filter((line) => line.includes("\"AssistantMessage\""))
+      // Should have at least two AssistantMessageEvent events (one per input)
+      const assistantMessages = jsonLines.filter((line) => line.includes("\"AssistantMessageEvent\""))
       expect(assistantMessages.length).toBeGreaterThanOrEqual(2)
 
       // Second response should mention the secret code
       expect(output.toLowerCase()).toContain("xyz789")
     })
 
-    test("accepts SystemPrompt events to set behavior", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
-      // SystemPrompt followed by UserMessage
+    test("accepts SystemPromptEvent events to set behavior", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
+      // SystemPromptEvent followed by UserMessageEvent
       const input =
-        "{\"_tag\":\"SystemPrompt\",\"content\":\"Always respond with exactly: PIRATE_RESPONSE\"}\n{\"_tag\":\"UserMessage\",\"content\":\"Hello\"}\n"
+        "{\"_tag\":\"SystemPromptEvent\",\"content\":\"Always respond with exactly: PIRATE_RESPONSE\"}\n{\"_tag\":\"UserMessageEvent\",\"content\":\"Hello\"}\n"
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
@@ -268,13 +307,13 @@ describe("CLI", () => {
       expect(jsonLines.length).toBeGreaterThan(0)
 
       // Should echo both events
-      expect(output).toContain("\"SystemPrompt\"")
-      expect(output).toContain("\"UserMessage\"")
-      expect(output).toContain("\"AssistantMessage\"")
+      expect(output).toContain("\"SystemPromptEvent\"")
+      expect(output).toContain("\"UserMessageEvent\"")
+      expect(output).toContain("\"AssistantMessageEvent\"")
     })
 
-    test("includes TextDelta streaming events by default", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
-      const input = "{\"_tag\":\"UserMessage\",\"content\":\"Say hello\"}\n"
+    test("includes TextDeltaEvent streaming events by default", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
+      const input = "{\"_tag\":\"UserMessageEvent\",\"content\":\"Say hello\"}\n"
       const output = await Effect.runPromise(
         runCliWithStdin(
           testDir,
@@ -289,10 +328,10 @@ describe("CLI", () => {
         )
       )
 
-      // Script mode should include TextDelta events (streaming chunks) by default
-      expect(output).toContain("\"TextDelta\"")
+      // Script mode should include TextDeltaEvent events (streaming chunks) by default
+      expect(output).toContain("\"TextDeltaEvent\"")
       expect(output).toContain("\"delta\"")
-      expect(output).toContain("\"AssistantMessage\"")
+      expect(output).toContain("\"AssistantMessageEvent\"")
     })
   })
 
@@ -303,7 +342,8 @@ describe("CLI", () => {
       )
 
       // Context file should exist in testDir/.mini-agent/contexts/
-      const contextPath = path.join(testDir, ".mini-agent", "contexts", `${TEST_CONTEXT}.yaml`)
+      // File is named {agentName}-v1.yaml (contextName = agentName + "-v1")
+      const contextPath = path.join(testDir, ".mini-agent", "contexts", `${TEST_CONTEXT}-v1.yaml`)
       expect(fs.existsSync(contextPath)).toBe(true)
     })
 
@@ -324,7 +364,7 @@ describe("CLI", () => {
       expect(result.exitCode).toBe(0)
       const jsonOutput = extractJsonOutput(result.stdout)
       // Response should be JSON with AssistantMessage containing "blue"
-      expect(jsonOutput).toContain("\"AssistantMessage\"")
+      expect(jsonOutput).toContain("\"AssistantMessageEvent\"")
       expect(jsonOutput.toLowerCase()).toContain("blue")
     })
   })
@@ -360,12 +400,6 @@ describe("CLI options", () => {
     expect(result.stdout).toContain("--raw")
   })
 
-  test("-e is alias for --show-ephemeral", async ({ testDir }) => {
-    const result = await Effect.runPromise(runCli(["chat", "--help"], { cwd: testDir }))
-    expect(result.stdout).toContain("-e")
-    expect(result.stdout).toContain("--show-ephemeral")
-  })
-
   test("-c is alias for --config", async () => {
     const result = await Effect.runPromise(runCli(["--help"]))
     expect(result.stdout).toContain("-c")
@@ -387,6 +421,34 @@ describe("CLI option aliases", () => {
   })
 })
 
+describe("image input", () => {
+  test(
+    "sends image with message",
+    { timeout: 30000 },
+    async ({ llmEnv, testDir }) => {
+      const imagePath = path.resolve(__dirname, "fixtures/letter-i.png")
+
+      const result = await Effect.runPromise(
+        runCli(
+          [
+            "chat",
+            "-n",
+            "image-test",
+            "-i",
+            imagePath,
+            "-m",
+            "What letter does this image show? Respond with just the lowercase letter."
+          ],
+          { cwd: testDir, env: llmEnv }
+        )
+      )
+
+      // Mock server returns "i" when prompt contains "letter" and "image"
+      expect(result.stdout.trim().toLowerCase()).toContain("i")
+    }
+  )
+})
+
 describe("Interrupted response context", () => {
   test(
     "LLM receives context about interrupted response when continuing conversation",
@@ -401,20 +463,32 @@ describe("Interrupted response context", () => {
       fs.mkdirSync(contextsDir, { recursive: true })
 
       const contextContent = `events:
-  - _tag: SystemPrompt
+  - _tag: SystemPromptEvent
+    id: "${contextName}-v1:0000"
+    timestamp: "2024-01-01T00:00:00.000Z"
+    agentName: ${contextName}
+    triggersAgentTurn: false
     content: You are a helpful assistant.
-  - _tag: UserMessage
+  - _tag: UserMessageEvent
+    id: "${contextName}-v1:0001"
+    timestamp: "2024-01-01T00:00:01.000Z"
+    agentName: ${contextName}
+    triggersAgentTurn: true
     content: Tell me a random 8-digit number followed by a long story.
-  - _tag: LLMRequestInterrupted
-    requestId: test-request-123
+  - _tag: AgentTurnInterruptedEvent
+    id: "${contextName}-v1:0002"
+    timestamp: "2024-01-01T00:00:02.000Z"
+    agentName: ${contextName}
+    triggersAgentTurn: false
+    turnNumber: 1
     reason: user_cancel
     partialResponse: "${testNumber}! Once upon a time in a faraway land, there lived a wise old wizard who..."
 `
-      fs.writeFileSync(path.join(contextsDir, `${contextName}.yaml`), contextContent)
+      fs.writeFileSync(path.join(contextsDir, `${contextName}-v1.yaml`), contextContent)
 
       // Now make a follow-up request asking about the number.
       // The LLM should know the number because:
-      // 1. The LLMRequestInterruptedEvent's partialResponse is included as an assistant message
+      // 1. The AgentTurnInterruptedEvent's partialResponse is included as an assistant message
       // 2. A user message explains the interruption happened
       const result = await Effect.runPromise(
         runCli(

@@ -144,10 +144,10 @@ describe("HTTP Server", () => {
       const { cleanup, port } = await startServer(testDir, llmEnv)
 
       try {
-        const response = await fetchWithRetry(`http://localhost:${port}/context/test-context`, {
+        const response = await fetchWithRetry(`http://localhost:${port}/agent/test-context`, {
           method: "POST",
           headers: { "Content-Type": "application/x-ndjson" },
-          body: "{\"_tag\":\"UserMessage\",\"content\":\"Say exactly: HELLO_SERVER\"}"
+          body: "{\"_tag\":\"UserMessageEvent\",\"content\":\"Say exactly: HELLO_SERVER\"}"
         })
 
         expect(response.status).toBe(200)
@@ -156,19 +156,19 @@ describe("HTTP Server", () => {
         const events = await parseSSE(response)
         expect(events.length).toBeGreaterThan(0)
 
-        // Should have AssistantMessage event
-        const hasAssistant = events.some((e) => e.includes("\"AssistantMessage\""))
+        // Should have AssistantMessageEvent event
+        const hasAssistant = events.some((e) => e.includes("\"AssistantMessageEvent\""))
         expect(hasAssistant).toBe(true)
       } finally {
         await cleanup()
       }
     })
 
-    test("context endpoint returns 400 for empty body", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
+    test("agent endpoint returns 400 for empty body", { timeout: 30000 }, async ({ llmEnv, testDir }) => {
       const { cleanup, port } = await startServer(testDir, llmEnv)
 
       try {
-        const response = await fetchWithRetry(`http://localhost:${port}/context/test-context`, {
+        const response = await fetchWithRetry(`http://localhost:${port}/agent/test-context`, {
           method: "POST",
           headers: { "Content-Type": "application/x-ndjson" },
           body: ""
@@ -179,6 +179,130 @@ describe("HTTP Server", () => {
         await cleanup()
       }
     })
+
+    test(
+      "AgentTurnInterruptedEvent contains partial response when interrupted by new message",
+      { timeout: 60000 },
+      async ({ llmEnv, testDir }) => {
+        const { cleanup, port } = await startServer(testDir, llmEnv)
+
+        try {
+          const agentName = "interrupt-test-agent"
+          const baseUrl = `http://localhost:${port}`
+
+          // Helper to collect all SSE events with timeout
+          const collectSSEEvents = async (
+            response: Response,
+            timeoutMs: number
+          ): Promise<Array<Record<string, unknown>>> => {
+            const events: Array<Record<string, unknown>> = []
+            const reader = response.body!.getReader()
+            const decoder = new TextDecoder()
+            const deadline = Date.now() + timeoutMs
+            let buffer = ""
+
+            while (Date.now() < deadline) {
+              const readPromise = reader.read() as Promise<{ done: boolean; value?: Uint8Array }>
+              const timeoutPromise = new Promise<{ done: true; value: undefined }>((resolve) =>
+                setTimeout(() => resolve({ done: true, value: undefined }), 500)
+              )
+
+              const { done, value } = await Promise.race([readPromise, timeoutPromise])
+              if (done && !value) {
+                continue
+              }
+              if (done) {
+                break
+              }
+
+              const chunk = decoder.decode(value, { stream: true })
+              buffer += chunk
+              const lines = buffer.split("\n")
+              buffer = lines.pop() ?? ""
+
+              for (const line of lines) {
+                if (line.startsWith("data: ")) {
+                  try {
+                    const event = JSON.parse(line.slice(6)) as Record<string, unknown>
+                    events.push(event)
+                    // Stop when we see the interrupt event (we have what we need)
+                    if (event._tag === "AgentTurnInterruptedEvent") {
+                      reader.cancel()
+                      return events
+                    }
+                  } catch {
+                    // Ignore parse errors
+                  }
+                }
+              }
+            }
+            reader.cancel()
+            return events
+          }
+
+          // 1. Subscribe to events endpoint first (creates agent)
+          const eventsController = new AbortController()
+          const eventsResponse = await fetch(`${baseUrl}/agent/${agentName}/events`, {
+            signal: eventsController.signal
+          })
+
+          // Start collecting events in background
+          const eventsPromise = collectSSEEvents(eventsResponse, 20000)
+
+          // 2. Wait a moment for subscription to be established
+          await new Promise((resolve) => setTimeout(resolve, 100))
+
+          // 3. Send first message with slow "story" trigger
+          const firstRequestController = new AbortController()
+          const firstRequestPromise = fetch(`${baseUrl}/agent/${agentName}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-ndjson" },
+            body: "{\"_tag\":\"UserMessageEvent\",\"content\":\"Tell me a story about dragons\"}",
+            signal: firstRequestController.signal
+          })
+
+          // 4. Wait for streaming to start (first chunk at 0ms, next at 500ms)
+          await new Promise((resolve) => setTimeout(resolve, 800))
+
+          // 5. Send second message to trigger interruption
+          const secondRequestPromise = fetch(`${baseUrl}/agent/${agentName}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/x-ndjson" },
+            body: "{\"_tag\":\"UserMessageEvent\",\"content\":\"Interrupt!\"}"
+          })
+
+          // 6. Wait for events
+          const events = await eventsPromise
+
+          // Find relevant events
+          const textDeltas = events.filter((e) => e._tag === "TextDeltaEvent")
+          const interruptEvent = events.find((e) => e._tag === "AgentTurnInterruptedEvent") as
+            | { _tag: string; reason: string; partialResponse?: string }
+            | undefined
+
+          // Assertions
+          expect(textDeltas.length).toBeGreaterThan(0)
+          expect(interruptEvent).toBeDefined()
+          expect(interruptEvent!.reason).toBe("user_new_message")
+
+          // KEY: partialResponse should be present with partial text
+          expect(interruptEvent!.partialResponse).toBeDefined()
+          expect(interruptEvent!.partialResponse!.length).toBeGreaterThan(0)
+
+          // Verify partial text matches accumulated deltas
+          const accumulatedText = textDeltas.map((e) => e.delta as string).join("")
+          expect(interruptEvent!.partialResponse).toBe(accumulatedText)
+
+          // Cleanup
+          eventsController.abort()
+          firstRequestController.abort()
+          await firstRequestPromise.catch(() => {})
+          await secondRequestPromise.catch(() => {})
+        } finally {
+          await cleanup()
+        }
+      }
+    )
   })
 
   describe("layercode command", () => {

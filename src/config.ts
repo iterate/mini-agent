@@ -91,6 +91,11 @@ export const MiniAgentConfig = Config.all({
   // LLM provider:model. See llm-config.ts
   llm: Config.string("LLM").pipe(Config.withDefault("openai:gpt-4.1-mini")),
 
+  // System prompt - emitted on session start
+  systemPrompt: Config.string("SYSTEM_PROMPT").pipe(
+    Config.withDefault("You are a helpful assistant.")
+  ),
+
   dataStorageDir: Config.string("DATA_STORAGE_DIR").pipe(
     Config.withDefault(".mini-agent")
   ),
@@ -118,7 +123,7 @@ export const MiniAgentConfig = Config.all({
 
 export type MiniAgentConfig = Config.Config.Success<typeof MiniAgentConfig>
 
-export class AppConfig extends Context.Tag("@app/AppConfig")<
+export class AppConfig extends Context.Tag("@mini-agent/AppConfig")<
   AppConfig,
   MiniAgentConfig
 >() {

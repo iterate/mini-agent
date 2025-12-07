@@ -78,7 +78,7 @@ LLM='{"apiFormat":"openai-chat-completions","model":"my-model","baseUrl":"https:
 
 ## Event Types
 
-See [`src/context.model.ts`](src/context.model.ts) for schema definitions.
+See [`src/domain.ts`](src/domain.ts) for schema definitions.
 
 **Input Events** (via stdin in script mode):
 - `UserMessage` - User message content
@@ -127,10 +127,31 @@ bun run mini-agent serve --port 3000
 ```
 
 Endpoints:
-- `POST /context/:name` - Send JSONL body, receive SSE stream
+- `POST /agent/:name` - Send message, receive SSE stream of events
+- `GET /agent/:name/events` - Subscribe to agent events (SSE)
+- `GET /agent/:name/state` - Get reduced agent state
 - `GET /health` - Health check
 
-See [`src/http.ts`](src/http.ts) for implementation.
+### Streaming Examples
+
+**curl - Send message and stream response:**
+```bash
+curl -N -X POST http://localhost:3000/agent/my-chat \
+  -H "Content-Type: application/json" \
+  -d '{"_tag":"UserMessageEvent","content":"Hello!"}'
+```
+
+**curl - Subscribe to live events:**
+```bash
+curl -N http://localhost:3000/agent/my-chat/events
+```
+
+**CLI - Stream with raw output:**
+```bash
+bun run mini-agent chat -n my-chat -m "Hello!" --raw
+```
+
+See [`src/http-routes.ts`](src/http-routes.ts) for implementation.
 
 ## Configuration
 
@@ -156,6 +177,6 @@ See [`src/tracing.ts`](src/tracing.ts) for configuration. Set provider-specific 
 
 ## Architecture
 
-See [`architecture/architecture.md`](architecture/architecture.md) for design overview and [`architecture/design.ts`](architecture/design.ts) for complete type definitions.
+See [`docs/architecture.md`](docs/architecture.md) for design overview and [`docs/design.ts`](docs/design.ts) for type sketches.
 
 Core concept: A **Context** is a named, ordered list of events representing a conversation. Events reduce to state, state drives the agent.

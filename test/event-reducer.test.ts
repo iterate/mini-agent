@@ -4,20 +4,20 @@
  * Tests the pure reducer that folds events into ReducedContext.
  */
 import { describe, expect, it } from "@effect/vitest"
-import { DateTime, Effect, Option, Redacted } from "effect"
-import type { AgentName, AgentTurnNumber, ContextName, LlmProviderId } from "./domain.ts"
+import { DateTime, Effect, Option, Schema } from "effect"
+import type { AgentName, AgentTurnNumber, ContextName, EventId } from "../src/domain.ts"
 import {
   AgentTurnCompletedEvent,
   AgentTurnStartedEvent,
   AssistantMessageEvent,
+  ContextEvent,
   makeEventId,
   ReducedContext,
   SetLlmConfigEvent,
-  SetTimeoutEvent,
   SystemPromptEvent,
   UserMessageEvent
-} from "./domain.ts"
-import { EventReducer } from "./event-reducer.ts"
+} from "../src/domain.ts"
+import { EventReducer } from "../src/event-reducer.ts"
 
 const testAgentName = "test-agent" as AgentName
 const testContextName = "test-context" as ContextName
@@ -51,6 +51,13 @@ describe("EventReducer", () => {
         const reducer = yield* EventReducer
         const initial = reducer.initialReducedContext
         expect(Option.isNone(initial.agentTurnStartedAtEventId)).toBe(true)
+      }).pipe(Effect.provide(EventReducer.Default)))
+
+    it.effect("has no llmConfig initially", () =>
+      Effect.gen(function*() {
+        const reducer = yield* EventReducer
+        const initial = reducer.initialReducedContext
+        expect(Option.isNone(initial.llmConfig)).toBe(true)
       }).pipe(Effect.provide(EventReducer.Default)))
   })
 
@@ -116,52 +123,49 @@ describe("EventReducer", () => {
   })
 
   describe("config events", () => {
-    it.effect("SetLlmConfigEvent updates primary config", () =>
+    it.effect("SetLlmConfigEvent sets llmConfig", () =>
       Effect.gen(function*() {
         const reducer = yield* EventReducer
         const event = new SetLlmConfigEvent({
           ...baseFields(0),
-          providerId: "anthropic" as LlmProviderId,
+          apiFormat: "anthropic",
           model: "claude-3-opus",
-          apiKey: Redacted.make("test-key"),
-          baseUrl: Option.none(),
-          asFallback: false
+          baseUrl: "https://api.anthropic.com",
+          apiKeyEnvVar: "ANTHROPIC_API_KEY"
         })
 
         const result = yield* reducer.reduce(reducer.initialReducedContext, [event])
 
-        expect(result.config.primary.providerId).toBe("anthropic")
-        expect(result.config.primary.model).toBe("claude-3-opus")
+        expect(Option.isSome(result.llmConfig)).toBe(true)
+        const config = Option.getOrThrow(result.llmConfig)
+        expect(config.apiFormat).toBe("anthropic")
+        expect(config.model).toBe("claude-3-opus")
+        expect(config.apiKeyEnvVar).toBe("ANTHROPIC_API_KEY")
       }).pipe(Effect.provide(EventReducer.Default)))
 
-    it.effect("SetLlmConfigEvent with asFallback=true sets fallback", () =>
+    it.effect("SetLlmConfigEvent replaces previous config", () =>
       Effect.gen(function*() {
         const reducer = yield* EventReducer
-        const event = new SetLlmConfigEvent({
+        const event1 = new SetLlmConfigEvent({
           ...baseFields(0),
-          providerId: "openai" as LlmProviderId,
+          apiFormat: "openai-responses",
           model: "gpt-4",
-          apiKey: Redacted.make("fallback-key"),
-          baseUrl: Option.none(),
-          asFallback: true
+          baseUrl: "https://api.openai.com/v1",
+          apiKeyEnvVar: "OPENAI_API_KEY"
+        })
+        const event2 = new SetLlmConfigEvent({
+          ...baseFields(1),
+          apiFormat: "anthropic",
+          model: "claude-3-opus",
+          baseUrl: "https://api.anthropic.com",
+          apiKeyEnvVar: "ANTHROPIC_API_KEY"
         })
 
-        const result = yield* reducer.reduce(reducer.initialReducedContext, [event])
+        const result = yield* reducer.reduce(reducer.initialReducedContext, [event1, event2])
 
-        expect(Option.isSome(result.config.fallback)).toBe(true)
-        const fallback = Option.getOrThrow(result.config.fallback)
-        expect(fallback.providerId).toBe("openai")
-        expect(fallback.model).toBe("gpt-4")
-      }).pipe(Effect.provide(EventReducer.Default)))
-
-    it.effect("SetTimeoutEvent updates timeout", () =>
-      Effect.gen(function*() {
-        const reducer = yield* EventReducer
-        const event = new SetTimeoutEvent({ ...baseFields(0), timeoutMs: 60000 })
-
-        const result = yield* reducer.reduce(reducer.initialReducedContext, [event])
-
-        expect(result.config.timeoutMs).toBe(60000)
+        const config = Option.getOrThrow(result.llmConfig)
+        expect(config.apiFormat).toBe("anthropic")
+        expect(config.model).toBe("claude-3-opus")
       }).pipe(Effect.provide(EventReducer.Default)))
   })
 
@@ -244,5 +248,37 @@ describe("EventReducer", () => {
         expect(result1.messages.length).toBe(result2.messages.length)
         expect(result1.nextEventNumber).toBe(result2.nextEventNumber)
       }).pipe(Effect.provide(EventReducer.Default)))
+  })
+
+  describe("JSON serialization", () => {
+    it("parentEventId is omitted when None (not full Option object)", () => {
+      const event = new UserMessageEvent({
+        ...baseFields(0),
+        content: "Hello"
+      })
+
+      const json = JSON.parse(JSON.stringify(Schema.encodeSync(ContextEvent)(event)))
+
+      // parentEventId should be absent/undefined, not {"_id":"Option","_tag":"None"}
+      expect(json.parentEventId).toBeUndefined()
+      expect("parentEventId" in json).toBe(false)
+    })
+
+    it("parentEventId serializes to string when Some", () => {
+      const parentId = "test-context:0001" as EventId
+      const event = new UserMessageEvent({
+        id: makeEventId(testContextName, 2),
+        timestamp: DateTime.unsafeNow(),
+        agentName: testAgentName,
+        parentEventId: Option.some(parentId),
+        triggersAgentTurn: false,
+        content: "Hello"
+      })
+
+      const json = JSON.parse(JSON.stringify(Schema.encodeSync(ContextEvent)(event)))
+
+      // parentEventId should serialize to the string value, not {"_id":"Option","_tag":"Some","value":"..."}
+      expect(json.parentEventId).toBe(parentId)
+    })
   })
 })

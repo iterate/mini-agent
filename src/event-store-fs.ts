@@ -9,12 +9,12 @@
 import { FileSystem, Path } from "@effect/platform"
 import { Deferred, Effect, Layer, Option, Queue, Ref, Schema } from "effect"
 import * as YAML from "yaml"
-import { AppConfig } from "../config.ts"
+import { AppConfig } from "./config.ts"
 import { ContextEvent, ContextLoadError, type ContextName, ContextSaveError } from "./domain.ts"
 import { EventStore } from "./event-store.ts"
 
 const encodeEvent = Schema.encodeSync(ContextEvent)
-const decodeEvent = Schema.decodeUnknownSync(ContextEvent)
+const decodeEvent = (raw: unknown) => Schema.decodeUnknown(ContextEvent)(raw)
 
 /**
  * FileSystem-backed EventStore layer.
@@ -32,7 +32,7 @@ export const EventStoreFileSystem: Layer.Layer<
     const config = yield* AppConfig
 
     const cwd = Option.getOrElse(config.cwd, () => process.cwd())
-    const contextsDir = path.join(cwd, config.dataStorageDir, "contexts-v2")
+    const contextsDir = path.join(cwd, config.dataStorageDir, "contexts")
 
     const getContextPath = (contextName: ContextName) => path.join(contextsDir, `${contextName}.yaml`)
 
@@ -97,16 +97,24 @@ export const EventStoreFileSystem: Layer.Layer<
           return [] as ReadonlyArray<ContextEvent>
         }
 
-        return yield* fs.readFileString(filePath).pipe(
-          Effect.map((yaml) => {
-            const parsed = YAML.parse(yaml) as { events?: Array<unknown> }
-            return (parsed?.events ?? []).map((raw) => decodeEvent(raw))
-          }),
+        const yaml = yield* fs.readFileString(filePath).pipe(
           Effect.catchAll((error) =>
             Effect.fail(
               new ContextLoadError({
                 contextName,
                 message: `Failed to read context file`,
+                cause: Option.some(error)
+              })
+            )
+          )
+        )
+        const parsed = YAML.parse(yaml) as { events?: Array<unknown> }
+        return yield* Effect.forEach(parsed?.events ?? [], decodeEvent).pipe(
+          Effect.catchAll((error) =>
+            Effect.fail(
+              new ContextLoadError({
+                contextName,
+                message: `Failed to decode events`,
                 cause: Option.some(error)
               })
             )
@@ -159,6 +167,25 @@ export const EventStoreFileSystem: Layer.Layer<
         Effect.catchAll(() => Effect.succeed(false))
       )
 
-    return { load, append, exists } as unknown as EventStore
+    const list = () =>
+      Effect.gen(function*() {
+        const dirExists = yield* fs.exists(contextsDir).pipe(
+          Effect.catchAll(() => Effect.succeed(false))
+        )
+
+        if (!dirExists) {
+          return [] as ReadonlyArray<ContextName>
+        }
+
+        const entries = yield* fs.readDirectory(contextsDir).pipe(
+          Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<string>))
+        )
+
+        return entries
+          .filter((name) => name.endsWith(".yaml"))
+          .map((name) => name.slice(0, -5) as ContextName)
+      })
+
+    return { load, append, exists, list } as unknown as EventStore
   })
 )
