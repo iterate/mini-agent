@@ -473,6 +473,25 @@ export const makeMiniAgent = (
       yield* addEventInternal(systemPromptEvent)
     }
 
+    // Wait for startup events to be processed before returning
+    // This prevents race conditions where getEvents returns empty before events are processed
+    yield* Effect.iterate(0, {
+      while: () => true,
+      body: () =>
+        Effect.gen(function*() {
+          const events = yield* Ref.get(stateRef).pipe(Effect.map((s) => s.events))
+          if (events.some((e) => e._tag === "SessionStartedEvent")) {
+            return Effect.fail("found" as const)
+          }
+          yield* Effect.sleep("5 millis")
+          return Effect.succeed(0)
+        }).pipe(Effect.flatten)
+    }).pipe(
+      Effect.catchAll(() => Effect.void),
+      Effect.timeout("1 second"),
+      Effect.orDie
+    )
+
     // Cleanup on scope close
     yield* Effect.addFinalizer(() => performShutdown)
 

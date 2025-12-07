@@ -308,7 +308,7 @@ function feedReducer(items: Array<FeedItem>, action: FeedAction): Array<FeedItem
         ...itemsWithDateHeading,
         new SystemEventItem({
           id: crypto.randomUUID(),
-          tag: event._tag,
+          tag: "LlmConfig",
           detail: event.model,
           timestamp: event.timestamp,
           eventId: event.id,

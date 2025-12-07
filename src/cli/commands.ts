@@ -18,6 +18,7 @@ import {
   type TextDeltaEvent,
   UserMessageEvent
 } from "../domain.ts"
+import { EventStore } from "../event-store.ts"
 import { makeRouter } from "../http-routes.ts"
 import { layercodeCommand } from "../layercode/index.ts"
 import { printTraceLinks } from "../tracing.ts"
@@ -291,10 +292,14 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
 const NEW_CONTEXT_VALUE = "__new__"
 
 const selectOrCreateContext = Effect.gen(function*() {
-  const registry = yield* AgentRegistry
-  const contexts = yield* registry.list
+  const store = yield* EventStore
+  const contextNames = yield* store.list()
+  // Convert context names (e.g. "my-agent-v1") to agent names (e.g. "my-agent")
+  const agentNames = contextNames
+    .map((name) => name.replace(/-v1$/, ""))
+    .filter((name, index, arr) => arr.indexOf(name) === index) as Array<AgentName>
 
-  if (contexts.length === 0) {
+  if (agentNames.length === 0) {
     yield* Console.log("No existing contexts found.")
     return yield* CliPrompt.text({ message: "Enter a name for your new context" })
   }
@@ -305,7 +310,7 @@ const selectOrCreateContext = Effect.gen(function*() {
       value: NEW_CONTEXT_VALUE,
       description: "Start fresh with a new context"
     },
-    ...contexts.map((name) => ({
+    ...agentNames.map((name) => ({
       title: name,
       value: name,
       description: "Continue with this context"

@@ -110,7 +110,7 @@ describe.sequential("TTY Interactive Mode", () => {
     try {
       await session.waitForText("Starting new conversation", { timeout: 5000 })
       const text = await session.waitForText(contextName, { timeout: 3000 })
-      expect(text).toContain(`context: ${contextName}`)
+      expect(text).toContain(`Agent: ${contextName}`)
     } finally {
       await session.press(["ctrl", "c"])
       session.close()
@@ -131,7 +131,7 @@ describe.sequential("TTY Interactive Mode", () => {
       await session.press("enter")
       await new Promise((resolve) => setTimeout(resolve, 200))
       const text = await session.waitForText("empty-idle-test", { timeout: 3000 })
-      expect(text).toContain("context: empty-idle-test")
+      expect(text).toContain("Agent: empty-idle-test")
     } finally {
       await session.press(["ctrl", "c"])
       session.close()
