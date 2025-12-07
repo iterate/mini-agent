@@ -7,7 +7,6 @@
 
 import { type AiError, LanguageModel, Prompt } from "@effect/ai"
 import { DateTime, Effect, Layer, Option, pipe, Ref, Stream } from "effect"
-import { CurrentLlmConfig } from "../llm-config.ts"
 import {
   AgentError,
   type AgentName,
@@ -19,6 +18,7 @@ import {
   type ReducedContext,
   TextDeltaEvent
 } from "./domain.ts"
+import { CurrentLlmConfig } from "./llm-config.ts"
 
 /**
  * Convert ReducedContext messages to @effect/ai Prompt.

@@ -14,12 +14,10 @@
  *   →
  *   data: {"type":"response.tts","content":"Hi","turn_id":"123"}
  */
-import { LanguageModel } from "@effect/ai"
-import { FileSystem, HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Effect, Option, Schema, Stream } from "effect"
 import { AppConfig } from "../config.ts"
-import { AssistantMessageEvent, type ContextEvent, TextDeltaEvent, UserMessageEvent } from "../context.model.ts"
-import { CurrentLlmConfig } from "../llm-config.ts"
+import { AssistantMessageEvent, type ContextEvent, TextDeltaEvent } from "../domain.ts"
 import { AgentServer } from "../server.service.ts"
 import { maybeVerifySignature } from "./signature.ts"
 
@@ -115,11 +113,6 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
     const agentServer = yield* AgentServer
     const config = yield* AppConfig
 
-    // Get context services to provide to the stream
-    const langModel = yield* LanguageModel.LanguageModel
-    const fs = yield* FileSystem.FileSystem
-    const llmConfig = yield* CurrentLlmConfig
-
     yield* Effect.logDebug("POST /layercode/webhook")
 
     // Read body
@@ -163,17 +156,14 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
         const contextName = sessionToContextName(webhookEvent.session_id)
         const turnId = webhookEvent.turn_id
 
-        // Convert to our format
-        const userMessage = new UserMessageEvent({ content: webhookEvent.text })
+        // Convert to our input format
+        const userMessage = { _tag: "UserMessage" as const, content: webhookEvent.text }
 
-        // Stream SSE events directly - provide services to remove context requirements
+        // Stream SSE events directly
         const sseStream = agentServer.handleRequest(contextName, [userMessage]).pipe(
           Stream.map((event) => toLayerCodeResponse(event, turnId)),
           Stream.filter((r): r is LayerCodeResponse => r !== null),
-          Stream.map(encodeLayerCodeSSE),
-          Stream.provideService(LanguageModel.LanguageModel, langModel),
-          Stream.provideService(FileSystem.FileSystem, fs),
-          Stream.provideService(CurrentLlmConfig, llmConfig)
+          Stream.map(encodeLayerCodeSSE)
         )
 
         return HttpServerResponse.stream(sseStream, {
@@ -281,9 +271,6 @@ export const makeLayerCodeRouter = (
   never,
   | AgentServer
   | AppConfig
-  | LanguageModel.LanguageModel
-  | FileSystem.FileSystem
-  | CurrentLlmConfig
 > =>
   HttpRouter.empty.pipe(
     HttpRouter.post("/layercode/webhook", layercodeWebhookHandler(welcomeMessage))

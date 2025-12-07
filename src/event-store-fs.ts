@@ -9,7 +9,7 @@
 import { FileSystem, Path } from "@effect/platform"
 import { Deferred, Effect, Layer, Option, Queue, Ref, Schema } from "effect"
 import * as YAML from "yaml"
-import { AppConfig } from "../config.ts"
+import { AppConfig } from "./config.ts"
 import { ContextEvent, ContextLoadError, type ContextName, ContextSaveError } from "./domain.ts"
 import { EventStore } from "./event-store.ts"
 
@@ -159,6 +159,25 @@ export const EventStoreFileSystem: Layer.Layer<
         Effect.catchAll(() => Effect.succeed(false))
       )
 
-    return { load, append, exists } as unknown as EventStore
+    const list = () =>
+      Effect.gen(function*() {
+        const dirExists = yield* fs.exists(contextsDir).pipe(
+          Effect.catchAll(() => Effect.succeed(false))
+        )
+        if (!dirExists) {
+          return [] as ReadonlyArray<ContextName>
+        }
+
+        const files = yield* fs.readDirectory(contextsDir).pipe(
+          Effect.catchAll(() => Effect.succeed([] as ReadonlyArray<string>))
+        )
+
+        // Filter for .yaml files and extract context names
+        return files
+          .filter((f) => f.endsWith(".yaml"))
+          .map((f) => f.replace(/\.yaml$/, "") as ContextName)
+      })
+
+    return { load, append, exists, list } as unknown as EventStore
   })
 )

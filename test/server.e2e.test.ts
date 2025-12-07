@@ -156,8 +156,8 @@ describe("HTTP Server", () => {
         const events = await parseSSE(response)
         expect(events.length).toBeGreaterThan(0)
 
-        // Should have AssistantMessage event
-        const hasAssistant = events.some((e) => e.includes("\"AssistantMessage\""))
+        // Should have AssistantMessageEvent
+        const hasAssistant = events.some((e) => e.includes("\"AssistantMessageEvent\""))
         expect(hasAssistant).toBe(true)
       } finally {
         await cleanup()

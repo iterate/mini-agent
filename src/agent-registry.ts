@@ -150,6 +150,13 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
       Effect.map((map) => Array.from(map.keys()))
     )
 
+    // List all contexts from EventStore (includes persisted contexts not yet loaded)
+    const listContexts: Effect.Effect<ReadonlyArray<AgentName>> = Effect.gen(function*() {
+      const contextNames = yield* store.list()
+      // Convert context names back to agent names (remove "-v1" suffix)
+      return contextNames.map((cn) => cn.replace(/-v1$/, "") as AgentName)
+    })
+
     const shutdownAgent = (agentName: AgentName): Effect.Effect<void, AgentNotFoundError> =>
       Effect.gen(function*() {
         const current = yield* Ref.get(agents)
@@ -190,6 +197,7 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
       getOrCreate,
       get,
       list,
+      listContexts,
       shutdownAgent,
       shutdownAll
     }

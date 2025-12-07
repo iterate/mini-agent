@@ -112,11 +112,11 @@ describe("CLI", () => {
 
       expect(result.stdout.length).toBeGreaterThan(0)
 
-      // Context file should exist with random name (chat-xxxxx pattern)
-      const contextsDir = path.join(testDir, ".mini-agent", "contexts")
+      // Context file should exist with random name (chat-xxxxx-v1 pattern in contexts-v2)
+      const contextsDir = path.join(testDir, ".mini-agent", "contexts-v2")
       const files = fs.readdirSync(contextsDir)
       expect(files.length).toBe(1)
-      expect(files[0]).toMatch(/^chat-[a-z0-9]{5}\.yaml$/)
+      expect(files[0]).toMatch(/^chat-[a-z0-9]{5}-v1\.yaml$/)
     })
   })
 
@@ -133,7 +133,7 @@ describe("CLI", () => {
       const jsonOutput = extractJsonOutput(result.stdout)
       // Should contain JSON with _tag field
       expect(jsonOutput).toContain("\"_tag\"")
-      expect(jsonOutput).toContain("\"AssistantMessage\"")
+      expect(jsonOutput).toContain("\"AssistantMessageEvent\"")
     })
 
     test("includes ephemeral events with --show-ephemeral", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
@@ -147,7 +147,7 @@ describe("CLI", () => {
       expect(result.exitCode).toBe(0)
       const jsonOutput = extractJsonOutput(result.stdout)
       // Should contain TextDelta events when showing ephemeral
-      expect(jsonOutput).toContain("\"TextDelta\"")
+      expect(jsonOutput).toContain("\"TextDeltaEvent\"")
     })
   })
 
@@ -215,7 +215,7 @@ describe("CLI", () => {
 
       // Should echo the input event and have AssistantMessage response
       expect(output).toContain("\"UserMessage\"")
-      expect(output).toContain("\"AssistantMessage\"")
+      expect(output).toContain("\"AssistantMessageEvent\"")
     })
 
     test("handles multiple UserMessage events in sequence", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
@@ -239,7 +239,7 @@ describe("CLI", () => {
       const jsonLines = extractJsonLines(output)
 
       // Should have at least two AssistantMessage events (one per input)
-      const assistantMessages = jsonLines.filter((line) => line.includes("\"AssistantMessage\""))
+      const assistantMessages = jsonLines.filter((line) => line.includes("\"AssistantMessageEvent\""))
       expect(assistantMessages.length).toBeGreaterThanOrEqual(2)
 
       // Second response should mention the secret code
@@ -270,7 +270,7 @@ describe("CLI", () => {
       // Should echo both events
       expect(output).toContain("\"SystemPrompt\"")
       expect(output).toContain("\"UserMessage\"")
-      expect(output).toContain("\"AssistantMessage\"")
+      expect(output).toContain("\"AssistantMessageEvent\"")
     })
 
     test("includes TextDelta streaming events by default", { timeout: 15000 }, async ({ llmEnv, testDir }) => {
@@ -290,9 +290,9 @@ describe("CLI", () => {
       )
 
       // Script mode should include TextDelta events (streaming chunks) by default
-      expect(output).toContain("\"TextDelta\"")
+      expect(output).toContain("\"TextDeltaEvent\"")
       expect(output).toContain("\"delta\"")
-      expect(output).toContain("\"AssistantMessage\"")
+      expect(output).toContain("\"AssistantMessageEvent\"")
     })
   })
 
@@ -302,8 +302,8 @@ describe("CLI", () => {
         runCli(["chat", "-n", TEST_CONTEXT, "-m", "Hello"], { cwd: testDir, env: llmEnv })
       )
 
-      // Context file should exist in testDir/.mini-agent/contexts/
-      const contextPath = path.join(testDir, ".mini-agent", "contexts", `${TEST_CONTEXT}.yaml`)
+      // Context file should exist in testDir/.mini-agent/contexts-v2/ with -v1 suffix
+      const contextPath = path.join(testDir, ".mini-agent", "contexts-v2", `${TEST_CONTEXT}-v1.yaml`)
       expect(fs.existsSync(contextPath)).toBe(true)
     })
 
@@ -323,8 +323,8 @@ describe("CLI", () => {
 
       expect(result.exitCode).toBe(0)
       const jsonOutput = extractJsonOutput(result.stdout)
-      // Response should be JSON with AssistantMessage containing "blue"
-      expect(jsonOutput).toContain("\"AssistantMessage\"")
+      // Response should be JSON with AssistantMessageEvent containing "blue"
+      expect(jsonOutput).toContain("\"AssistantMessageEvent\"")
       expect(jsonOutput.toLowerCase()).toContain("blue")
     })
   })

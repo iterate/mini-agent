@@ -385,5 +385,28 @@ export const EventBuilder = {
       ...EventBuilder.makeBase(agentName, contextName, nextEventNumber, false, parentEventId),
       turnNumber,
       durationMs
+    }),
+
+  agentTurnInterrupted: (
+    agentName: AgentName,
+    contextName: ContextName,
+    nextEventNumber: number,
+    turnNumber: AgentTurnNumber,
+    reason: InterruptReason,
+    partialResponse?: string
+  ) =>
+    new AgentTurnInterruptedEvent({
+      ...EventBuilder.makeBase(agentName, contextName, nextEventNumber, false),
+      turnNumber,
+      reason,
+      partialResponse: partialResponse ? Option.some(partialResponse) : Option.none()
     })
 }
+
+// -----------------------------------------------------------------------------
+// Default System Prompt
+// -----------------------------------------------------------------------------
+
+export const DEFAULT_SYSTEM_PROMPT = `You are a helpful, friendly assistant.
+Keep your responses concise but informative.
+Use markdown formatting when helpful.`

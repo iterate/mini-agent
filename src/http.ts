@@ -4,11 +4,9 @@
  * Provides HTTP endpoints that mirror the CLI interface:
  * - POST /context/:contextName - Send events, receive SSE stream of responses
  */
-import { LanguageModel } from "@effect/ai"
-import { FileSystem, HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Effect, Schema, Stream } from "effect"
-import type { ContextEvent } from "./context.model.ts"
-import { CurrentLlmConfig } from "./llm-config.ts"
+import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
+import { Console, Effect, Schema, Stream } from "effect"
+import { type ContextEvent } from "./domain.ts"
 import { AgentServer, ScriptInputEvent } from "./server.service.ts"
 
 /** Encode a ContextEvent as an SSE data line */
@@ -48,11 +46,6 @@ const contextHandler = Effect.gen(function*() {
   const agentServer = yield* AgentServer
   const params = yield* HttpRouter.params
 
-  // Get context services to provide to the stream
-  const langModel = yield* LanguageModel.LanguageModel
-  const fs = yield* FileSystem.FileSystem
-  const llmConfig = yield* CurrentLlmConfig
-
   const contextName = params.contextName
   if (!contextName) {
     return HttpServerResponse.text("Missing contextName", { status: 400 })
@@ -77,17 +70,14 @@ const contextHandler = Effect.gen(function*() {
     return HttpServerResponse.text(message, { status: 400 })
   }
 
-  const events = parseResult.right
-  if (events.length === 0) {
+  const inputEvents = parseResult.right
+  if (inputEvents.length === 0) {
     return HttpServerResponse.text("No valid events in body", { status: 400 })
   }
 
-  // Stream SSE events directly - provide services to remove context requirements
-  const sseStream = agentServer.handleRequest(contextName, events).pipe(
-    Stream.map(encodeSSE),
-    Stream.provideService(LanguageModel.LanguageModel, langModel),
-    Stream.provideService(FileSystem.FileSystem, fs),
-    Stream.provideService(CurrentLlmConfig, llmConfig)
+  // Use AgentServer to process events and stream response
+  const sseStream = agentServer.handleRequest(contextName, inputEvents).pipe(
+    Stream.map(encodeSSE)
   )
 
   return HttpServerResponse.stream(sseStream, {
@@ -113,6 +103,6 @@ export const makeRouter = HttpRouter.empty.pipe(
 
 /** Run the server and log the address - for standalone use */
 export const runServer = Effect.gen(function*() {
-  yield* Effect.log("Server started")
+  yield* Console.log("Server started")
   return yield* Effect.never
 })

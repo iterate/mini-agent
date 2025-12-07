@@ -78,20 +78,23 @@ LLM='{"apiFormat":"openai-chat-completions","model":"my-model","baseUrl":"https:
 
 ## Event Types
 
-See [`src/context.model.ts`](src/context.model.ts) for schema definitions.
+See [`src/domain.ts`](src/domain.ts) for schema definitions.
 
 **Input Events** (via stdin in script mode):
-- `UserMessage` - User message content
-- `SystemPrompt` - System behavior configuration
-- `FileAttachment` - Image or file attachment
+- `UserMessage` - User message content (output as `UserMessageEvent`)
+- `SystemPrompt` - System behavior configuration (output as `SystemPromptEvent`)
 
 **Output Events**:
-- `TextDelta` - Streaming chunk (ephemeral)
-- `AssistantMessage` - Complete response (persisted)
+- `TextDeltaEvent` - Streaming chunk (ephemeral)
+- `AssistantMessageEvent` - Complete response (persisted)
+- `AgentTurnStartedEvent` - LLM turn started
+- `AgentTurnCompletedEvent` - LLM turn completed
+- `AgentTurnInterruptedEvent` - Turn interrupted (partial response)
 
-**Internal Events** (persisted):
-- `SetLlmConfig` - LLM configuration for context
-- `LLMRequestInterrupted` - Partial response on cancellation
+**Lifecycle Events** (persisted):
+- `SessionStartedEvent` - Agent session started
+- `SessionEndedEvent` - Agent session ended
+- `SetLlmConfigEvent` - LLM configuration for context
 
 ## Script Mode
 
