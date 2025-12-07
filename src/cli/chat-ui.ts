@@ -4,22 +4,67 @@
  * Interactive chat with interruptible LLM streaming.
  * Return during streaming interrupts (with optional new message); Escape exits.
  */
-import type { AiError, LanguageModel } from "@effect/ai"
-import type { Error as PlatformError, FileSystem } from "@effect/platform"
-import { Cause, Context, Effect, Fiber, Layer, Mailbox, Stream } from "effect"
-import { is } from "effect/Schema"
+import type { Error as PlatformError } from "@effect/platform"
+import { Cause, Context, DateTime, Effect, Fiber, Layer, Mailbox, Option, Stream } from "effect"
+import { AgentRegistry } from "../agent-registry.ts"
 import {
-  AssistantMessageEvent,
+  type AgentName,
+  AgentTurnInterruptedEvent,
   type ContextEvent,
-  LLMRequestInterruptedEvent,
-  TextDeltaEvent,
-  UserMessageEvent
-} from "../context.model.ts"
-import { ContextService } from "../context.service.ts"
-import type { ContextLoadError, ContextSaveError } from "../errors.ts"
-import type { CurrentLlmConfig } from "../llm-config.ts"
-import { streamLLMResponse } from "../llm.ts"
-import { type ChatController, runOpenTUIChat } from "./components/opentui-chat.tsx"
+  type ContextName,
+  type ContextSaveError,
+  EventBuilder,
+  type EventId,
+  type ReducedContext,
+  type ReducerError
+} from "../domain.ts"
+import { type ChatController, type ChatEvent, runOpenTUIChat } from "./components/opentui-chat.tsx"
+
+/**
+ * Map a ContextEvent to the TUI ChatEvent format.
+ * Returns null for events that shouldn't be displayed.
+ */
+const mapEventToTui = (e: ContextEvent): ChatEvent | null => {
+  switch (e._tag) {
+    case "UserMessageEvent":
+      return { _tag: "UserMessage", content: e.content }
+    case "AssistantMessageEvent":
+      return { _tag: "AssistantMessage", content: e.content }
+    case "SystemPromptEvent":
+      return { _tag: "SystemPrompt", content: e.content }
+    case "TextDeltaEvent":
+      return { _tag: "TextDelta", delta: e.delta }
+    case "AgentTurnInterruptedEvent":
+      return {
+        _tag: "LLMRequestInterrupted",
+        requestId: e.id,
+        reason: e.reason,
+        partialResponse: Option.getOrElse(e.partialResponse, () => "")
+      }
+    case "FileAttachmentEvent": {
+      const fileName = Option.getOrUndefined(e.fileName)
+      return fileName
+        ? { _tag: "FileAttachment", source: e.source, fileName }
+        : { _tag: "FileAttachment", source: e.source }
+    }
+    case "SessionStartedEvent":
+      return { _tag: "SessionStarted" }
+    case "SessionEndedEvent":
+      return { _tag: "SessionEnded" }
+    case "AgentTurnStartedEvent":
+      return { _tag: "AgentTurnStarted", turnNumber: e.turnNumber }
+    case "AgentTurnCompletedEvent":
+      return { _tag: "AgentTurnCompleted", turnNumber: e.turnNumber, durationMs: e.durationMs }
+    case "AgentTurnFailedEvent":
+      return { _tag: "AgentTurnFailed", turnNumber: e.turnNumber, error: e.error }
+    case "SetLlmConfigEvent":
+      return { _tag: "SetLlmConfig", model: e.model, provider: e.providerId }
+    case "SetTimeoutEvent":
+      return { _tag: "SetTimeout", timeoutMs: e.timeoutMs }
+    default:
+      return null
+  }
+}
 
 type ChatSignal =
   | { readonly _tag: "Input"; readonly text: string }
@@ -29,26 +74,29 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
   ChatUI,
   {
     readonly runChat: (
-      contextName: string
-    ) => Effect.Effect<
-      void,
-      AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
-      LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
-    >
+      agentName: AgentName
+    ) => Effect.Effect<void, PlatformError.PlatformError | ReducerError | ContextSaveError, AgentRegistry>
   }
 >() {
   static readonly layer = Layer.effect(
     ChatUI,
-    Effect.gen(function*() {
-      const contextService = yield* ContextService
+    Effect.sync(() => {
+      const runChat = Effect.fn("ChatUI.runChat")(function*(agentName: AgentName) {
+        const registry = yield* AgentRegistry
+        const agent = yield* registry.getOrCreate(agentName)
 
-      const runChat = Effect.fn("ChatUI.runChat")(function*(contextName: string) {
-        const existingEvents = yield* contextService.load(contextName)
+        // Load existing events to display in chat
+        const existingEvents = yield* agent.getEvents
 
         const mailbox = yield* Mailbox.make<ChatSignal>()
 
+        // Map ContextEvent to the format expected by OpenTUI chat
+        const tuiEvents = existingEvents.map((e) => mapEventToTui(e)).filter((e): e is NonNullable<typeof e> =>
+          e !== null
+        )
+
         const chat = yield* Effect.promise(() =>
-          runOpenTUIChat(contextName, existingEvents, {
+          runOpenTUIChat(agentName, tuiEvents, {
             onSubmit: (text) => {
               mailbox.unsafeOffer({ _tag: "Input", text })
             },
@@ -58,7 +106,7 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
           })
         )
 
-        yield* runChatLoop(contextName, contextService, chat, mailbox).pipe(
+        yield* runChatLoop(agentName, agent, chat, mailbox).pipe(
           Effect.catchAll((error) => Effect.logError("Chat error", { error }).pipe(Effect.as(undefined))),
           Effect.catchAllCause((cause) =>
             Cause.isInterruptedOnly(cause) ? Effect.void : Effect.logError("Chat loop error", cause)
@@ -74,19 +122,23 @@ export class ChatUI extends Context.Tag("@app/ChatUI")<
   static readonly testLayer = Layer.sync(ChatUI, () => ChatUI.of({ runChat: () => Effect.void }))
 }
 
+interface MiniAgentInterface {
+  readonly agentName: AgentName
+  readonly contextName: ContextName
+  readonly addEvent: (event: ContextEvent) => Effect.Effect<void, ReducerError | ContextSaveError>
+  readonly events: Stream.Stream<ContextEvent, never>
+  readonly getReducedContext: Effect.Effect<ReducedContext>
+}
+
 const runChatLoop = (
-  contextName: string,
-  contextService: Context.Tag.Service<typeof ContextService>,
+  agentName: AgentName,
+  agent: MiniAgentInterface,
   chat: ChatController,
   mailbox: Mailbox.Mailbox<ChatSignal>
-): Effect.Effect<
-  void,
-  AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
-  LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
-> =>
+): Effect.Effect<void, ReducerError | ContextSaveError> =>
   Effect.fn("ChatUI.runChatLoop")(function*() {
     while (true) {
-      const result = yield* runChatTurn(contextName, contextService, chat, mailbox, null)
+      const result = yield* runChatTurn(agentName, agent, chat, mailbox, null)
       if (result._tag === "exit") {
         return
       }
@@ -98,16 +150,12 @@ type TurnResult =
   | { readonly _tag: "exit" }
 
 const runChatTurn = (
-  contextName: string,
-  contextService: Context.Tag.Service<typeof ContextService>,
+  agentName: AgentName,
+  agent: MiniAgentInterface,
   chat: ChatController,
   mailbox: Mailbox.Mailbox<ChatSignal>,
   pendingMessage: string | null
-): Effect.Effect<
-  TurnResult,
-  AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError,
-  LanguageModel.LanguageModel | FileSystem.FileSystem | CurrentLlmConfig
-> =>
+): Effect.Effect<TurnResult, ReducerError | ContextSaveError> =>
   Effect.fn("ChatUI.runChatTurn")(function*() {
     // Get message either from pending or by waiting for input
     let userMessage: string
@@ -128,34 +176,33 @@ const runChatTurn = (
       return { _tag: "continue" } as const
     }
 
-    const userEvent = new UserMessageEvent({ content: userMessage })
+    const ctx = yield* agent.getReducedContext
+    const userEvent = EventBuilder.userMessage(agentName, agent.contextName, ctx.nextEventNumber, userMessage)
 
-    yield* contextService.persistEvent(contextName, userEvent)
-    chat.addEvent(userEvent)
+    // Add user message to TUI and agent
+    chat.addEvent({ _tag: "UserMessage", content: userMessage })
 
-    const events = yield* contextService.load(contextName)
     let accumulatedText = ""
 
     const streamFiber = yield* Effect.fork(
-      streamLLMResponse(events).pipe(
-        Stream.tap((event: ContextEvent) =>
-          Effect.sync(() => {
-            if (is(TextDeltaEvent)(event)) {
-              accumulatedText += event.delta
-              chat.addEvent(event)
-            }
-          })
-        ),
-        Stream.filter(is(AssistantMessageEvent)),
+      agent.events.pipe(
+        Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
         Stream.tap((event) =>
-          Effect.gen(function*() {
-            yield* contextService.persistEvent(contextName, event)
-            chat.addEvent(event)
+          Effect.sync(() => {
+            if (event._tag === "TextDeltaEvent") {
+              accumulatedText += event.delta
+              chat.addEvent({ _tag: "TextDelta", delta: event.delta })
+            } else if (event._tag === "AssistantMessageEvent") {
+              chat.addEvent({ _tag: "AssistantMessage", content: event.content })
+            }
           })
         ),
         Stream.runDrain
       )
     )
+
+    // Add event to trigger LLM turn
+    yield* agent.addEvent(userEvent)
 
     const result = yield* awaitStreamCompletion(streamFiber, mailbox)
 
@@ -165,30 +212,52 @@ const runChatTurn = (
 
     if (result._tag === "exit") {
       if (accumulatedText.length > 0) {
-        const interruptedEvent = new LLMRequestInterruptedEvent({
-          requestId: crypto.randomUUID(),
+        const updatedCtx = yield* agent.getReducedContext
+        const interruptedEvent = new AgentTurnInterruptedEvent({
+          id: `${agent.contextName}:${String(updatedCtx.nextEventNumber).padStart(4, "0")}` as EventId,
+          timestamp: DateTime.unsafeNow(),
+          agentName,
+          parentEventId: Option.none(),
+          triggersAgentTurn: false,
+          turnNumber: updatedCtx.currentTurnNumber,
+          reason: "user_cancel",
+          partialResponse: Option.some(accumulatedText)
+        })
+        yield* agent.addEvent(interruptedEvent)
+        chat.addEvent({
+          _tag: "LLMRequestInterrupted",
+          requestId: interruptedEvent.id,
           reason: "user_cancel",
           partialResponse: accumulatedText
         })
-        yield* contextService.persistEvent(contextName, interruptedEvent)
-        chat.addEvent(interruptedEvent)
       }
       return { _tag: "exit" } as const
     }
 
     // result._tag === "interrupted" - user hit return during streaming
     if (accumulatedText.length > 0) {
-      const interruptedEvent = new LLMRequestInterruptedEvent({
-        requestId: crypto.randomUUID(),
+      const updatedCtx = yield* agent.getReducedContext
+      const interruptedEvent = new AgentTurnInterruptedEvent({
+        id: `${agent.contextName}:${String(updatedCtx.nextEventNumber).padStart(4, "0")}` as EventId,
+        timestamp: DateTime.unsafeNow(),
+        agentName,
+        parentEventId: Option.none(),
+        triggersAgentTurn: false,
+        turnNumber: updatedCtx.currentTurnNumber,
+        reason: result.newMessage ? "user_new_message" : "user_cancel",
+        partialResponse: Option.some(accumulatedText)
+      })
+      yield* agent.addEvent(interruptedEvent)
+      chat.addEvent({
+        _tag: "LLMRequestInterrupted",
+        requestId: interruptedEvent.id,
         reason: result.newMessage ? "user_new_message" : "user_cancel",
         partialResponse: accumulatedText
       })
-      yield* contextService.persistEvent(contextName, interruptedEvent)
-      chat.addEvent(interruptedEvent)
     }
 
     if (result.newMessage) {
-      return yield* runChatTurn(contextName, contextService, chat, mailbox, result.newMessage)
+      return yield* runChatTurn(agentName, agent, chat, mailbox, result.newMessage)
     }
 
     return { _tag: "continue" } as const
@@ -200,9 +269,9 @@ type StreamResult =
   | { readonly _tag: "interrupted"; readonly newMessage: string | null }
 
 const awaitStreamCompletion = (
-  fiber: Fiber.RuntimeFiber<void, AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError>,
+  fiber: Fiber.RuntimeFiber<void, ReducerError | ContextSaveError>,
   mailbox: Mailbox.Mailbox<ChatSignal>
-): Effect.Effect<StreamResult, AiError.AiError | PlatformError.PlatformError | ContextLoadError | ContextSaveError> =>
+): Effect.Effect<StreamResult, ReducerError | ContextSaveError> =>
   Effect.fn("ChatUI.awaitStreamCompletion")(function*() {
     const waitForFiber = Fiber.join(fiber).pipe(Effect.as({ _tag: "completed" } as StreamResult))
     const waitForInterrupt = Effect.gen(function*() {

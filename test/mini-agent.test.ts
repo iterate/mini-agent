@@ -11,12 +11,20 @@
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer, Option, Ref, Stream } from "effect"
-import type { AgentName, AgentTurnNumber, ContextEvent, ContextName, LlmProviderId, ReducedContext } from "./domain.ts"
-import { AgentError, EventBuilder, MiniAgentTurn } from "./domain.ts"
-import { EventReducer } from "./event-reducer.ts"
-import { EventStore } from "./event-store.ts"
-import type { ActorState } from "./mini-agent.ts"
-import { makeExecuteTurn, makeMiniAgent } from "./mini-agent.ts"
+import { AgentRegistry } from "../src/agent-registry.ts"
+import type {
+  AgentName,
+  AgentTurnNumber,
+  ContextEvent,
+  ContextName,
+  LlmProviderId,
+  ReducedContext
+} from "../src/domain.ts"
+import { AgentError, EventBuilder, MiniAgentTurn } from "../src/domain.ts"
+import { EventReducer } from "../src/event-reducer.ts"
+import { EventStore } from "../src/event-store.ts"
+import type { ActorState } from "../src/mini-agent.ts"
+import { makeExecuteTurn, makeMiniAgent } from "../src/mini-agent.ts"
 
 const testAgentName = "test-agent" as AgentName
 const testContextName = "test-context" as ContextName
@@ -271,4 +279,31 @@ describe("MiniAgent", () => {
         Effect.provide(EventReducer.Default)
       ))
   })
+})
+
+describe("AgentRegistry", () => {
+  it.effect("creates new agent on getOrCreate", () =>
+    Effect.gen(function*() {
+      const registry = yield* AgentRegistry
+      const agent = yield* registry.getOrCreate(testAgentName)
+      expect(agent.agentName).toBe(testAgentName)
+    }).pipe(Effect.provide(AgentRegistry.TestLayer)))
+
+  it.effect("returns same agent on second getOrCreate", () =>
+    Effect.gen(function*() {
+      const registry = yield* AgentRegistry
+      const agent1 = yield* registry.getOrCreate(testAgentName)
+      const agent2 = yield* registry.getOrCreate(testAgentName)
+      expect(agent1.contextName).toBe(agent2.contextName)
+    }).pipe(Effect.provide(AgentRegistry.TestLayer)))
+
+  it.effect("list returns all agent names", () =>
+    Effect.gen(function*() {
+      const registry = yield* AgentRegistry
+      yield* registry.getOrCreate("agent-a" as AgentName)
+      yield* registry.getOrCreate("agent-b" as AgentName)
+      const names = yield* registry.list
+      expect(names).toContain("agent-a")
+      expect(names).toContain("agent-b")
+    }).pipe(Effect.provide(AgentRegistry.TestLayer)))
 })

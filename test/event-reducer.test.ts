@@ -3,11 +3,13 @@
  *
  * Tests the pure reducer that folds events into ReducedContext.
  */
+import { Prompt } from "@effect/ai"
 import { describe, expect, it } from "@effect/vitest"
 import { DateTime, Effect, Option, Redacted } from "effect"
-import type { AgentName, AgentTurnNumber, ContextName, LlmProviderId } from "./domain.ts"
+import type { AgentName, AgentTurnNumber, ContextName, LlmProviderId } from "../src/domain.ts"
 import {
   AgentTurnCompletedEvent,
+  AgentTurnInterruptedEvent,
   AgentTurnStartedEvent,
   AssistantMessageEvent,
   makeEventId,
@@ -16,8 +18,8 @@ import {
   SetTimeoutEvent,
   SystemPromptEvent,
   UserMessageEvent
-} from "./domain.ts"
-import { EventReducer } from "./event-reducer.ts"
+} from "../src/domain.ts"
+import { EventReducer } from "../src/event-reducer.ts"
 
 const testAgentName = "test-agent" as AgentName
 const testContextName = "test-context" as ContextName
@@ -229,20 +231,60 @@ describe("EventReducer", () => {
       }).pipe(Effect.provide(EventReducer.Default)))
   })
 
-  describe("idempotency", () => {
-    it.effect("reducing same events twice yields same result", () =>
+  describe("AgentTurnInterruptedEvent", () => {
+    it.effect("adds partial response and interruption explainer", () =>
       Effect.gen(function*() {
         const reducer = yield* EventReducer
-        const events = [
-          new SystemPromptEvent({ ...baseFields(0), content: "System" }),
-          new UserMessageEvent({ ...baseFields(1), content: "Hello" })
-        ]
+        const userEvent = new UserMessageEvent({
+          ...baseFields(0),
+          content: "Tell me a story."
+        })
 
-        const result1 = yield* reducer.reduce(reducer.initialReducedContext, events)
-        const result2 = yield* reducer.reduce(reducer.initialReducedContext, events)
+        const afterUser = yield* reducer.reduce(reducer.initialReducedContext, [userEvent])
 
-        expect(result1.messages.length).toBe(result2.messages.length)
-        expect(result1.nextEventNumber).toBe(result2.nextEventNumber)
+        const interruptedEvent = new AgentTurnInterruptedEvent({
+          ...baseFields(1),
+          turnNumber: 1 as AgentTurnNumber,
+          reason: "user_cancel",
+          partialResponse: Option.some("Once upon a time...")
+        })
+
+        const result = yield* reducer.reduce(afterUser, [interruptedEvent])
+
+        expect(result.messages).toHaveLength(3)
+        const assistantMessage = result.messages[result.messages.length - 2]
+        expect(assistantMessage?.role).toBe("assistant")
+        expect(assistantMessage?.content).toEqual([Prompt.textPart({ text: "Once upon a time..." })])
+
+        const explanationMessage = result.messages[result.messages.length - 1]
+        expect(explanationMessage?.role).toBe("user")
+        expect(explanationMessage?.content).toEqual([
+          Prompt.textPart({
+            text: "The previous assistant response was interrupted (user cancelled the response). Please continue from where it stopped."
+          })
+        ])
+      }).pipe(Effect.provide(EventReducer.Default)))
+
+    it.effect("adds interruption explainer even without partial response", () =>
+      Effect.gen(function*() {
+        const reducer = yield* EventReducer
+        const interruptedEvent = new AgentTurnInterruptedEvent({
+          ...baseFields(0),
+          turnNumber: 1 as AgentTurnNumber,
+          reason: "timeout",
+          partialResponse: Option.none()
+        })
+
+        const result = yield* reducer.reduce(reducer.initialReducedContext, [interruptedEvent])
+
+        expect(result.messages).toHaveLength(1)
+        const explanationMessage = result.messages[0]
+        expect(explanationMessage?.role).toBe("user")
+        expect(explanationMessage?.content).toEqual([
+          Prompt.textPart({
+            text: "The previous assistant response was interrupted (the response timed out). Please continue from where it stopped."
+          })
+        ])
       }).pipe(Effect.provide(EventReducer.Default)))
   })
 })

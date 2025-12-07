@@ -18,14 +18,18 @@ cat examples/pirate.jsonl | bun run mini-agent chat --script
 
 ## Modes
 
-| Mode | Trigger | Input | Output |
-|------|---------|-------|--------|
-| Single-turn | `-m "msg"` | CLI arg | Plain text |
-| Pipe | piped stdin | Plain text | Plain text |
-| Script | `--script` | JSONL events | JSONL events |
-| Interactive | TTY stdin | Prompts | Plain text |
+Explicit mode selection via `--mode`:
 
-Add `--raw` for JSONL output. Add `-n name` to persist conversation.
+| Mode | `--mode` | Trigger (auto) | Input | Output |
+|------|----------|----------------|-------|--------|
+| TUI | `tui` | TTY stdin | Interactive prompts | Plain text |
+| Single-turn | auto | `-m "msg"` | CLI arg | Plain text |
+| Piped | `piped` | piped stdin | Plain text | Plain text |
+| Script | `script` | `--script` | JSONL events | JSONL events |
+
+Auto mode (default) detects based on stdin and `-m` flag.
+
+Add `--raw` for JSONL output with all events. Add `-n name` to persist conversation.
 
 ## CLI Options
 
@@ -35,9 +39,10 @@ See [`src/cli/commands.ts`](src/cli/commands.ts) for full definitions.
 |--------|-------|-------------|
 | `--name` | `-n` | Context name (persists conversation) |
 | `--message` | `-m` | Single message (non-interactive) |
-| `--raw` | `-r` | Output as JSONL |
-| `--script` | `-s` | JSONL in/out mode |
-| `--show-ephemeral` | `-e` | Include streaming deltas |
+| `--mode` | | Interaction mode: tui/script/piped/auto |
+| `--raw` | `-r` | Output all events as JSONL |
+| `--script` | `-s` | Alias for `--mode script` |
+| `--show-ephemeral` | `-e` | Include streaming deltas in output |
 | `--image` | `-i` | Attach image file or URL |
 | `--config` | `-c` | YAML config file |
 | `--cwd` | | Working directory |
@@ -78,20 +83,26 @@ LLM='{"apiFormat":"openai-chat-completions","model":"my-model","baseUrl":"https:
 
 ## Event Types
 
-See [`src/context.model.ts`](src/context.model.ts) for schema definitions.
+See [`src/domain.ts`](src/domain.ts) for schema definitions.
 
 **Input Events** (via stdin in script mode):
 - `UserMessage` - User message content
 - `SystemPrompt` - System behavior configuration
 - `FileAttachment` - Image or file attachment
 
-**Output Events**:
-- `TextDelta` - Streaming chunk (ephemeral)
-- `AssistantMessage` - Complete response (persisted)
+**Output Events** (with `--raw`):
+- `SessionStartedEvent` - Session started
+- `SetLlmConfigEvent` - LLM configuration for context
+- `SystemPromptEvent` - System prompt configuration
+- `UserMessageEvent` - User message
+- `AgentTurnStartedEvent` - Turn started
+- `TextDeltaEvent` - Streaming chunk (with `--show-ephemeral`)
+- `AssistantMessageEvent` - Complete response
+- `AgentTurnCompletedEvent` / `AgentTurnFailedEvent` - Turn ended
 
 **Internal Events** (persisted):
-- `SetLlmConfig` - LLM configuration for context
-- `LLMRequestInterrupted` - Partial response on cancellation
+- `AgentTurnInterruptedEvent` - Partial response on cancellation
+- `SessionEndedEvent` - Session ended
 
 ## Script Mode
 
@@ -127,8 +138,10 @@ bun run mini-agent serve --port 3000
 ```
 
 Endpoints:
-- `POST /context/:name` - Send JSONL body, receive SSE stream
+- `POST /agent/:agentName` - Send JSON body `{"_tag":"UserMessage","content":"..."}`, receive SSE stream of all events (historical + turn)
 - `GET /health` - Health check
+
+The SSE stream includes all events: `SessionStartedEvent`, `SetLlmConfigEvent`, `SystemPromptEvent`, prior messages, then the current turn events.
 
 See [`src/http.ts`](src/http.ts) for implementation.
 
