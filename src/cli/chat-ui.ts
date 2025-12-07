@@ -129,10 +129,15 @@ const runChatTurn = (
       return { _tag: "exit" } as const
     }
 
-    if (result._tag === "interrupted" && result.newMessage) {
-      // User sent new message during streaming - recursively handle it
-      // First interrupt the current turn by adding an empty event
-      return yield* runChatTurnWithPending(agent, chat, mailbox, result.newMessage)
+    if (result._tag === "interrupted") {
+      if (result.newMessage) {
+        // User sent new message during streaming - this will trigger a new turn
+        // The agent's debounce processing will interrupt the current turn automatically
+        return yield* runChatTurnWithPending(agent, chat, mailbox, result.newMessage)
+      } else {
+        // User hit return with no text - just interrupt without starting new turn
+        yield* agent.interruptTurn
+      }
     }
 
     return { _tag: "continue" } as const

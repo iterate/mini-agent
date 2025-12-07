@@ -20,11 +20,10 @@ import { AgentRegistry } from "../agent-registry.ts"
 import { AppConfig } from "../config.ts"
 import {
   type AgentName,
-  AssistantMessageEvent,
   type ContextEvent,
   type ContextName,
   makeBaseEventFields,
-  TextDeltaEvent,
+  type TextDeltaEvent,
   UserMessageEvent
 } from "../domain.ts"
 import { maybeVerifySignature } from "./signature.ts"
@@ -95,15 +94,16 @@ const toLayerCodeResponse = (
   event: ContextEvent,
   turnId: string
 ): LayerCodeResponse | null => {
-  if (Schema.is(TextDeltaEvent)(event)) {
+  // Use _tag for discrimination - more reliable than Schema.is()
+  if (event._tag === "TextDeltaEvent") {
     return {
       type: "response.tts",
-      content: event.delta,
+      content: (event as TextDeltaEvent).delta,
       turn_id: turnId
     }
   }
 
-  if (Schema.is(AssistantMessageEvent)(event)) {
+  if (event._tag === "AssistantMessageEvent") {
     return {
       type: "response.end",
       turn_id: turnId
@@ -173,14 +173,15 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
           content: webhookEvent.text
         })
 
-        // Subscribe to events before adding user event
-        const eventFiber = yield* agent.events.pipe(
+        // Subscribe to events - subscription is guaranteed established when this completes
+        const eventStream = yield* agent.subscribe
+        const eventFiber = yield* eventStream.pipe(
           Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
           Stream.runCollect,
           Effect.fork
         )
 
-        // Add the user event to trigger the turn
+        // Add the user event to trigger the turn (no delay needed - subscription is guaranteed)
         yield* agent.addEvent(userEvent)
 
         // Wait for the turn to complete and get all new events
@@ -188,6 +189,10 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
           Effect.catchAll(() => Effect.succeed(Chunk.empty<ContextEvent>()))
         )
         const newEvents = Chunk.toArray(newEventsChunk)
+        yield* Effect.logDebug("LayerCode collected events", {
+          count: newEvents.length,
+          tags: newEvents.map((e) => e._tag)
+        })
 
         // Convert events to LayerCode responses
         const layerCodeResponses: Array<Uint8Array> = []
@@ -199,7 +204,7 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
         }
 
         // Always end with response.end if not already present
-        const hasEndResponse = newEvents.some((e) => Schema.is(AssistantMessageEvent)(e))
+        const hasEndResponse = newEvents.some((e) => e._tag === "AssistantMessageEvent")
         if (!hasEndResponse) {
           layerCodeResponses.push(encodeLayerCodeSSE({ type: "response.end", turn_id: turnId }))
         }

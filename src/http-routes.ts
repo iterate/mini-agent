@@ -78,9 +78,17 @@ const agentHandler = Effect.gen(function*() {
     content: message.content
   })
 
-  // Add the user event to trigger the LLM turn (before creating stream to ensure subscription catches all events)
-  const eventFiber = yield* agent.events.pipe(
-    Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
+  // Subscribe BEFORE adding event to guarantee we catch all events
+  // PubSub.subscribe guarantees subscription is established when this completes
+  const liveEvents = yield* agent.subscribe
+
+  // Fork collection before adding event
+  const eventFiber = yield* liveEvents.pipe(
+    Stream.takeUntil((e) =>
+      e._tag === "AgentTurnCompletedEvent" ||
+      e._tag === "AgentTurnFailedEvent" ||
+      e._tag === "AgentTurnInterruptedEvent"
+    ),
     Stream.runCollect,
     Effect.fork
   )
@@ -122,12 +130,16 @@ const agentEventsHandler = Effect.gen(function*() {
 
   const agent = yield* registry.getOrCreate(agentName as AgentName)
 
-  // Get existing events first, then stream new ones
+  // Subscribe to live events FIRST to guarantee we don't miss any
+  // PubSub.subscribe guarantees subscription is established when this completes
+  const liveEvents = yield* agent.subscribe
+
+  // Get existing events (captured at subscription time)
   const existingEvents = yield* agent.getEvents
   const existingStream = Stream.fromIterable(existingEvents)
 
-  // Stream terminates when SessionEndedEvent is received (mailbox closes)
-  const sseStream = Stream.concat(existingStream, agent.events).pipe(
+  // Stream terminates when SessionEndedEvent is received
+  const sseStream = Stream.concat(existingStream, liveEvents).pipe(
     Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
     Stream.map(encodeSSE)
   )

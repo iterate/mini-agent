@@ -421,6 +421,34 @@ describe("CLI option aliases", () => {
   })
 })
 
+describe("image input", () => {
+  test(
+    "sends image with message",
+    { timeout: 30000 },
+    async ({ llmEnv, testDir }) => {
+      const imagePath = path.resolve(__dirname, "fixtures/letter-i.png")
+
+      const result = await Effect.runPromise(
+        runCli(
+          [
+            "chat",
+            "-n",
+            "image-test",
+            "-i",
+            imagePath,
+            "-m",
+            "What letter does this image show? Respond with just the lowercase letter."
+          ],
+          { cwd: testDir, env: llmEnv }
+        )
+      )
+
+      // Mock server returns "i" when prompt contains "letter" and "image"
+      expect(result.stdout.trim().toLowerCase()).toContain("i")
+    }
+  )
+})
+
 describe("Interrupted response context", () => {
   test(
     "LLM receives context about interrupted response when continuing conversation",

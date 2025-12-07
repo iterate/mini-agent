@@ -108,8 +108,9 @@ const program = Effect.gen(function*() {
   )
 
   // HTTP server layer
+  // Set idleTimeout high for SSE streaming - Bun defaults to 10s which kills long-running streams
   const serverLayer = HttpServer.serve(makeRouter).pipe(
-    Layer.provide(BunHttpServer.layer({ port })),
+    Layer.provide(BunHttpServer.layer({ port, idleTimeout: 120 })),
     Layer.provide(serviceLayer)
   )
 

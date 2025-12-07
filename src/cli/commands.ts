@@ -5,17 +5,17 @@
  */
 import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
-import { type Error as PlatformError, FileSystem, HttpServer, Terminal } from "@effect/platform"
+import { type Error as PlatformError, FileSystem, HttpServer, type Terminal } from "@effect/platform"
 import { BunHttpServer, BunStream } from "@effect/platform-bun"
 import { Chunk, Console, DateTime, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
 import { AgentRegistry } from "../agent-registry.ts"
 import { AppConfig, resolveBaseDir } from "../config.ts"
 import {
   type AgentName,
-  AssistantMessageEvent,
+  type AssistantMessageEvent,
   ContextEvent,
   makeEventId,
-  TextDeltaEvent,
+  type TextDeltaEvent,
   UserMessageEvent
 } from "../domain.ts"
 import { makeRouter } from "../http-routes.ts"
@@ -85,6 +85,12 @@ const scriptOption = Options.boolean("script").pipe(
   Options.withDefault(false)
 )
 
+const imageOption = Options.file("image").pipe(
+  Options.withAlias("i"),
+  Options.withDescription("Path to an image file to include with the message"),
+  Options.repeated
+)
+
 interface OutputOptions {
   raw: boolean
   showEphemeral: boolean
@@ -98,22 +104,20 @@ const handleEvent = (
   options: OutputOptions
 ): Effect.Effect<void, PlatformError.PlatformError, Terminal.Terminal> =>
   Effect.gen(function*() {
-    const terminal = yield* Terminal.Terminal
-
     if (options.raw) {
-      if (Schema.is(TextDeltaEvent)(event) && !options.showEphemeral) {
-        return
-      }
+      // Raw mode outputs all events as JSON (no filtering)
       yield* Console.log(JSON.stringify(encodeEvent(event)))
       return
     }
 
-    if (Schema.is(TextDeltaEvent)(event)) {
-      yield* terminal.display(event.delta)
+    // Non-raw mode: output streaming deltas and final message
+    // Use _tag check directly since events from stream may be plain objects
+    if (event._tag === "TextDeltaEvent") {
+      yield* Console.log((event as TextDeltaEvent).delta)
       return
     }
-    if (Schema.is(AssistantMessageEvent)(event)) {
-      yield* Console.log("")
+    if (event._tag === "AssistantMessageEvent") {
+      yield* Console.log((event as AssistantMessageEvent).content)
       return
     }
   })
@@ -122,7 +126,8 @@ const handleEvent = (
 const runEventStream = (
   contextName: string,
   userMessage: string,
-  options: OutputOptions
+  options: OutputOptions,
+  images: ReadonlyArray<string> = []
 ) =>
   Effect.gen(function*() {
     const registry = yield* AgentRegistry
@@ -144,7 +149,8 @@ const runEventStream = (
       agentName: agent.agentName,
       parentEventId: Option.none(),
       triggersAgentTurn: true,
-      content: userMessage
+      content: userMessage,
+      images: images.length > 0 ? images : undefined
     })
 
     // Subscribe to events - wait for turn completion first
@@ -332,12 +338,34 @@ const makeChatUILayer = () =>
     })
   )
 
+/** Read an image file and return as base64 data URI */
+const readImageAsDataUri = (imagePath: string) =>
+  Effect.gen(function*() {
+    const fs = yield* FileSystem.FileSystem
+    const data = yield* fs.readFile(imagePath)
+
+    // Detect media type from extension
+    const ext = imagePath.toLowerCase().split(".").pop() ?? ""
+    const mediaType = ext === "png" ?
+      "image/png"
+      : ext === "gif" ?
+      "image/gif"
+      : ext === "webp" ?
+      "image/webp"
+      : "image/jpeg"
+
+    // Convert to base64
+    const base64 = Buffer.from(data).toString("base64")
+    return `data:${mediaType};base64,${base64}`
+  })
+
 const runChat = (options: {
   name: Option.Option<string>
   message: Option.Option<string>
   raw: boolean
   script: boolean
   showEphemeral: boolean
+  images: ReadonlyArray<string>
 }) =>
   Effect.gen(function*() {
     yield* Effect.logDebug("Starting chat session")
@@ -349,10 +377,15 @@ const runChat = (options: {
       showEphemeral: mode === "script" || options.showEphemeral
     }
 
+    // Convert image paths to data URIs
+    const imageDataUris = options.images.length > 0
+      ? yield* Effect.all(options.images.map(readImageAsDataUri))
+      : []
+
     switch (mode) {
       case "single-turn": {
         const message = Option.getOrElse(options.message, () => "")
-        yield* runEventStream(contextName, message, outputOptions)
+        yield* runEventStream(contextName, message, outputOptions, imageDataUris)
         if (!outputOptions.raw) {
           yield* printTraceLinks
         }
@@ -362,7 +395,7 @@ const runChat = (options: {
       case "pipe": {
         const input = yield* readAllStdin
         if (input !== "") {
-          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false })
+          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false }, imageDataUris)
         }
         break
       }
@@ -459,9 +492,11 @@ const chatCommand = Command.make(
     message: messageOption,
     raw: rawOption,
     script: scriptOption,
-    showEphemeral: showEphemeralOption
+    showEphemeral: showEphemeralOption,
+    images: imageOption
   },
-  ({ message, name, raw, script, showEphemeral }) => runChat({ message, name, raw, script, showEphemeral })
+  ({ images, message, name, raw, script, showEphemeral }) =>
+    runChat({ images, message, name, raw, script, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
 const logTestCommand = Command.make(
@@ -553,7 +588,8 @@ export const serveCommand = Command.make(
       yield* Console.log("")
 
       // Create server layer with configured port/host
-      const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost })
+      // Set idleTimeout high for SSE streaming - Bun defaults to 10s which kills long-running streams
+      const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost, idleTimeout: 120 })
 
       // Use Layer.launch to keep the server running
       return yield* Layer.launch(

@@ -8,7 +8,7 @@
  */
 
 import type { Prompt } from "@effect/ai"
-import { DateTime, Effect, Option, Schema, Stream } from "effect"
+import { DateTime, Effect, Option, Schema, type Scope, Stream } from "effect"
 
 // -----------------------------------------------------------------------------
 // Branded Types
@@ -79,7 +79,12 @@ export class SystemPromptEvent extends Schema.TaggedClass<SystemPromptEvent>()(
 
 export class UserMessageEvent extends Schema.TaggedClass<UserMessageEvent>()(
   "UserMessageEvent",
-  { ...BaseEventFields, content: Schema.String }
+  {
+    ...BaseEventFields,
+    content: Schema.String,
+    /** Optional array of image data URIs or URLs */
+    images: Schema.optional(Schema.Array(Schema.String))
+  }
 ) {}
 
 export class AssistantMessageEvent extends Schema.TaggedClass<AssistantMessageEvent>()(
@@ -140,7 +145,13 @@ export class AgentTurnInterruptedEvent extends Schema.TaggedClass<AgentTurnInter
     ...BaseEventFields,
     turnNumber: AgentTurnNumber,
     reason: InterruptReason,
-    partialResponse: Schema.optionalWith(Schema.String, { as: "Option" })
+    partialResponse: Schema.optionalWith(Schema.String, { as: "Option" }),
+    /**
+     * When reason is "user_new_message", this holds the ID of the UserMessageEvent
+     * that caused the interruption. Used by the UI to reorder display so the
+     * interrupted assistant response appears before the interrupting user message.
+     */
+    interruptedByEventId: Schema.optionalWith(EventId, { as: "Option" })
   }
 ) {}
 
@@ -269,7 +280,17 @@ export class MiniAgentTurn extends Effect.Service<MiniAgentTurn>()("@mini-agent/
 export interface MiniAgent {
   readonly agentName: AgentName
   readonly contextName: ContextName
-  readonly addEvent: (event: ContextEvent) => Effect.Effect<void, ReducerError | ContextSaveError>
+  /** Fire-and-forget: queues event for processing and returns immediately */
+  readonly addEvent: (event: ContextEvent) => Effect.Effect<void>
+  /**
+   * Subscribe to live events. Returns an Effect that, when it completes,
+   * guarantees the subscription is established. Use this instead of `events`
+   * when you need to ensure you don't miss events added immediately after subscribing.
+   *
+   * The returned stream is scoped to the caller's scope.
+   */
+  readonly subscribe: Effect.Effect<Stream.Stream<ContextEvent, never>, never, Scope.Scope>
+  /** @deprecated Use subscribe instead - events stream has race condition on subscription timing */
   readonly events: Stream.Stream<ContextEvent, never>
   readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
   readonly getReducedContext: Effect.Effect<ReducedContext>
@@ -277,6 +298,8 @@ export interface MiniAgent {
   readonly endSession: Effect.Effect<void>
   /** True when no LLM turn is in progress */
   readonly isIdle: Effect.Effect<boolean>
+  /** Interrupt the current turn if one is in progress. Emits AgentTurnInterruptedEvent with reason user_cancel. */
+  readonly interruptTurn: Effect.Effect<void>
   /** @deprecated Use endSession instead. Kept for internal cleanup. */
   readonly shutdown: Effect.Effect<void>
 }

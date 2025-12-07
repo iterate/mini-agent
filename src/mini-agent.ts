@@ -17,6 +17,7 @@ import {
   Fiber,
   Mailbox,
   Option,
+  PubSub,
   Queue,
   Ref,
   type Scope,
@@ -57,9 +58,6 @@ export interface ActorState {
   readonly lastEventId: Option.Option<EventId>
 }
 
-/** Errors that can occur during agent runtime (addEvent, turns, etc.) */
-type MiniAgentRuntimeError = ReducerError | ContextSaveError
-
 /** Errors that can occur during agent creation (includes loading from store) */
 type MiniAgentCreationError = ReducerError | ContextLoadError | ContextSaveError
 
@@ -67,7 +65,7 @@ export interface ExecuteTurnDeps {
   readonly agentName: AgentName
   readonly contextName: ContextName
   readonly stateRef: Ref.Ref<ActorState>
-  readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentRuntimeError>
+  readonly addEvent: (event: ContextEvent) => Effect.Effect<void>
   readonly turnService: MiniAgentTurn
 }
 
@@ -166,10 +164,17 @@ export const makeMiniAgent = (
     }
     const stateRef = yield* Ref.make(initialState)
 
+    // Track partial response text accumulated during current turn (for interrupt events)
+    const currentPartialResponseRef = yield* Ref.make("")
+
     // Mailbox for event input
     const mailbox = yield* Mailbox.make<ContextEvent>()
 
-    // Create broadcast stream from mailbox
+    // PubSub for external subscribers - provides guaranteed subscription timing
+    // When PubSub.subscribe completes, the subscription IS established
+    const pubsub = yield* PubSub.unbounded<ContextEvent>()
+
+    // Create broadcast stream from mailbox (kept for backwards compat, deprecated)
     const broadcast = yield* Stream.broadcastDynamic(
       Mailbox.toStream(mailbox),
       { capacity: "unbounded" }
@@ -178,58 +183,57 @@ export const makeMiniAgent = (
     // Track current turn fiber for interruption
     const turnFiberRef = yield* Ref.make<Option.Option<Fiber.RuntimeFiber<void, never>>>(Option.none())
 
-    // Queue to serialize event processing and prevent race conditions
-    const eventQueue = yield* Queue.unbounded<{
-      event: ContextEvent
-      complete: (result: Effect.Effect<void, MiniAgentRuntimeError>) => void
-    }>()
+    // Queue to serialize event processing
+    const eventQueue = yield* Queue.unbounded<ContextEvent>()
 
     // Process events sequentially from the queue
+    // Use forkScoped to attach fiber to the agent's Scope (not the request scope)
     const eventProcessorFiber = yield* Stream.fromQueue(eventQueue).pipe(
-      Stream.mapEffect(({ complete, event }) =>
+      Stream.mapEffect((event) =>
         Effect.gen(function*() {
-          const result = yield* Effect.gen(function*() {
-            // 1. Get current state and set parentEventId to form blockchain chain
-            const state = yield* Ref.get(stateRef)
-            const chainedEvent = withParentEventId(event, state.lastEventId)
+          // 1. Get current state and set parentEventId to form blockchain chain
+          const state = yield* Ref.get(stateRef)
+          const chainedEvent = withParentEventId(event, state.lastEventId)
 
-            // 2. Update state atomically (including lastEventId for chain)
-            const newEvents = [...state.events, chainedEvent]
-            const newReducedContext = yield* reducer.reduce(state.reducedContext, [chainedEvent])
-            yield* Ref.set(stateRef, {
-              events: newEvents,
-              reducedContext: newReducedContext,
-              lastEventId: Option.some(chainedEvent.id)
-            })
+          // 2. Update state atomically (including lastEventId for chain)
+          const newEvents = [...state.events, chainedEvent]
+          const newReducedContext = yield* reducer.reduce(state.reducedContext, [chainedEvent])
+          yield* Ref.set(stateRef, {
+            events: newEvents,
+            reducedContext: newReducedContext,
+            lastEventId: Option.some(chainedEvent.id)
+          })
 
-            // 3. Persist (exclude TextDeltaEvent - ephemeral streaming data)
-            if (chainedEvent._tag !== "TextDeltaEvent") {
-              yield* store.append(contextName, [chainedEvent])
-            }
-
-            // 4. Broadcast the chained event
-            yield* mailbox.offer(chainedEvent)
-          }).pipe(Effect.either)
-
-          if (result._tag === "Left") {
-            complete(Effect.fail(result.left))
-          } else {
-            complete(Effect.void)
+          // 3. Track partial response for interrupt events
+          if (chainedEvent._tag === "AgentTurnStartedEvent") {
+            yield* Ref.set(currentPartialResponseRef, "")
+          } else if (chainedEvent._tag === "TextDeltaEvent") {
+            yield* Ref.update(currentPartialResponseRef, (text) => text + chainedEvent.delta)
           }
-        })
+
+          // 4. Broadcast FIRST (before persistence) so subscribers get events immediately
+          yield* mailbox.offer(chainedEvent)
+          yield* PubSub.publish(pubsub, chainedEvent)
+
+          // 5. Persist asynchronously (exclude TextDeltaEvent - ephemeral streaming data)
+          // Fire-and-forget: don't block on persistence
+          if (chainedEvent._tag !== "TextDeltaEvent") {
+            yield* store.append(contextName, [chainedEvent]).pipe(
+              Effect.catchAll((error) => Effect.logWarning("Persist failed", { error })),
+              Effect.forkScoped
+            )
+          }
+        }).pipe(
+          Effect.catchAll((error) => Effect.logWarning("Event processing failed", { error }))
+        )
       ),
       Stream.runDrain,
-      Effect.fork
+      Effect.forkScoped
     )
 
-    // Helper: Add event to state and broadcast (via queue for serialization)
-    const addEventInternal = (event: ContextEvent): Effect.Effect<void, MiniAgentRuntimeError> =>
-      Effect.async<void, MiniAgentRuntimeError>((resume) => {
-        const complete = (result: Effect.Effect<void, MiniAgentRuntimeError>) => {
-          resume(result)
-        }
-        Effect.runSync(Queue.offer(eventQueue, { event, complete }))
-      })
+    // Helper: Add event to queue (fire-and-forget, returns immediately)
+    const addEventInternal = (event: ContextEvent): Effect.Effect<void, never> =>
+      Queue.offer(eventQueue, event).pipe(Effect.asVoid)
 
     const executeTurn = makeExecuteTurn({
       agentName,
@@ -251,21 +255,42 @@ export const makeMiniAgent = (
       Stream.flatMap(() => broadcast),
       Stream.filter((e) => e.triggersAgentTurn),
       Stream.debounce(Duration.millis(100)),
-      Stream.mapEffect(() =>
+      // triggeringEvent is the event (e.g., UserMessageEvent) that triggered a new turn
+      Stream.mapEffect((triggeringEvent) =>
         Effect.gen(function*() {
+          // Cancel any existing turn and emit interrupt event
+          const existingFiber = yield* Ref.get(turnFiberRef)
+          const state = yield* Ref.get(stateRef)
+
+          if (Option.isSome(existingFiber) && ReducedContext.isAgentTurnInProgress(state.reducedContext)) {
+            yield* Fiber.interrupt(existingFiber.value)
+
+            // Get accumulated partial response before creating interrupt event
+            const partialText = yield* Ref.get(currentPartialResponseRef)
+            const partialResponse = partialText.length > 0 ? Option.some(partialText) : Option.none()
+
+            const interruptEvent = new AgentTurnInterruptedEvent({
+              id: makeEventId(contextName, state.reducedContext.nextEventNumber),
+              timestamp: DateTime.unsafeNow(),
+              agentName,
+              parentEventId: state.reducedContext.agentTurnStartedAtEventId,
+              triggersAgentTurn: false,
+              turnNumber: state.reducedContext.currentTurnNumber,
+              reason: "user_new_message",
+              partialResponse,
+              // Track which event caused the interruption so UI can reorder display
+              interruptedByEventId: Option.some(triggeringEvent.id)
+            })
+            yield* addEventInternal(interruptEvent).pipe(Effect.catchAll(() => Effect.void))
+          }
+
           turnCounter++
           const turnNumber = turnCounter as AgentTurnNumber
-
-          // Cancel any existing turn
-          const existingFiber = yield* Ref.get(turnFiberRef)
-          if (Option.isSome(existingFiber)) {
-            yield* Fiber.interrupt(existingFiber.value)
-          }
 
           // Start new turn
           const fiber = yield* executeTurn(turnNumber).pipe(
             Effect.catchAll((error) => Effect.logWarning("Turn execution failed", { error })),
-            Effect.fork
+            Effect.forkScoped
           )
           yield* Ref.set(turnFiberRef, Option.some(fiber))
         })
@@ -276,7 +301,7 @@ export const makeMiniAgent = (
         )
       ),
       Stream.runDrain,
-      Effect.fork
+      Effect.forkScoped
     )
 
     // Wait for processingFiber to subscribe before continuing
@@ -304,6 +329,10 @@ export const makeMiniAgent = (
       if (Option.isSome(fiber) && ReducedContext.isAgentTurnInProgress(state.reducedContext)) {
         yield* Fiber.interrupt(fiber.value)
 
+        // Get accumulated partial response before creating interrupt event
+        const partialText = yield* Ref.get(currentPartialResponseRef)
+        const partialResponse = partialText.length > 0 ? Option.some(partialText) : Option.none()
+
         const interruptEvent = new AgentTurnInterruptedEvent({
           id: makeEventId(contextName, state.reducedContext.nextEventNumber),
           timestamp: DateTime.unsafeNow(),
@@ -312,7 +341,9 @@ export const makeMiniAgent = (
           triggersAgentTurn: false,
           turnNumber: state.reducedContext.currentTurnNumber,
           reason: "session_ended",
-          partialResponse: Option.none()
+          partialResponse,
+          // No specific event caused this interruption - session ended gracefully
+          interruptedByEventId: Option.none()
         })
         yield* addEventInternal(interruptEvent).pipe(Effect.catchAll(() => Effect.void))
       }
@@ -330,11 +361,27 @@ export const makeMiniAgent = (
       })
       yield* addEventInternal(sessionEndEvent).pipe(Effect.catchAll(() => Effect.void))
 
-      // Small delay to ensure event is broadcast before closing mailbox
-      yield* Effect.sleep(Duration.millis(50))
+      // Wait for the SessionEndedEvent to be processed (addEventInternal is fire-and-forget)
+      yield* Effect.iterate(0, {
+        while: () => true,
+        body: () =>
+          Effect.gen(function*() {
+            const events = yield* Ref.get(stateRef).pipe(Effect.map((s) => s.events))
+            if (events.some((e) => e._tag === "SessionEndedEvent")) {
+              return Effect.fail("found" as const)
+            }
+            yield* Effect.sleep("5 millis")
+            return Effect.succeed(0)
+          }).pipe(Effect.flatten)
+      }).pipe(
+        Effect.catchAll(() => Effect.void),
+        Effect.timeout("1 second"),
+        Effect.orDie
+      )
 
-      // End mailbox to signal stream completion
-      yield* mailbox.end
+      // Now signal completion to all subscribers:
+      yield* PubSub.shutdown(pubsub) // Signal to PubSub subscribers that stream is done
+      yield* mailbox.end // Signal to deprecated .events subscribers
     })
 
     // Internal shutdown for scope cleanup - bypasses queue to avoid deadlock
@@ -368,11 +415,13 @@ export const makeMiniAgent = (
         // Persist directly (not through queue since it's shutdown)
         yield* store.append(contextName, [sessionEndEvent]).pipe(Effect.catchAll(() => Effect.void))
 
-        // Broadcast directly to mailbox
+        // Broadcast directly to both mailbox and pubsub
         yield* mailbox.offer(sessionEndEvent).pipe(Effect.catchAll(() => Effect.void))
+        yield* PubSub.publish(pubsub, sessionEndEvent).pipe(Effect.catchAll(() => Effect.void))
       }
 
-      // End mailbox
+      // Signal completion to all subscribers
+      yield* PubSub.shutdown(pubsub).pipe(Effect.catchAll(() => Effect.void))
       yield* mailbox.end
     })
 
@@ -427,12 +476,47 @@ export const makeMiniAgent = (
     // Cleanup on scope close
     yield* Effect.addFinalizer(() => performShutdown)
 
+    // Interrupt current turn without starting a new one
+    const interruptTurnEffect = Effect.gen(function*() {
+      const fiber = yield* Ref.get(turnFiberRef)
+      const state = yield* Ref.get(stateRef)
+
+      if (Option.isSome(fiber) && ReducedContext.isAgentTurnInProgress(state.reducedContext)) {
+        yield* Fiber.interrupt(fiber.value)
+        yield* Ref.set(turnFiberRef, Option.none())
+
+        // Get accumulated partial response before creating interrupt event
+        const partialText = yield* Ref.get(currentPartialResponseRef)
+        const partialResponse = partialText.length > 0 ? Option.some(partialText) : Option.none()
+
+        const interruptEvent = new AgentTurnInterruptedEvent({
+          id: makeEventId(contextName, state.reducedContext.nextEventNumber),
+          timestamp: DateTime.unsafeNow(),
+          agentName,
+          parentEventId: state.reducedContext.agentTurnStartedAtEventId,
+          triggersAgentTurn: false,
+          turnNumber: state.reducedContext.currentTurnNumber,
+          reason: "user_cancel",
+          partialResponse,
+          // User manually cancelled without sending a new message
+          interruptedByEventId: Option.none()
+        })
+        yield* addEventInternal(interruptEvent).pipe(Effect.catchAll(() => Effect.void))
+      }
+    })
+
     // Return the MiniAgent interface
     const agent: MiniAgent = {
       agentName,
       contextName,
 
       addEvent: (event) => addEventInternal(event),
+
+      subscribe: Effect.gen(function*() {
+        // PubSub.subscribe guarantees subscription is established when this effect completes
+        const dequeue = yield* PubSub.subscribe(pubsub)
+        return Stream.fromQueue(dequeue)
+      }),
 
       events: broadcast,
 
@@ -443,6 +527,8 @@ export const makeMiniAgent = (
       endSession: endSessionEffect,
 
       isIdle: isIdleEffect,
+
+      interruptTurn: interruptTurnEffect,
 
       shutdown: performShutdown
     }

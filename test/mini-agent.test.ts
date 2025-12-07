@@ -10,7 +10,7 @@
  * Tests focus on synchronous state checks to avoid stream timing complexity.
  */
 import { describe, expect, it } from "@effect/vitest"
-import { DateTime, Effect, Layer, Option, Ref, Stream } from "effect"
+import { Chunk, DateTime, Effect, Fiber, Layer, Option, Ref, Stream } from "effect"
 import type { AgentName, AgentTurnNumber, ContextEvent, ContextName, EventId, ReducedContext } from "../src/domain.ts"
 import {
   AgentError,
@@ -29,6 +29,35 @@ import { makeExecuteTurn, makeMiniAgent } from "../src/mini-agent.ts"
 
 const testAgentName = "test-agent" as AgentName
 const testContextName = "test-context" as ContextName
+
+/**
+ * Wait for an event with a specific tag to be processed.
+ * Since addEvent is fire-and-forget, we need to wait for the event
+ * to appear before checking state. Polls getEvents until the event is found.
+ */
+const waitForEventTag = (
+  agent: { getEvents: Effect.Effect<ReadonlyArray<ContextEvent>> },
+  tag: string
+) =>
+  Effect.gen(function*() {
+    // Poll until the event appears in getEvents
+    yield* Effect.iterate(0, {
+      while: () => true,
+      body: () =>
+        Effect.gen(function*() {
+          const events = yield* agent.getEvents
+          if (events.some((e) => e._tag === tag)) {
+            return Effect.fail("found" as const)
+          }
+          yield* Effect.sleep("10 millis")
+          return Effect.succeed(0)
+        }).pipe(Effect.flatten)
+    }).pipe(
+      Effect.catchAll(() => Effect.void),
+      Effect.timeout("5 seconds"),
+      Effect.orDie
+    )
+  })
 
 // Mock MiniAgentTurn that doesn't make LLM calls
 const MockTurn = Layer.sync(MiniAgentTurn, () =>
@@ -54,6 +83,8 @@ describe("MiniAgent", () => {
     it.effect("emits SessionStartedEvent on creation", () =>
       Effect.gen(function*() {
         const agent = yield* makeMiniAgent(testAgentName, testContextName)
+        // Wait for SessionStartedEvent to be processed (fire-and-forget)
+        yield* waitForEventTag(agent, "SessionStartedEvent")
         const events = yield* agent.getEvents
         expect(events.some((e) => e._tag === "SessionStartedEvent")).toBe(true)
       }).pipe(
@@ -94,6 +125,8 @@ describe("MiniAgent", () => {
           content: "Hello"
         })
         yield* agent.addEvent(event)
+        // Wait for event to be processed (fire-and-forget)
+        yield* waitForEventTag(agent, "UserMessageEvent")
 
         const stored = yield* store.load(testContextName)
         expect(stored.some((e) => e._tag === "UserMessageEvent")).toBe(true)
@@ -111,6 +144,8 @@ describe("MiniAgent", () => {
           content: "Hello"
         })
         yield* agent.addEvent(event)
+        // Wait for event to be processed (fire-and-forget)
+        yield* waitForEventTag(agent, "UserMessageEvent")
 
         const ctx = yield* agent.getReducedContext
         // SessionStarted (1) + UserMessage (1) = 2
@@ -130,6 +165,8 @@ describe("MiniAgent", () => {
             content: "Hello"
           })
         )
+        // Wait for event to be processed (fire-and-forget)
+        yield* waitForEventTag(agent, "UserMessageEvent")
 
         const ctx = yield* agent.getReducedContext
         expect(ctx.messages.length).toBe(1)
@@ -144,6 +181,17 @@ describe("MiniAgent", () => {
     it.effect("returns all historical events in order", () =>
       Effect.gen(function*() {
         const agent = yield* makeMiniAgent(testAgentName, testContextName)
+        // Wait for initial SessionStartedEvent
+        yield* waitForEventTag(agent, "SessionStartedEvent")
+
+        // Subscribe for UserMessages
+        const stream = yield* agent.subscribe
+        const collector = yield* stream.pipe(
+          Stream.filter((e) => e._tag === "UserMessageEvent"),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.fork
+        )
 
         yield* agent.addEvent(
           new UserMessageEvent({
@@ -157,6 +205,9 @@ describe("MiniAgent", () => {
             content: "Second"
           })
         )
+
+        // Wait for both UserMessages to be processed
+        yield* Fiber.join(collector)
 
         const events = yield* agent.getEvents
         // SessionStarted + 2 UserMessages
@@ -174,6 +225,17 @@ describe("MiniAgent", () => {
     it.effect("accumulates multiple messages", () =>
       Effect.gen(function*() {
         const agent = yield* makeMiniAgent(testAgentName, testContextName)
+        // Wait for initial SessionStartedEvent
+        yield* waitForEventTag(agent, "SessionStartedEvent")
+
+        // Subscribe for the 3 messages
+        const stream = yield* agent.subscribe
+        const collector = yield* stream.pipe(
+          Stream.filter((e) => e._tag === "AssistantMessageEvent"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.fork
+        )
 
         yield* agent.addEvent(
           new SystemPromptEvent({
@@ -194,6 +256,9 @@ describe("MiniAgent", () => {
           })
         )
 
+        // Wait for AssistantMessage (last one) to be processed
+        yield* Fiber.join(collector)
+
         const ctx = yield* agent.getReducedContext
         expect(ctx.messages.length).toBe(3)
         expect(ctx.messages[0]?.role).toBe("system")
@@ -207,10 +272,21 @@ describe("MiniAgent", () => {
     it.effect("tracks nextEventNumber correctly", () =>
       Effect.gen(function*() {
         const agent = yield* makeMiniAgent(testAgentName, testContextName)
+        // Wait for initial SessionStartedEvent
+        yield* waitForEventTag(agent, "SessionStartedEvent")
 
         // SessionStarted = 1
         let ctx = yield* agent.getReducedContext
         expect(ctx.nextEventNumber).toBe(1)
+
+        // Subscribe for the 3 UserMessages
+        const stream = yield* agent.subscribe
+        const collector = yield* stream.pipe(
+          Stream.filter((e) => e._tag === "UserMessageEvent"),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.fork
+        )
 
         // Add 3 more events
         yield* agent.addEvent(
@@ -232,6 +308,9 @@ describe("MiniAgent", () => {
           })
         )
 
+        // Wait for all 3 to be processed
+        yield* Fiber.join(collector)
+
         ctx = yield* agent.getReducedContext
         expect(ctx.nextEventNumber).toBe(4)
       }).pipe(
@@ -246,12 +325,18 @@ describe("MiniAgent", () => {
         const agent1 = yield* makeMiniAgent("agent-1" as AgentName, "context-1" as ContextName)
         const agent2 = yield* makeMiniAgent("agent-2" as AgentName, "context-2" as ContextName)
 
+        // Wait for SessionStartedEvent on both agents
+        yield* waitForEventTag(agent1, "SessionStartedEvent")
+        yield* waitForEventTag(agent2, "SessionStartedEvent")
+
         yield* agent1.addEvent(
           new UserMessageEvent({
             ...makeBaseEventFields("agent-1" as AgentName, "context-1" as ContextName, 1, true),
             content: "Agent 1"
           })
         )
+        // Wait for UserMessage to be processed
+        yield* waitForEventTag(agent1, "UserMessageEvent")
 
         const events1 = yield* agent1.getEvents
         const events2 = yield* agent2.getEvents
@@ -291,6 +376,9 @@ describe("MiniAgent", () => {
 
         // Create agent that loads the existing events
         const agent = yield* makeMiniAgent(testAgentName, contextName)
+        // Wait for SessionStartedEvent to be processed
+        yield* waitForEventTag(agent, "SessionStartedEvent")
+
         const events = yield* agent.getEvents
 
         // Should have 3 existing + 1 new SessionStartedEvent = 4 events
@@ -310,6 +398,17 @@ describe("MiniAgent", () => {
     it.effect("events form a chain - each event (except genesis) has parentEventId pointing to previous event", () =>
       Effect.gen(function*() {
         const agent = yield* makeMiniAgent(testAgentName, testContextName)
+        // Wait for initial SessionStartedEvent
+        yield* waitForEventTag(agent, "SessionStartedEvent")
+
+        // Subscribe for the 2 UserMessages
+        const stream = yield* agent.subscribe
+        const collector = yield* stream.pipe(
+          Stream.filter((e) => e._tag === "UserMessageEvent"),
+          Stream.take(2),
+          Stream.runCollect,
+          Effect.fork
+        )
 
         // Add some user messages (not triggering turn to avoid async complexity)
         yield* agent.addEvent(
@@ -324,6 +423,9 @@ describe("MiniAgent", () => {
             content: "Second"
           })
         )
+
+        // Wait for both to be processed
+        yield* Fiber.join(collector)
 
         const events = yield* agent.getEvents
 
@@ -351,6 +453,8 @@ describe("MiniAgent", () => {
     it.effect("all events (except genesis) have Some parentEventId", () =>
       Effect.gen(function*() {
         const agent = yield* makeMiniAgent(testAgentName, testContextName)
+        // Wait for initial SessionStartedEvent
+        yield* waitForEventTag(agent, "SessionStartedEvent")
 
         // Add events
         yield* agent.addEvent(
@@ -359,6 +463,8 @@ describe("MiniAgent", () => {
             content: "Hello"
           })
         )
+        // Wait for UserMessage to be processed
+        yield* waitForEventTag(agent, "UserMessageEvent")
 
         const events = yield* agent.getEvents
 
@@ -385,7 +491,7 @@ describe("MiniAgent", () => {
           lastEventId: Option.none()
         })
 
-        const addEvent = (event: ContextEvent) =>
+        const addEvent = (event: ContextEvent): Effect.Effect<void> =>
           Effect.gen(function*() {
             const state = yield* Ref.get(stateRef)
             const chainedEvent = withParentEventId(event, state.lastEventId)
@@ -396,7 +502,7 @@ describe("MiniAgent", () => {
               reducedContext: newReducedContext,
               lastEventId: Option.some(chainedEvent.id)
             })
-          })
+          }).pipe(Effect.orDie)
 
         const executeTurn = makeExecuteTurn({
           agentName: testAgentName,
@@ -428,7 +534,7 @@ describe("MiniAgent", () => {
         })
 
         // Simplified addEvent that maintains chain (simulates actual behavior)
-        const addEvent = (event: ContextEvent) =>
+        const addEvent = (event: ContextEvent): Effect.Effect<void> =>
           Effect.gen(function*() {
             const state = yield* Ref.get(stateRef)
             const chainedEvent = withParentEventId(event, state.lastEventId)
@@ -439,7 +545,7 @@ describe("MiniAgent", () => {
               reducedContext: newReducedContext,
               lastEventId: Option.some(chainedEvent.id)
             })
-          })
+          }).pipe(Effect.orDie)
 
         // Mock turn service that emits events during LLM turn
         const mockTurnEvents: Array<ContextEvent> = [
@@ -492,6 +598,154 @@ describe("MiniAgent", () => {
       }).pipe(
         Effect.scoped,
         Effect.provide(EventReducer.Default)
+      ))
+  })
+
+  describe("subscription timing", () => {
+    it.effect("subscribe guarantees subscription is established before effect completes", () =>
+      Effect.gen(function*() {
+        const agent = yield* makeMiniAgent(testAgentName, testContextName)
+
+        // Subscribe to events - when this completes, subscription MUST be established
+        const eventStream = yield* agent.subscribe
+
+        // Fork collection of events - no sleep needed because subscription is guaranteed
+        const collectorFiber = yield* eventStream.pipe(
+          Stream.filter((e) => e._tag === "UserMessageEvent"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.fork
+        )
+
+        // Immediately add event - subscription should catch it
+        const userEvent = new UserMessageEvent({
+          ...makeBaseEventFields(testAgentName, testContextName, 100, false),
+          content: "Test message"
+        })
+        yield* agent.addEvent(userEvent)
+
+        // Wait for collector with timeout
+        const maybeCollected = yield* Fiber.join(collectorFiber).pipe(
+          Effect.timeoutOption("1 second")
+        )
+
+        // Should have received the UserMessageEvent (not timed out)
+        expect(Option.isSome(maybeCollected)).toBe(true)
+        const collected = Option.getOrThrow(maybeCollected)
+        const events = Chunk.toArray(collected)
+        expect(events.length).toBe(1)
+        expect(events[0]?._tag).toBe("UserMessageEvent")
+        expect((events[0] as UserMessageEvent).content).toBe("Test message")
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(TestLayer)
+      ))
+
+    it.effect("subscribe receives events added immediately after subscription", () =>
+      Effect.gen(function*() {
+        const agent = yield* makeMiniAgent(testAgentName, testContextName)
+
+        // Subscribe and immediately add multiple events
+        const eventStream = yield* agent.subscribe
+
+        const collectorFiber = yield* eventStream.pipe(
+          Stream.filter((e) => e._tag === "UserMessageEvent"),
+          Stream.take(3),
+          Stream.runCollect,
+          Effect.fork
+        )
+
+        // Add 3 events immediately - no delays
+        yield* agent.addEvent(
+          new UserMessageEvent({
+            ...makeBaseEventFields(testAgentName, testContextName, 100, false),
+            content: "First"
+          })
+        )
+        yield* agent.addEvent(
+          new UserMessageEvent({
+            ...makeBaseEventFields(testAgentName, testContextName, 101, false),
+            content: "Second"
+          })
+        )
+        yield* agent.addEvent(
+          new UserMessageEvent({
+            ...makeBaseEventFields(testAgentName, testContextName, 102, false),
+            content: "Third"
+          })
+        )
+
+        const maybeCollected = yield* Fiber.join(collectorFiber).pipe(
+          Effect.timeoutOption("1 second")
+        )
+
+        expect(Option.isSome(maybeCollected)).toBe(true)
+        const collected = Option.getOrThrow(maybeCollected)
+        const events = Chunk.toArray(collected)
+        expect(events.length).toBe(3)
+        expect((events[0] as UserMessageEvent).content).toBe("First")
+        expect((events[1] as UserMessageEvent).content).toBe("Second")
+        expect((events[2] as UserMessageEvent).content).toBe("Third")
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(TestLayer)
+      ))
+  })
+
+  describe("interruptTurn", () => {
+    it.effect("interruptTurn when idle does nothing", () =>
+      Effect.gen(function*() {
+        const agent = yield* makeMiniAgent(testAgentName, testContextName)
+        const eventsBefore = yield* agent.getEvents
+        const countBefore = eventsBefore.length
+
+        // Call interruptTurn when no turn is in progress
+        yield* agent.interruptTurn
+
+        // No new events should be added
+        const eventsAfter = yield* agent.getEvents
+        expect(eventsAfter.length).toBe(countBefore)
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(TestLayer)
+      ))
+  })
+
+  describe("endSession broadcast timing", () => {
+    it.effect("SessionEndedEvent is broadcast to subscribers before mailbox closes", () =>
+      Effect.gen(function*() {
+        const agent = yield* makeMiniAgent(testAgentName, testContextName)
+        // Wait for initial SessionStartedEvent to be processed
+        yield* waitForEventTag(agent, "SessionStartedEvent")
+
+        // Subscribe to events - we want to receive SessionEndedEvent
+        const eventStream = yield* agent.subscribe
+
+        // Fork a collector that waits for SessionEndedEvent
+        const collectorFiber = yield* eventStream.pipe(
+          Stream.filter((e) => e._tag === "SessionEndedEvent"),
+          Stream.take(1),
+          Stream.runCollect,
+          Effect.fork
+        )
+
+        // End the session - this should broadcast SessionEndedEvent BEFORE closing mailbox
+        yield* agent.endSession
+
+        // Wait for collector - should receive SessionEndedEvent
+        const maybeCollected = yield* Fiber.join(collectorFiber).pipe(
+          Effect.timeoutOption("1 second")
+        )
+
+        // The test fails if SessionEndedEvent wasn't broadcast before mailbox closed
+        expect(Option.isSome(maybeCollected)).toBe(true)
+        const collected = Option.getOrThrow(maybeCollected)
+        const events = Chunk.toArray(collected)
+        expect(events.length).toBe(1)
+        expect(events[0]?._tag).toBe("SessionEndedEvent")
+      }).pipe(
+        Effect.scoped,
+        Effect.provide(TestLayer)
       ))
   })
 })

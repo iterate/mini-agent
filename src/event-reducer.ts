@@ -37,9 +37,33 @@ export class EventReducer extends Effect.Service<EventReducer>()("@mini-agent/Ev
         }
 
         case "UserMessageEvent": {
-          const msg = Prompt.userMessage({
-            content: [Prompt.textPart({ text: event.content })]
-          })
+          const parts: Array<Prompt.UserMessagePart> = [Prompt.textPart({ text: event.content })]
+
+          // Add image parts if present
+          if (event.images && event.images.length > 0) {
+            for (const imageData of event.images) {
+              // imageData is either a data URI (data:image/...) or a URL
+              if (imageData.startsWith("data:")) {
+                // Parse data URI: data:image/jpeg;base64,/9j/4AAQ...
+                const match = imageData.match(/^data:(image\/[^;]+);base64,(.+)$/)
+                if (match) {
+                  const [, mediaType, base64Data] = match
+                  parts.push(Prompt.filePart({
+                    mediaType: mediaType as Prompt.FilePart["mediaType"],
+                    data: base64Data!
+                  }))
+                }
+              } else if (imageData.startsWith("http://") || imageData.startsWith("https://")) {
+                // URL - pass as-is
+                parts.push(Prompt.filePart({
+                  mediaType: "image/*" as Prompt.FilePart["mediaType"],
+                  data: new URL(imageData)
+                }))
+              }
+            }
+          }
+
+          const msg = Prompt.userMessage({ content: parts })
           return {
             ...ctx,
             messages: [...ctx.messages, msg],
