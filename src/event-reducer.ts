@@ -14,6 +14,7 @@ import {
   AgentConfig,
   type ContextEvent,
   defaultAgentConfig,
+  InterruptReason,
   LlmProviderConfig,
   type ReducedContext,
   ReducerError
@@ -31,6 +32,15 @@ export class EventReducer extends Effect.Service<EventReducer>()("@mini-agent/Ev
       currentTurnNumber: 0 as never,
       agentTurnStartedAtEventId: Option.none()
     }
+
+    const interruptionReasonDescriptions: Record<InterruptReason, string> = {
+      user_cancel: "user cancelled the response",
+      user_new_message: "user interrupted to send a new message",
+      timeout: "the response timed out"
+    }
+
+    const interruptionExplanation = (reason: InterruptReason): string =>
+      `The previous assistant response was interrupted (${interruptionReasonDescriptions[reason]}). Please continue from where it stopped.`
 
     const reduceOne = (
       ctx: ReducedContext,
@@ -136,9 +146,31 @@ export class EventReducer extends Effect.Service<EventReducer>()("@mini-agent/Ev
           }
         }
 
-        case "AgentTurnInterruptedEvent":
+        case "AgentTurnInterruptedEvent": {
+          const partialMessages = Option.match(event.partialResponse, {
+            onNone: () => [] as ReadonlyArray<Prompt.Message>,
+            onSome: (partial) =>
+              [
+                Prompt.assistantMessage({
+                  content: [Prompt.textPart({ text: partial })]
+                })
+              ] as ReadonlyArray<Prompt.Message>
+          })
+
+          const explanationMessage = Prompt.userMessage({
+            content: [Prompt.textPart({ text: interruptionExplanation(event.reason) })]
+          })
+
+          return {
+            ...ctx,
+            messages: [...ctx.messages, ...partialMessages, explanationMessage],
+            agentTurnStartedAtEventId: Option.none(),
+            nextEventNumber
+          }
+        }
+
         case "AgentTurnFailedEvent": {
-          // Turn ended (failed or interrupted) - clear in-progress state
+          // Turn failed - clear in-progress state
           return {
             ...ctx,
             agentTurnStartedAtEventId: Option.none(),
