@@ -13,7 +13,7 @@ import { AppConfig, resolveBaseDir } from "../config.ts"
 import {
   type AgentName,
   AssistantMessageEvent,
-  type ContextEvent,
+  ContextEvent,
   makeEventId,
   TextDeltaEvent,
   UserMessageEvent
@@ -21,6 +21,8 @@ import {
 import { makeRouter } from "../http-routes.ts"
 import { layercodeCommand } from "../layercode/index.ts"
 import { printTraceLinks } from "../tracing.ts"
+
+const encodeEvent = Schema.encodeSync(ContextEvent)
 
 export const configFileOption = Options.file("config").pipe(
   Options.withAlias("c"),
@@ -102,7 +104,7 @@ const handleEvent = (
       if (Schema.is(TextDeltaEvent)(event) && !options.showEphemeral) {
         return
       }
-      yield* Console.log(JSON.stringify(event))
+      yield* Console.log(JSON.stringify(encodeEvent(event)))
       return
     }
 
@@ -126,6 +128,12 @@ const runEventStream = (
     const registry = yield* AgentRegistry
     const agent = yield* registry.getOrCreate(contextName as AgentName)
 
+    // Get existing events first (includes SessionStartedEvent emitted during agent creation)
+    const existingEvents = yield* agent.getEvents
+    for (const event of existingEvents) {
+      yield* handleEvent(event, options)
+    }
+
     // Get current context to build proper event
     const ctx = yield* agent.getReducedContext
 
@@ -139,8 +147,8 @@ const runEventStream = (
       content: userMessage
     })
 
-    // Subscribe to events before adding the user event
-    const eventFiber = yield* agent.events.pipe(
+    // Subscribe to events - wait for turn completion first
+    const turnFiber = yield* agent.events.pipe(
       Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
       Stream.runForEach((event) => handleEvent(event, options)),
       Effect.fork
@@ -150,10 +158,20 @@ const runEventStream = (
     yield* agent.addEvent(userEvent)
 
     // Wait for turn to complete
-    yield* Fiber.join(eventFiber).pipe(Effect.catchAllCause(() => Effect.void))
+    yield* Fiber.join(turnFiber).pipe(Effect.catchAllCause(() => Effect.void))
 
-    // End session
+    // Subscribe to capture SessionEndedEvent
+    const sessionEndFiber = yield* agent.events.pipe(
+      Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
+      Stream.runForEach((event) => handleEvent(event, options)),
+      Effect.fork
+    )
+
+    // End session (emits SessionEndedEvent)
     yield* agent.endSession
+
+    // Wait for SessionEndedEvent
+    yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
   })
 
 /** CLI interaction mode - determines how input/output is handled */
@@ -209,6 +227,12 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
     const registry = yield* AgentRegistry
     const agent = yield* registry.getOrCreate(contextName as AgentName)
 
+    // Output existing events first (includes SessionStartedEvent)
+    const existingEvents = yield* agent.getEvents
+    for (const event of existingEvents) {
+      yield* handleEvent(event, options)
+    }
+
     yield* stdinEvents.pipe(
       Stream.mapEffect((inputMsg) =>
         Effect.gen(function*() {
@@ -230,7 +254,7 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
               content: inputMsg.content
             })
 
-            // Subscribe to events
+            // Subscribe to events - wait for turn completion to process next message
             const eventFiber = yield* agent.events.pipe(
               Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
               Stream.runForEach((outputEvent) => handleEvent(outputEvent, options)),
@@ -247,7 +271,15 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
       Stream.runDrain
     )
 
+    // Subscribe to capture SessionEndedEvent
+    const sessionEndFiber = yield* agent.events.pipe(
+      Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
+      Stream.runForEach((event) => handleEvent(event, options)),
+      Effect.fork
+    )
+
     yield* agent.endSession
+    yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
   })
 
 const NEW_CONTEXT_VALUE = "__new__"
