@@ -8,6 +8,7 @@ import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
 import { AgentRegistry } from "../agent-registry.ts"
+import { AgentService } from "../agent-service.ts"
 import {
   AppConfig,
   extractConfigPath,
@@ -100,7 +101,7 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
         const tracingLayer = createTracingLayer("mini-agent")
 
         // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
-        return AgentRegistry.Default.pipe(
+        const registryLayer = AgentRegistry.Default.pipe(
           Layer.provideMerge(LlmTurnLive),
           Layer.provideMerge(languageModelLayer),
           Layer.provideMerge(llmConfigLayer),
@@ -112,6 +113,10 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
           Layer.provideMerge(loggingLayer),
           Layer.provideMerge(BunContext.layer)
         )
+        const agentServiceLayer = AgentService.Default.pipe(
+          Layer.provide(registryLayer)
+        )
+        return Layer.mergeAll(registryLayer, agentServiceLayer)
       })
 
       return Layer.unwrapEffect(buildLayers.pipe(Effect.provide(loggingLayer)))

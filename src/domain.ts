@@ -284,16 +284,13 @@ export interface MiniAgent {
   readonly addEvent: (event: ContextEvent) => Effect.Effect<void>
   /**
    * Subscribe to live events. Returns an Effect that, when it completes,
-   * guarantees the subscription is established. Use this instead of `events`
-   * when you need to ensure you don't miss events added immediately after subscribing.
+   * guarantees the subscription is established.
    *
    * The returned stream is scoped to the caller's scope.
    */
-  readonly subscribe: Effect.Effect<Stream.Stream<ContextEvent, never>, never, Scope.Scope>
-  /** @deprecated Use subscribe instead - events stream has race condition on subscription timing */
-  readonly events: Stream.Stream<ContextEvent, never>
+  readonly tapEventStream: Effect.Effect<Stream.Stream<ContextEvent, never>, never, Scope.Scope>
   readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
-  readonly getReducedContext: Effect.Effect<ReducedContext>
+  readonly getState: Effect.Effect<ReducedContext>
   /** Gracefully end session: emit SessionEndedEvent (with AgentTurnInterruptedEvent if mid-turn), then close mailbox */
   readonly endSession: Effect.Effect<void>
   /** True when no LLM turn is in progress */
