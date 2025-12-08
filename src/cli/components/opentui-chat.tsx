@@ -22,7 +22,7 @@ import { createCliRenderer, TextAttributes } from "@opentui/core"
 import type { JSX } from "@opentui/react/jsx-runtime"
 import { createRoot } from "@opentui/react/renderer"
 import { DateTime, Option, Schema } from "effect"
-import { memo, useCallback, useMemo, useReducer, useRef, useState } from "react"
+import { memo, useCallback, useReducer, useRef, useState } from "react"
 import type { ContextEvent } from "../../domain.ts"
 
 /** Format as "Sunday, Dec 7, 2025" */
@@ -548,17 +548,16 @@ interface ChatAppProps {
 }
 
 function ChatApp({ agentName, callbacks, controllerRef, initialEvents }: ChatAppProps) {
-  // Derive initial feed items from initial events (runs once on mount)
-  const initialFeedItems = useMemo(
-    () =>
-      initialEvents.reduce<Array<FeedItem>>(
+  // Use lazy initializer to ensure initial events are processed once
+  const [feedItems, dispatch] = useReducer(
+    feedReducer,
+    initialEvents,
+    (events) =>
+      events.reduce<Array<FeedItem>>(
         (items, event) => feedReducer(items, { event }),
         []
-      ),
-    []
+      )
   )
-
-  const [feedItems, dispatch] = useReducer(feedReducer, initialFeedItems)
   const [inputValue, setInputValue] = useState("")
   const dispatchRef = useRef(dispatch)
   dispatchRef.current = dispatch

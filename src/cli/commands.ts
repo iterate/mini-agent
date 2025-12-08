@@ -8,7 +8,7 @@ import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
 import { type Error as PlatformError, FileSystem, HttpServer, type Terminal } from "@effect/platform"
 import { BunHttpServer, BunStream } from "@effect/platform-bun"
 import { Chunk, Console, DateTime, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
-import { AgentRegistry } from "../agent-registry.ts"
+import { AgentService } from "../agent-service.ts"
 import { AppConfig, resolveBaseDir } from "../config.ts"
 import {
   type AgentName,
@@ -52,6 +52,14 @@ export const llmOption = Options.text("llm").pipe(
   Options.withDescription(
     "LLM provider:model (e.g., openai:gpt-4.1-mini, anthropic:claude-sonnet-4-5-20250929). " +
       "See README for full model list. Can also be set via LLM env var."
+  ),
+  Options.optional
+)
+
+export const remoteOption = Options.text("remote").pipe(
+  Options.withDescription(
+    "Connect to remote mini-agent server at URL (e.g., http://localhost:3000). " +
+      "When set, runs in client mode without local LLM."
   ),
   Options.optional
 )
@@ -131,23 +139,24 @@ const runEventStream = (
   images: ReadonlyArray<string> = []
 ) =>
   Effect.gen(function*() {
-    const registry = yield* AgentRegistry
-    const agent = yield* registry.getOrCreate(agentName as AgentName)
+    const service = yield* AgentService
 
     // Get existing events first (includes SessionStartedEvent emitted during agent creation)
-    const existingEvents = yield* agent.getEvents
+    const existingEvents = yield* service.getEvents({ agentName: agentName as AgentName })
     for (const event of existingEvents) {
       yield* handleEvent(event, options)
     }
 
     // Get current state to build proper event
-    const ctx = yield* agent.getState
+    const ctx = yield* service.getState({ agentName: agentName as AgentName })
 
     // Create user event with triggersAgentTurn=true
+    // For remote mode, contextName is derived from agentName
+    const contextName = `${agentName}-v1`
     const userEvent = new UserMessageEvent({
-      id: makeEventId(agent.contextName, ctx.nextEventNumber),
+      id: makeEventId(contextName as never, ctx.nextEventNumber),
       timestamp: DateTime.unsafeNow(),
-      agentName: agent.agentName,
+      agentName: agentName as AgentName,
       parentEventId: Option.none(),
       triggersAgentTurn: true,
       content: userMessage,
@@ -158,7 +167,7 @@ const runEventStream = (
     // Use Effect.scoped to provide the Scope required by tapEventStream (PubSub.subscribe)
     yield* Effect.scoped(
       Effect.gen(function*() {
-        const eventStream = yield* agent.tapEventStream
+        const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
         const turnFiber = yield* eventStream.pipe(
           Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
           Stream.runForEach((event) => handleEvent(event, options)),
@@ -166,7 +175,7 @@ const runEventStream = (
         )
 
         // Add event to agent - triggers LLM turn
-        yield* agent.addEvent(userEvent)
+        yield* service.addEvents({ agentName: agentName as AgentName, events: [userEvent] })
 
         // Wait for turn to complete
         yield* Fiber.join(turnFiber).pipe(Effect.catchAllCause(() => Effect.void))
@@ -177,7 +186,7 @@ const runEventStream = (
     // Use Effect.scoped for the second subscription too
     yield* Effect.scoped(
       Effect.gen(function*() {
-        const sessionEndStream = yield* agent.tapEventStream
+        const sessionEndStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
         const sessionEndFiber = yield* sessionEndStream.pipe(
           Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
           Stream.runForEach((event) => handleEvent(event, options)),
@@ -185,7 +194,7 @@ const runEventStream = (
         )
 
         // End session (emits SessionEndedEvent)
-        yield* agent.endSession
+        yield* service.endSession({ agentName: agentName as AgentName })
 
         // Wait for SessionEndedEvent
         yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
@@ -243,11 +252,11 @@ const stdinEvents = BunStream.stdin.pipe(
 
 const scriptInteractiveLoop = (agentName: string, options: OutputOptions) =>
   Effect.gen(function*() {
-    const registry = yield* AgentRegistry
-    const agent = yield* registry.getOrCreate(agentName as AgentName)
+    const service = yield* AgentService
+    const contextName = `${agentName}-v1`
 
     // Output existing events first (includes SessionStartedEvent)
-    const existingEvents = yield* agent.getEvents
+    const existingEvents = yield* service.getEvents({ agentName: agentName as AgentName })
     for (const event of existingEvents) {
       yield* handleEvent(event, options)
     }
@@ -261,13 +270,13 @@ const scriptInteractiveLoop = (agentName: string, options: OutputOptions) =>
 
           if (isUserMessage) {
             // Get current state
-            const ctx = yield* agent.getState
+            const ctx = yield* service.getState({ agentName: agentName as AgentName })
 
             // Create proper event with triggersAgentTurn
             const userEvent = new UserMessageEvent({
-              id: makeEventId(agent.contextName, ctx.nextEventNumber),
+              id: makeEventId(contextName as never, ctx.nextEventNumber),
               timestamp: DateTime.unsafeNow(),
-              agentName: agent.agentName,
+              agentName: agentName as AgentName,
               parentEventId: Option.none(),
               triggersAgentTurn: true,
               content: inputMsg.content
@@ -277,14 +286,14 @@ const scriptInteractiveLoop = (agentName: string, options: OutputOptions) =>
             // Use Effect.scoped for the PubSub subscription
             yield* Effect.scoped(
               Effect.gen(function*() {
-                const eventStream = yield* agent.tapEventStream
+                const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
                 const eventFiber = yield* eventStream.pipe(
                   Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
                   Stream.runForEach((outputEvent) => handleEvent(outputEvent, options)),
                   Effect.fork
                 )
 
-                yield* agent.addEvent(userEvent)
+                yield* service.addEvents({ agentName: agentName as AgentName, events: [userEvent] })
                 yield* Fiber.join(eventFiber).pipe(Effect.catchAllCause(() => Effect.void))
               })
             )
@@ -300,14 +309,14 @@ const scriptInteractiveLoop = (agentName: string, options: OutputOptions) =>
     // Use Effect.scoped for the PubSub subscription
     yield* Effect.scoped(
       Effect.gen(function*() {
-        const sessionEndStream = yield* agent.tapEventStream
+        const sessionEndStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
         const sessionEndFiber = yield* sessionEndStream.pipe(
           Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
           Stream.runForEach((event) => handleEvent(event, options)),
           Effect.fork
         )
 
-        yield* agent.endSession
+        yield* service.endSession({ agentName: agentName as AgentName })
         yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
       })
     )
@@ -637,7 +646,8 @@ const rootCommand = Command.make(
     configFile: configFileOption,
     cwd: cwdOption,
     stdoutLogLevel: stdoutLogLevelOption,
-    llm: llmOption
+    llm: llmOption,
+    remote: remoteOption
   }
 ).pipe(
   Command.withSubcommands([

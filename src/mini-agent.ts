@@ -475,12 +475,21 @@ export const makeMiniAgent = (
 
     // Wait for startup events to be processed before returning
     // This prevents race conditions where getEvents returns empty before events are processed
+    // Count expected events: SessionStartedEvent + optionally SetLlmConfigEvent + optionally SystemPromptEvent
+    const expectedEventCount = 1 + (Option.isSome(llmConfigOption) ? 1 : 0) + (Option.isSome(appConfigOption) ? 1 : 0)
+
     yield* Effect.iterate(0, {
       while: () => true,
       body: () =>
         Effect.gen(function*() {
           const events = yield* Ref.get(stateRef).pipe(Effect.map((s) => s.events))
-          if (events.some((e) => e._tag === "SessionStartedEvent")) {
+          // Wait until all startup events are processed
+          const startupEventCount = events.filter((e) =>
+            e._tag === "SessionStartedEvent" ||
+            e._tag === "SetLlmConfigEvent" ||
+            e._tag === "SystemPromptEvent"
+          ).length
+          if (startupEventCount >= expectedEventCount) {
             return Effect.fail("found" as const)
           }
           yield* Effect.sleep("5 millis")

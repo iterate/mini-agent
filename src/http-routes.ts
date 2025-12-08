@@ -206,6 +206,60 @@ const agentStateHandler = Effect.gen(function*() {
   })
 })
 
+/** Handler for GET /agent/:agentName/idle - Check if agent is idle */
+const agentIdleHandler = Effect.gen(function*() {
+  const registry = yield* AgentRegistry
+  const params = yield* HttpRouter.params
+
+  const agentName = params.agentName
+  if (!agentName) {
+    return HttpServerResponse.text("Missing agentName", { status: 400 })
+  }
+
+  yield* Effect.logDebug("GET /agent/:agentName/idle", { agentName })
+
+  const agent = yield* registry.getOrCreate(agentName as AgentName)
+  const isIdle = yield* agent.isIdle
+
+  return yield* HttpServerResponse.json({ isIdle })
+})
+
+/** Handler for POST /agent/:agentName/interrupt - Interrupt current turn */
+const agentInterruptHandler = Effect.gen(function*() {
+  const registry = yield* AgentRegistry
+  const params = yield* HttpRouter.params
+
+  const agentName = params.agentName
+  if (!agentName) {
+    return HttpServerResponse.text("Missing agentName", { status: 400 })
+  }
+
+  yield* Effect.logDebug("POST /agent/:agentName/interrupt", { agentName })
+
+  const agent = yield* registry.getOrCreate(agentName as AgentName)
+  yield* agent.interruptTurn
+
+  return yield* HttpServerResponse.json({ ok: true })
+})
+
+/** Handler for POST /agent/:agentName/end - End session */
+const agentEndHandler = Effect.gen(function*() {
+  const registry = yield* AgentRegistry
+  const params = yield* HttpRouter.params
+
+  const agentName = params.agentName
+  if (!agentName) {
+    return HttpServerResponse.text("Missing agentName", { status: 400 })
+  }
+
+  yield* Effect.logDebug("POST /agent/:agentName/end", { agentName })
+
+  const agent = yield* registry.getOrCreate(agentName as AgentName)
+  yield* agent.endSession
+
+  return yield* HttpServerResponse.json({ ok: true })
+})
+
 /** Health check endpoint */
 const healthHandler = Effect.gen(function*() {
   yield* Effect.logDebug("GET /health")
@@ -217,5 +271,8 @@ export const makeRouter = HttpRouter.empty.pipe(
   HttpRouter.post("/agent/:agentName", agentHandler),
   HttpRouter.get("/agent/:agentName/events", agentEventsHandler),
   HttpRouter.get("/agent/:agentName/state", agentStateHandler),
+  HttpRouter.get("/agent/:agentName/idle", agentIdleHandler),
+  HttpRouter.post("/agent/:agentName/interrupt", agentInterruptHandler),
+  HttpRouter.post("/agent/:agentName/end", agentEndHandler),
   HttpRouter.get("/health", healthHandler)
 )
