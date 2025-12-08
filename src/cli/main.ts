@@ -6,8 +6,10 @@ import { GoogleClient, GoogleLanguageModel } from "@effect/ai-google"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { Cause, Effect, Layer } from "effect"
+import { Cause, Effect, Layer, Option } from "effect"
 import { AgentRegistry } from "../agent-registry.ts"
+import { LocalAgentServiceLive } from "../agent-service-local.ts"
+import { makeRemoteAgentServiceLive } from "../agent-service-remote.ts"
 import {
   AppConfig,
   extractConfigPath,
@@ -78,6 +80,15 @@ const makeLoggingLayer = (config: MiniAgentConfigType) =>
     baseDir: resolveBaseDir(config)
   })
 
+/** Extract --remote value from args */
+const extractRemoteUrl = (args: ReadonlyArray<string>): Option.Option<string> => {
+  const remoteIdx = args.indexOf("--remote")
+  if (remoteIdx !== -1 && args[remoteIdx + 1]) {
+    return Option.some(args[remoteIdx + 1]!)
+  }
+  return Option.none()
+}
+
 const makeMainLayer = (args: ReadonlyArray<string>) =>
   Layer.unwrapEffect(
     Effect.gen(function*() {
@@ -86,6 +97,7 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
       const config = yield* MiniAgentConfig.pipe(Effect.withConfigProvider(configProvider))
 
       const loggingLayer = makeLoggingLayer(config)
+      const remoteUrl = extractRemoteUrl(args)
 
       const buildLayers = Effect.gen(function*() {
         yield* Effect.logDebug("Using config", config)
@@ -95,17 +107,46 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
 
         const configProviderLayer = Layer.setConfigProvider(configProvider)
         const appConfigLayer = AppConfig.fromConfig(config)
+        const tracingLayer = createTracingLayer("mini-agent")
         const llmConfigLayer = CurrentLlmConfig.fromConfig(llmConfig)
         const languageModelLayer = makeLanguageModelLayer(llmConfig)
-        const tracingLayer = createTracingLayer("mini-agent")
 
+        // AgentRegistry is always needed (for serve command)
         // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
-        return AgentRegistry.Default.pipe(
-          Layer.provideMerge(LlmTurnLive),
-          Layer.provideMerge(languageModelLayer),
-          Layer.provideMerge(llmConfigLayer),
-          Layer.provideMerge(EventStoreFileSystem),
-          Layer.provideMerge(EventReducer.Default),
+        const agentRegistryLayer = AgentRegistry.Default.pipe(
+          Layer.provide(LlmTurnLive),
+          Layer.provide(languageModelLayer),
+          Layer.provide(llmConfigLayer),
+          Layer.provide(EventStoreFileSystem),
+          Layer.provide(EventReducer.Default),
+          Layer.provide(appConfigLayer),
+          Layer.provide(BunContext.layer)
+        )
+
+        // EventStore layer (also used by LocalAgentServiceLive for list())
+        const eventStoreLayer = EventStoreFileSystem.pipe(
+          Layer.provide(appConfigLayer),
+          Layer.provide(BunContext.layer)
+        )
+
+        // AgentService: use remote or local implementation based on --remote flag
+        const agentServiceLayer = Option.isSome(remoteUrl)
+          ? (() => {
+            void Effect.logDebug("Using remote AgentService", { url: remoteUrl.value }).pipe(
+              Effect.provide(loggingLayer),
+              Effect.runPromise
+            )
+            return makeRemoteAgentServiceLive({ baseUrl: remoteUrl.value }).pipe(
+              Layer.provide(FetchHttpClient.layer)
+            )
+          })()
+          : LocalAgentServiceLive.pipe(
+            Layer.provide(agentRegistryLayer),
+            Layer.provide(eventStoreLayer)
+          )
+
+        return agentServiceLayer.pipe(
+          Layer.provideMerge(agentRegistryLayer), // Always provide AgentRegistry (for serve command)
           Layer.provideMerge(tracingLayer),
           Layer.provideMerge(appConfigLayer),
           Layer.provideMerge(configProviderLayer),

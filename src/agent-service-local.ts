@@ -5,20 +5,22 @@
  * used when running mini-agent locally (CLI, TUI, local HTTP server).
  */
 
-import type { Effect, Layer, Scope, Stream } from "effect"
+import { Effect, Layer, type Scope, type Stream } from "effect"
 import { AgentRegistry } from "./agent-registry.ts"
 import { AgentService, type AgentServiceError } from "./agent-service.ts"
 import type { AgentName, ContextEvent, ReducedContext } from "./domain.ts"
+import { EventStore } from "./event-store.ts"
 
 /**
  * LocalAgentService implementation using AgentRegistry.
  *
  * Each method delegates to the MiniAgent instance obtained from AgentRegistry.
  */
-export const LocalAgentServiceLive: Layer.Layer<AgentService, never, AgentRegistry> = Layer.effect(
+export const LocalAgentServiceLive: Layer.Layer<AgentService, never, AgentRegistry | EventStore> = Layer.effect(
   AgentService,
   Effect.gen(function*() {
     const registry = yield* AgentRegistry
+    const store = yield* EventStore
 
     const addEvents = (
       agentName: AgentName,
@@ -69,7 +71,19 @@ export const LocalAgentServiceLive: Layer.Layer<AgentService, never, AgentRegist
         yield* agent.interruptTurn
       })
 
-    const list = (): Effect.Effect<ReadonlyArray<AgentName>> => registry.list
+    const list = (): Effect.Effect<ReadonlyArray<AgentName>> =>
+      Effect.gen(function*() {
+        // Get persisted context names from store (e.g., "my-agent-v1")
+        const contextNames = yield* store.list()
+
+        // Convert context names to agent names (e.g., "my-agent-v1" -> "my-agent")
+        // and deduplicate
+        const agentNames = contextNames
+          .map((name) => name.replace(/-v1$/, "") as AgentName)
+          .filter((name, index, arr) => arr.indexOf(name) === index)
+
+        return agentNames
+      })
 
     return {
       addEvents,

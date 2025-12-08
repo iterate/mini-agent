@@ -9,7 +9,8 @@
  * Future: Replace with @effect/cluster Sharding
  */
 
-import { Deferred, Effect, Exit, Layer, Ref, Scope } from "effect"
+import { Deferred, Effect, Exit, Layer, Option, Ref, Scope } from "effect"
+import { AppConfig } from "./config.ts"
 import {
   type AgentName,
   AgentNotFoundError,
@@ -22,6 +23,7 @@ import {
 } from "./domain.ts"
 import { EventReducer } from "./event-reducer.ts"
 import { EventStore } from "./event-store.ts"
+import { CurrentLlmConfig } from "./llm-config.ts"
 import { makeMiniAgent } from "./mini-agent.ts"
 
 type MiniAgentCreationError = ReducerError | ContextLoadError | ContextSaveError
@@ -35,6 +37,10 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
     const reducer = yield* EventReducer
     const store = yield* EventStore
     const turn = yield* MiniAgentTurn
+
+    // Get optional config services (captured once during layer construction)
+    const llmConfigOption = yield* Effect.serviceOption(CurrentLlmConfig)
+    const appConfigOption = yield* Effect.serviceOption(AppConfig)
 
     // Map of agentName -> { agent, scope }
     const agents = yield* Ref.make(new Map<AgentName, { agent: MiniAgent; scope: Scope.CloseableScope }>())
@@ -101,12 +107,26 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
           const scope = yield* Scope.make()
           const contextName = makeContextName(agentName)
 
-          const agent = yield* makeMiniAgent(agentName, contextName).pipe(
+          let agentEffect = makeMiniAgent(agentName, contextName).pipe(
             Effect.provideService(Scope.Scope, scope),
             Effect.provideService(EventReducer, reducer),
             Effect.provideService(EventStore, store),
             Effect.provideService(MiniAgentTurn, turn)
           )
+
+          // Provide optional config services if available
+          if (Option.isSome(llmConfigOption)) {
+            agentEffect = agentEffect.pipe(
+              Effect.provideService(CurrentLlmConfig, llmConfigOption.value)
+            )
+          }
+          if (Option.isSome(appConfigOption)) {
+            agentEffect = agentEffect.pipe(
+              Effect.provideService(AppConfig, appConfigOption.value)
+            )
+          }
+
+          const agent = yield* agentEffect
 
           // Cache the agent
           yield* Ref.update(agents, (map) => {
