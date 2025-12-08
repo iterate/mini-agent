@@ -57,6 +57,14 @@ export const llmOption = Options.text("llm").pipe(
   Options.optional
 )
 
+export const remoteOption = Options.text("remote").pipe(
+  Options.withDescription(
+    "Connect to a remote mini-agent server instead of running locally. " +
+      "Provide the server URL (e.g., http://localhost:3001)"
+  ),
+  Options.optional
+)
+
 const nameOption = Options.text("name").pipe(
   Options.withAlias("n"),
   Options.withDescription("Agent name (slug identifier for the conversation)"),
@@ -625,7 +633,8 @@ const rootCommand = Command.make(
     configFile: configFileOption,
     cwd: cwdOption,
     stdoutLogLevel: stdoutLogLevelOption,
-    llm: llmOption
+    llm: llmOption,
+    remote: remoteOption
   }
 ).pipe(
   Command.withSubcommands([

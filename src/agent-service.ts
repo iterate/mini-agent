@@ -7,17 +7,19 @@
  * - getEvents: Get historical events
  * - getState: Get current reduced state
  *
- * Current implementation:
+ * Implementations:
  * - LocalAgentService: In-process using AgentRegistry
- *
- * Future: HttpAgentService for TUI connecting to remote server
+ * - HttpAgentService: HTTP client connecting to remote server
  */
 
+import { FetchHttpClient, HttpBody, HttpClient, HttpClientRequest } from "@effect/platform"
 import { Context, Duration, Effect, Layer, Option, Schema, type Scope, Stream } from "effect"
 import { AgentRegistry } from "./agent-registry.ts"
 import {
   type AgentName,
+  type AgentTurnNumber,
   type ContextEvent,
+  ContextEvent as ContextEventSchema,
   type ContextLoadError,
   type ContextSaveError,
   makeBaseEventFields,
@@ -195,3 +197,195 @@ export const makeUserMessageEvent = (
     content,
     images: images && images.length > 0 ? [...images] : undefined
   })
+
+/**
+ * Remote server configuration.
+ */
+export class RemoteServerConfig extends Context.Tag("@mini-agent/RemoteServerConfig")<
+  RemoteServerConfig,
+  { readonly baseUrl: string }
+>() {
+  static layer(baseUrl: string): Layer.Layer<RemoteServerConfig> {
+    return Layer.succeed(RemoteServerConfig, { baseUrl })
+  }
+}
+
+/** Schema for state response from server */
+const StateResponse = Schema.Struct({
+  agentName: Schema.String,
+  contextName: Schema.String,
+  nextEventNumber: Schema.Number,
+  currentTurnNumber: Schema.Number,
+  messageCount: Schema.Number,
+  hasLlmConfig: Schema.Boolean,
+  isAgentTurnInProgress: Schema.Boolean
+})
+
+/** Parse SSE data line into ContextEvent */
+const parseSSELine = (line: string): Effect.Effect<ContextEvent | null, AgentServiceError> =>
+  Effect.gen(function*() {
+    const trimmed = line.trim()
+    if (!trimmed.startsWith("data: ")) {
+      return null
+    }
+    const jsonStr = trimmed.slice(6) // Remove "data: " prefix
+    if (!jsonStr) return null
+
+    const parsed = yield* Effect.try({
+      try: () => JSON.parse(jsonStr) as unknown,
+      catch: (e) => new AgentServiceError({ message: `Failed to parse SSE JSON: ${e}`, cause: Option.none() })
+    })
+    const event = yield* Schema.decodeUnknown(ContextEventSchema)(parsed).pipe(
+      Effect.mapError((e) => new AgentServiceError({ message: `Failed to decode event: ${e}`, cause: Option.none() }))
+    )
+    return event
+  })
+
+/** Parse SSE stream into ContextEvent stream (errors are logged and filtered) */
+const parseSSEStream = (
+  response: { readonly stream: Stream.Stream<Uint8Array, unknown> }
+): Stream.Stream<ContextEvent, never> =>
+  response.stream.pipe(
+    Stream.catchAll(() => Stream.empty),
+    Stream.map((chunk) => new TextDecoder().decode(chunk)),
+    Stream.mapConcat((text) => text.split("\n")),
+    Stream.mapEffect((line) =>
+      parseSSELine(line).pipe(
+        Effect.catchAll(() => Effect.succeed(null))
+      )
+    ),
+    Stream.filter((e): e is ContextEvent => e !== null)
+  )
+
+/**
+ * HttpAgentService - HTTP client implementation connecting to remote server.
+ */
+export const HttpAgentService = {
+  Default: Layer.effect(
+    AgentService,
+    Effect.gen(function*() {
+      const config = yield* RemoteServerConfig
+      const httpClient = yield* HttpClient.HttpClient
+
+      const makeUrl = (path: string) => `${config.baseUrl}${path}`
+
+      const wrapHttpError = (e: unknown): AgentServiceError =>
+        new AgentServiceError({
+          message: e instanceof Error ? e.message : String(e),
+          cause: Option.some(e)
+        })
+
+      const encodeEvent = Schema.encodeSync(ContextEventSchema)
+
+      return {
+        addEvents: ({ agentName, events }) =>
+          Effect.gen(function*() {
+            if (events.length === 0) return
+
+            yield* httpClient.execute(
+              HttpClientRequest.post(makeUrl(`/agent/${agentName}/stream`), {
+                body: HttpBody.unsafeJson({
+                  events: events.map((e) => encodeEvent(e)),
+                  idleTimeoutMs: 50
+                })
+              })
+            ).pipe(
+              Effect.scoped,
+              Effect.mapError(wrapHttpError)
+            )
+          }),
+
+        addAndStream: ({ agentName, events, idleTimeoutMs = 50 }) =>
+          Effect.gen(function*() {
+            const response = yield* httpClient.execute(
+              HttpClientRequest.post(makeUrl(`/agent/${agentName}/stream`), {
+                body: HttpBody.unsafeJson({
+                  events: events.map((e) => encodeEvent(e)),
+                  idleTimeoutMs
+                })
+              })
+            ).pipe(Effect.mapError(wrapHttpError))
+
+            // Cast to expected error type (stream errors are already caught internally)
+            return parseSSEStream(response) as Stream.Stream<ContextEvent, AgentServiceError>
+          }),
+
+        tapEventStream: ({ agentName }) =>
+          Effect.gen(function*() {
+            const response = yield* httpClient.execute(
+              HttpClientRequest.get(makeUrl(`/agent/${agentName}/events`))
+            ).pipe(Effect.mapError(wrapHttpError))
+
+            return parseSSEStream(response)
+          }),
+
+        getEvents: (_options) =>
+          Effect.gen(function*() {
+            // For remote mode, we don't have full event history easily - return empty
+            // The server has the events in its memory
+            yield* Effect.void
+            return [] as ReadonlyArray<ContextEvent>
+          }),
+
+        getState: ({ agentName }) =>
+          Effect.gen(function*() {
+            const response = yield* httpClient.execute(
+              HttpClientRequest.get(makeUrl(`/agent/${agentName}/state`))
+            ).pipe(Effect.mapError(wrapHttpError))
+
+            const json = yield* response.json.pipe(Effect.mapError(wrapHttpError))
+            const stateResponse = yield* Schema.decodeUnknown(StateResponse)(json).pipe(
+              Effect.mapError(wrapHttpError)
+            )
+
+            // Convert to ReducedContext (minimal fields needed for remote operation)
+            const ctx: ReducedContext = {
+              messages: [],
+              nextEventNumber: stateResponse.nextEventNumber,
+              currentTurnNumber: stateResponse.currentTurnNumber as AgentTurnNumber,
+              agentTurnStartedAtEventId: stateResponse.isAgentTurnInProgress
+                ? Option.some("unknown" as any)
+                : Option.none(),
+              llmConfig: stateResponse.hasLlmConfig ? Option.some({} as any) : Option.none()
+            }
+            return ctx
+          }).pipe(Effect.scoped),
+
+        endSession: ({ agentName }) =>
+          Effect.gen(function*() {
+            yield* httpClient.execute(
+              HttpClientRequest.post(makeUrl(`/agent/${agentName}/end`))
+            ).pipe(
+              Effect.scoped,
+              Effect.mapError(wrapHttpError)
+            )
+          }),
+
+        isIdle: ({ agentName }) =>
+          Effect.gen(function*() {
+            const response = yield* httpClient.execute(
+              HttpClientRequest.get(makeUrl(`/agent/${agentName}/state`))
+            ).pipe(Effect.mapError(wrapHttpError))
+
+            const json = yield* response.json.pipe(Effect.mapError(wrapHttpError))
+            const stateResponse = yield* Schema.decodeUnknown(StateResponse)(json).pipe(
+              Effect.mapError(wrapHttpError)
+            )
+            return !stateResponse.isAgentTurnInProgress
+          }).pipe(Effect.scoped),
+
+        interruptTurn: ({ agentName }) =>
+          Effect.gen(function*() {
+            yield* httpClient.execute(
+              HttpClientRequest.post(makeUrl(`/agent/${agentName}/interrupt`))
+            ).pipe(
+              Effect.scoped,
+              Effect.mapError(wrapHttpError)
+            )
+          })
+      } satisfies AgentServiceShape
+    })
+  ).pipe(
+    Layer.provide(FetchHttpClient.layer)
+  )
+}
