@@ -11,6 +11,7 @@ import { FetchHttpClient, HttpServer } from "@effect/platform"
 import { BunContext, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { ConfigProvider, Effect, Layer, LogLevel, Option } from "effect"
 import { AgentRegistry } from "./agent-registry.ts"
+import { InProcessAgentService } from "./agent-service-in-process.ts"
 import { AppConfig, type MiniAgentConfig } from "./config.ts"
 import { EventReducer } from "./event-reducer.ts"
 import { EventStoreFileSystem } from "./event-store-fs.ts"
@@ -97,7 +98,7 @@ const program = Effect.gen(function*() {
 
   // Build the full layer stack
   // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
-  const serviceLayer = AgentRegistry.Default.pipe(
+  const registryLayer = AgentRegistry.Default.pipe(
     Layer.provide(LlmTurnLive),
     Layer.provide(languageModelLayer),
     Layer.provide(llmConfigLayer),
@@ -105,6 +106,12 @@ const program = Effect.gen(function*() {
     Layer.provide(EventReducer.Default),
     Layer.provide(appConfigLayer),
     Layer.provide(BunContext.layer)
+  )
+
+  // AgentService layer (uses AgentRegistry)
+  const serviceLayer = InProcessAgentService.pipe(
+    Layer.provide(registryLayer),
+    Layer.merge(registryLayer)
   )
 
   // HTTP server layer
