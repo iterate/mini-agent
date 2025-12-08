@@ -5,12 +5,12 @@
  * Return during streaming interrupts (with optional new message); Escape exits.
  */
 import { DateTime, Effect, Fiber, Mailbox, Option, Stream } from "effect"
-import { AgentRegistry } from "../agent-registry.ts"
+import { AgentService } from "../agent-service.ts"
 import {
   type AgentName,
+  type ContextName,
   type ContextSaveError,
   makeEventId,
-  type MiniAgent,
   type ReducerError,
   UserMessageEvent
 } from "../domain.ts"
@@ -22,19 +22,17 @@ type ChatSignal =
 
 export class ChatUI extends Effect.Service<ChatUI>()("@mini-agent/ChatUI", {
   effect: Effect.gen(function*() {
-    const registry = yield* AgentRegistry
+    const service = yield* AgentService
 
-    const runChat = Effect.fn("ChatUI.runChat")(function*(contextName: string) {
-      // Get or create the agent
-      const agent = yield* registry.getOrCreate(contextName as AgentName)
-
+    const runChat = (agentName: string) =>
+      Effect.gen(function*() {
       // Get existing events for history display
-      const existingEvents = yield* agent.getEvents
+      const existingEvents = yield* service.getEvents({ agentName: agentName as AgentName })
 
       const mailbox = yield* Mailbox.make<ChatSignal>()
 
       const chat = yield* Effect.promise(() =>
-        runOpenTUIChat(contextName, existingEvents, {
+        runOpenTUIChat(agentName, existingEvents, {
           onSubmit: (text) => {
             mailbox.unsafeOffer({ _tag: "Input", text })
           },
@@ -45,52 +43,55 @@ export class ChatUI extends Effect.Service<ChatUI>()("@mini-agent/ChatUI", {
       )
 
       // Subscribe to agent events and forward to UI
-      const subscriptionFiber = yield* agent.events.pipe(
+      const liveEventsStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
+      const subscriptionFiber = yield* liveEventsStream.pipe(
         Stream.runForEach((event) => Effect.sync(() => chat.addEvent(event))),
         Effect.fork
       )
 
-      yield* runChatLoop(agent, chat, mailbox).pipe(
+      yield* runChatLoop(service, agentName as AgentName, chat, mailbox).pipe(
         Effect.catchAllCause(() => Effect.void),
         Effect.ensuring(
           Effect.gen(function*() {
             yield* Fiber.interrupt(subscriptionFiber)
-            yield* agent.endSession
+            // Note: endSession not available in AgentService - sessions end naturally
             chat.cleanup()
           })
         )
       )
-    })
+      })
 
     return { runChat }
   }),
-  dependencies: [AgentRegistry.Default]
+  dependencies: [AgentService]
 }) {}
 
 const runChatLoop = (
-  agent: MiniAgent,
+  service: AgentService,
+  agentName: AgentName,
   chat: ChatController,
   mailbox: Mailbox.Mailbox<ChatSignal>
 ): Effect.Effect<void, ReducerError | ContextSaveError> =>
-  Effect.fn("ChatUI.runChatLoop")(function*() {
+  Effect.gen(function*() {
     while (true) {
-      const result = yield* runChatTurn(agent, chat, mailbox)
+      const result = yield* runChatTurn(service, agentName, chat, mailbox)
       if (result._tag === "exit") {
         return
       }
     }
-  })()
+  })
 
 type TurnResult =
   | { readonly _tag: "continue" }
   | { readonly _tag: "exit" }
 
 const runChatTurn = (
-  agent: MiniAgent,
+  service: AgentService,
+  agentName: AgentName,
   chat: ChatController,
   mailbox: Mailbox.Mailbox<ChatSignal>
 ): Effect.Effect<TurnResult, ReducerError | ContextSaveError> =>
-  Effect.fn("ChatUI.runChatTurn")(function*() {
+  Effect.gen(function*() {
     const signal = yield* mailbox.take.pipe(
       Effect.catchTag("NoSuchElementException", () => Effect.succeed({ _tag: "Exit" } as const))
     )
@@ -101,29 +102,30 @@ const runChatTurn = (
 
     const userMessage = signal.text.trim()
 
-    // Empty message = just interrupt, continue waiting
+    // Empty message = just continue waiting (can't interrupt in remote mode)
     if (!userMessage) {
       return { _tag: "continue" } as const
     }
 
-    // Get current context to build proper event
-    const ctx = yield* agent.getReducedContext
+    // Get current state to build proper event
+    const ctx = yield* service.getState({ agentName })
 
     // Create user event with triggersAgentTurn=true to start LLM turn
+    const contextName = `${agentName}-v1` as ContextName
     const userEvent = new UserMessageEvent({
-      id: makeEventId(agent.contextName, ctx.nextEventNumber),
+      id: makeEventId(contextName, ctx.nextEventNumber),
       timestamp: DateTime.unsafeNow(),
-      agentName: agent.agentName,
+      agentName,
       parentEventId: Option.none(),
       triggersAgentTurn: true,
       content: userMessage
     })
 
     // Add event to agent - this will broadcast to subscription and trigger LLM turn
-    yield* agent.addEvent(userEvent)
+    yield* service.addEvents({ agentName, events: [userEvent] })
 
     // Wait for turn to complete or user interrupt
-    const result = yield* awaitTurnCompletion(agent, mailbox)
+    const result = yield* awaitTurnCompletion(service, agentName, mailbox)
 
     if (result._tag === "exit") {
       return { _tag: "exit" } as const
@@ -133,44 +135,44 @@ const runChatTurn = (
       if (result.newMessage) {
         // User sent new message during streaming - this will trigger a new turn
         // The agent's debounce processing will interrupt the current turn automatically
-        return yield* runChatTurnWithPending(agent, chat, mailbox, result.newMessage)
-      } else {
-        // User hit return with no text - just interrupt without starting new turn
-        yield* agent.interruptTurn
+        return yield* runChatTurnWithPending(service, agentName, chat, mailbox, result.newMessage)
       }
+      // Note: Can't interrupt turn in remote mode - just continue
     }
 
     return { _tag: "continue" } as const
-  })()
+  })
 
 const runChatTurnWithPending = (
-  agent: MiniAgent,
+  service: AgentService,
+  agentName: AgentName,
   chat: ChatController,
   mailbox: Mailbox.Mailbox<ChatSignal>,
   pendingMessage: string
 ): Effect.Effect<TurnResult, ReducerError | ContextSaveError> =>
   Effect.gen(function*() {
-    const ctx = yield* agent.getReducedContext
+    const ctx = yield* service.getState({ agentName })
+    const contextName = `${agentName}-v1` as ContextName
 
     const userEvent = new UserMessageEvent({
-      id: makeEventId(agent.contextName, ctx.nextEventNumber),
+      id: makeEventId(contextName, ctx.nextEventNumber),
       timestamp: DateTime.unsafeNow(),
-      agentName: agent.agentName,
+      agentName,
       parentEventId: Option.none(),
       triggersAgentTurn: true,
       content: pendingMessage
     })
 
-    yield* agent.addEvent(userEvent)
+    yield* service.addEvents({ agentName, events: [userEvent] })
 
-    const result = yield* awaitTurnCompletion(agent, mailbox)
+    const result = yield* awaitTurnCompletion(service, agentName, mailbox)
 
     if (result._tag === "exit") {
       return { _tag: "exit" } as const
     }
 
     if (result._tag === "interrupted" && result.newMessage) {
-      return yield* runChatTurnWithPending(agent, chat, mailbox, result.newMessage)
+      return yield* runChatTurnWithPending(service, agentName, chat, mailbox, result.newMessage)
     }
 
     return { _tag: "continue" } as const
@@ -182,17 +184,36 @@ type TurnCompletionResult =
   | { readonly _tag: "interrupted"; readonly newMessage: string | null }
 
 const awaitTurnCompletion = (
-  agent: MiniAgent,
+  service: AgentService,
+  agentName: AgentName,
   mailbox: Mailbox.Mailbox<ChatSignal>
 ): Effect.Effect<TurnCompletionResult> =>
-  Effect.fn("ChatUI.awaitTurnCompletion")(function*() {
+  Effect.gen(function*() {
     // Wait for either: turn completes OR user interrupts
+    // For remote mode, we can't check isIdle, so we use a timeout-based approach
     const waitForIdle = Effect.gen(function*() {
-      // Poll for idle state
+      // Poll state to check if turn is in progress
+      // Simplified: wait a bit then assume completed (remote mode limitation)
+      let lastEventCount = 0
+      let stableCount = 0
       while (true) {
-        const isIdle = yield* agent.isIdle
-        if (isIdle) {
-          return { _tag: "completed" } as TurnCompletionResult
+        const ctx = yield* service.getState({ agentName })
+        const isInProgress = ctx.agentTurnStartedAtEventId._tag === "Some"
+        
+        if (!isInProgress) {
+          // Not in progress - check if we've been stable for a bit
+          const events = yield* service.getEvents({ agentName })
+          if (events.length === lastEventCount) {
+            stableCount++
+            if (stableCount > 4) { // 200ms of stability
+              return { _tag: "completed" } as TurnCompletionResult
+            }
+          } else {
+            stableCount = 0
+            lastEventCount = events.length
+          }
+        } else {
+          stableCount = 0
         }
         yield* Effect.sleep("50 millis")
       }
@@ -209,4 +230,4 @@ const awaitTurnCompletion = (
     })
 
     return yield* Effect.race(waitForIdle, waitForInterrupt)
-  })()
+  })

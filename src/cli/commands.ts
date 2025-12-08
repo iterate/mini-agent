@@ -8,11 +8,12 @@ import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
 import { type Error as PlatformError, FileSystem, HttpServer, type Terminal } from "@effect/platform"
 import { BunHttpServer, BunStream } from "@effect/platform-bun"
 import { Chunk, Console, DateTime, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
-import { AgentRegistry } from "../agent-registry.ts"
+import { AgentService } from "../agent-service.ts"
 import { AppConfig, resolveBaseDir } from "../config.ts"
 import {
   type AgentName,
   type AssistantMessageEvent,
+  type ContextName,
   ContextEvent,
   makeEventId,
   type TextDeltaEvent,
@@ -92,6 +93,11 @@ const imageOption = Options.file("image").pipe(
   Options.repeated
 )
 
+export const remoteOption = Options.text("remote").pipe(
+  Options.withDescription("Remote server URL (e.g., http://localhost:3001). If set, uses HTTP client instead of in-process agent."),
+  Options.optional
+)
+
 interface OutputOptions {
   raw: boolean
   showEphemeral: boolean
@@ -125,59 +131,63 @@ const handleEvent = (
 
 /** Run the event stream, handling each event */
 const runEventStream = (
-  contextName: string,
+  agentName: string,
   userMessage: string,
   options: OutputOptions,
   images: ReadonlyArray<string> = []
 ) =>
   Effect.gen(function*() {
-    const registry = yield* AgentRegistry
-    const agent = yield* registry.getOrCreate(contextName as AgentName)
+    const service = yield* AgentService
 
-    // Get existing events first (includes SessionStartedEvent emitted during agent creation)
-    const existingEvents = yield* agent.getEvents
+    // Get existing events first
+    const existingEvents = yield* service.getEvents({ agentName: agentName as AgentName })
     for (const event of existingEvents) {
       yield* handleEvent(event, options)
     }
 
-    // Get current context to build proper event
-    const ctx = yield* agent.getReducedContext
+    // Get current state to build proper event
+    const ctx = yield* service.getState({ agentName: agentName as AgentName })
 
     // Create user event with triggersAgentTurn=true
+    // Derive contextName from agentName (same pattern as AgentRegistry)
+    const contextName = `${agentName}-v1` as ContextName
     const userEvent = new UserMessageEvent({
-      id: makeEventId(agent.contextName, ctx.nextEventNumber),
+      id: makeEventId(contextName, ctx.nextEventNumber),
       timestamp: DateTime.unsafeNow(),
-      agentName: agent.agentName,
+      agentName: agentName as AgentName,
       parentEventId: Option.none(),
       triggersAgentTurn: true,
       content: userMessage,
       images: images.length > 0 ? images : undefined
     })
 
-    // Subscribe to events - wait for turn completion first
-    const turnFiber = yield* agent.events.pipe(
+    // Subscribe to events BEFORE adding event to guarantee we catch all events
+    const liveEventsStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
+
+    // Fork collection before adding event
+    const turnFiber = yield* liveEventsStream.pipe(
       Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
       Stream.runForEach((event) => handleEvent(event, options)),
       Effect.fork
     )
 
     // Add event to agent - triggers LLM turn
-    yield* agent.addEvent(userEvent)
+    yield* service.addEvents({ agentName: agentName as AgentName, events: [userEvent] })
 
     // Wait for turn to complete
     yield* Fiber.join(turnFiber).pipe(Effect.catchAllCause(() => Effect.void))
 
     // Subscribe to capture SessionEndedEvent
-    const sessionEndFiber = yield* agent.events.pipe(
+    const sessionEndFiber = yield* liveEventsStream.pipe(
       Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
       Stream.runForEach((event) => handleEvent(event, options)),
       Effect.fork
     )
 
-    // End session (emits SessionEndedEvent)
-    yield* agent.endSession
-
-    // Wait for SessionEndedEvent
+    // Note: endSession is not available in AgentService - sessions end naturally
+    // For remote mode, we can't end sessions anyway
+    // Wait a bit for any final events, then complete
+    yield* Effect.sleep("100 millis")
     yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
   })
 
@@ -229,16 +239,18 @@ const stdinEvents = BunStream.stdin.pipe(
   )
 )
 
-const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
+const scriptInteractiveLoop = (agentName: string, options: OutputOptions) =>
   Effect.gen(function*() {
-    const registry = yield* AgentRegistry
-    const agent = yield* registry.getOrCreate(contextName as AgentName)
+    const service = yield* AgentService
 
     // Output existing events first (includes SessionStartedEvent)
-    const existingEvents = yield* agent.getEvents
+    const existingEvents = yield* service.getEvents({ agentName: agentName as AgentName })
     for (const event of existingEvents) {
       yield* handleEvent(event, options)
     }
+
+    // Subscribe to live events stream
+    const liveEventsStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
 
     yield* stdinEvents.pipe(
       Stream.mapEffect((inputMsg) =>
@@ -248,27 +260,28 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
           const isUserMessage = inputMsg._tag === "UserMessage" || inputMsg._tag === "UserMessageEvent"
 
           if (isUserMessage) {
-            // Get current context
-            const ctx = yield* agent.getReducedContext
+            // Get current state
+            const ctx = yield* service.getState({ agentName: agentName as AgentName })
 
             // Create proper event with triggersAgentTurn
+            const contextName = `${agentName}-v1` as ContextName
             const userEvent = new UserMessageEvent({
-              id: makeEventId(agent.contextName, ctx.nextEventNumber),
+              id: makeEventId(contextName, ctx.nextEventNumber),
               timestamp: DateTime.unsafeNow(),
-              agentName: agent.agentName,
+              agentName: agentName as AgentName,
               parentEventId: Option.none(),
               triggersAgentTurn: true,
               content: inputMsg.content
             })
 
             // Subscribe to events - wait for turn completion to process next message
-            const eventFiber = yield* agent.events.pipe(
+            const eventFiber = yield* liveEventsStream.pipe(
               Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
               Stream.runForEach((outputEvent) => handleEvent(outputEvent, options)),
               Effect.fork
             )
 
-            yield* agent.addEvent(userEvent)
+            yield* service.addEvents({ agentName: agentName as AgentName, events: [userEvent] })
             yield* Fiber.join(eventFiber).pipe(Effect.catchAllCause(() => Effect.void))
           } else {
             yield* Effect.logDebug("SystemPrompt events in script mode are echoed but not persisted")
@@ -278,15 +291,9 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
       Stream.runDrain
     )
 
-    // Subscribe to capture SessionEndedEvent
-    const sessionEndFiber = yield* agent.events.pipe(
-      Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
-      Stream.runForEach((event) => handleEvent(event, options)),
-      Effect.fork
-    )
-
-    yield* agent.endSession
-    yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
+    // Note: endSession is not available in AgentService - sessions end naturally
+    // Wait a bit for any final events, then complete
+    yield* Effect.sleep("100 millis")
   })
 
 const NEW_CONTEXT_VALUE = "__new__"
@@ -406,7 +413,7 @@ const runChat = (options: {
       }
 
       case "script": {
-        yield* scriptInteractiveLoop(contextName, outputOptions)
+        yield* scriptInteractiveLoop(contextName, outputOptions) // contextName is actually agentName here
         break
       }
 
@@ -613,7 +620,8 @@ const rootCommand = Command.make(
     configFile: configFileOption,
     cwd: cwdOption,
     stdoutLogLevel: stdoutLogLevelOption,
-    llm: llmOption
+    llm: llmOption,
+    remote: remoteOption
   }
 ).pipe(
   Command.withSubcommands([

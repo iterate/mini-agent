@@ -32,7 +32,7 @@ export class AgentService extends Effect.Service<AgentService>()("@mini-agent/Ag
      * Returns a scoped stream that emits all future events.
      */
     tapEventStream: (_args: { agentName: AgentName }) =>
-      Effect.succeed(Stream.empty) as Effect.Effect<Stream.Stream<ContextEvent, never>, never, Scope.Scope>,
+      Effect.succeed(Stream.empty<ContextEvent>()) as Effect.Effect<Stream.Stream<ContextEvent, never>, never, Scope.Scope>,
 
     /**
      * Get all events for an agent (current snapshot).
@@ -279,10 +279,116 @@ export class HttpAgentService extends Effect.Service<HttpAgentService>()("@mini-
         })
       },
       tapEventStream: ({ agentName }) => {
-        // Similar to main implementation but with baseUrl
-        return Effect.succeed(Stream.empty<ContextEvent>())
+        // Reuse the main implementation logic but with baseUrl
+        return Effect.gen(function*() {
+          const response = yield* Effect.tryPromise({
+            try: () =>
+              fetch(`${baseUrl}/agent/${agentName}/events`, {
+                headers: { Accept: "text/event-stream" }
+              }),
+            catch: (e) => new Error(`HTTP request failed: ${e}`)
+          })
+
+          if (!response.ok) {
+            return yield* Effect.fail(new Error(`HTTP ${response.status}: ${response.statusText}`))
+          }
+
+          if (!response.body) {
+            return yield* Effect.fail(new Error("Response body is null"))
+          }
+
+          const reader = response.body.getReader()
+          const decoder = new TextDecoder()
+          let buffer = ""
+
+          const stream = Stream.async<ContextEvent, Error>((emit) => {
+            const readChunk = async () => {
+              try {
+                const { done, value } = await reader.read()
+                if (done) {
+                  return
+                }
+
+                buffer += decoder.decode(value, { stream: true })
+                const lines = buffer.split("\n")
+                buffer = lines.pop() ?? ""
+
+                for (const line of lines) {
+                  if (line.trim() && line.startsWith("data: ")) {
+                    try {
+                      const json = JSON.parse(line.slice(6)) as unknown
+                      const eventResult = Effect.runSync(
+                        Schema.decodeUnknown(ContextEvent)(json).pipe(Effect.either)
+                      )
+                      if (eventResult._tag === "Right") {
+                        emit(Stream.succeed(eventResult.right))
+                      }
+                    } catch {
+                      // Skip invalid JSON lines
+                    }
+                  }
+                }
+
+                if (!done) {
+                  readChunk()
+                }
+              } catch (error) {
+                emit(Stream.fail(new Error(`SSE parse error: ${error}`)))
+              }
+            }
+
+            readChunk()
+          })
+
+          return stream
+        })
       },
-      getEvents: ({ agentName }) => Effect.succeed([]),
-      getState: ({ agentName }) => Effect.succeed({} as ReducedContext)
+      getEvents: ({ agentName }) => {
+        const decodeEvent = Schema.decodeUnknown(ContextEvent)
+        return Effect.gen(function*() {
+          const response = yield* Effect.tryPromise({
+            try: () => fetch(`${baseUrl}/agent/${agentName}/events?snapshot=true`),
+            catch: (e) => new Error(`HTTP request failed: ${e}`)
+          })
+
+          if (!response.ok) {
+            return yield* Effect.fail(new Error(`HTTP ${response.status}: ${response.statusText}`))
+          }
+
+          const text = yield* Effect.tryPromise({
+            try: () => response.text(),
+            catch: (e) => new Error(`Failed to read response: ${e}`)
+          })
+
+          const events: Array<ContextEvent> = []
+          for (const line of text.split("\n")) {
+            if (line.startsWith("data: ")) {
+              const json = JSON.parse(line.slice(6)) as unknown
+              const event = yield* decodeEvent(json).pipe(
+                Effect.mapError((e) => new Error(`Failed to decode event: ${e}`))
+              )
+              events.push(event)
+            }
+          }
+
+          return events
+        })
+      },
+      getState: ({ agentName }) => {
+        return Effect.gen(function*() {
+          const response = yield* Effect.tryPromise({
+            try: () => fetch(`${baseUrl}/agent/${agentName}/state`),
+            catch: (e) => new Error(`HTTP request failed: ${e}`)
+          })
+
+          if (!response.ok) {
+            return yield* Effect.fail(new Error(`HTTP ${response.status}: ${response.statusText}`))
+          }
+
+          // For now, return initial state - HTTP endpoint doesn't return full ReducedContext
+          // TODO: Update HTTP endpoint to return full ReducedContext
+          return {} as ReducedContext
+        })
+      }
     })
 }

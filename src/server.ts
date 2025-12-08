@@ -9,7 +9,7 @@ import { GoogleClient, GoogleLanguageModel } from "@effect/ai-google"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient, HttpServer } from "@effect/platform"
 import { BunContext, BunHttpServer, BunRuntime } from "@effect/platform-bun"
-import { ConfigProvider, Effect, Layer, LogLevel, Option } from "effect"
+import { Cause, ConfigProvider, Effect, Layer, LogLevel, Option } from "effect"
 import { AgentRegistry } from "./agent-registry.ts"
 import { AgentService, InProcessAgentService } from "./agent-service.ts"
 import { AppConfig, type MiniAgentConfig } from "./config.ts"
@@ -88,60 +88,76 @@ const defaultConfig: MiniAgentConfig = {
 
 const appConfigLayer = Layer.succeed(AppConfig, defaultConfig)
 
-const program = Effect.gen(function*() {
-  const llmConfig = yield* resolveLlmConfig.pipe(Effect.withConfigProvider(ConfigProvider.fromEnv()))
-  yield* Effect.log(`Starting server on port ${port}`)
-  yield* Effect.logDebug("Using LLM config", { provider: llmConfig.apiFormat, model: llmConfig.model })
-
-  const languageModelLayer = makeLanguageModelLayer(llmConfig)
-  const llmConfigLayer = CurrentLlmConfig.fromConfig(llmConfig)
-
-  // Build the full layer stack
-  // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
-  const agentRegistryLayer = AgentRegistry.Default.pipe(
-    Layer.provide(LlmTurnLive),
-    Layer.provide(languageModelLayer),
-    Layer.provide(llmConfigLayer),
-    Layer.provide(EventStoreFileSystem),
-    Layer.provide(EventReducer.Default),
-    Layer.provide(appConfigLayer),
-    Layer.provide(BunContext.layer)
-  )
-
-  // AgentService uses AgentRegistry - provide both InProcessAgentService and AgentService
-  const inProcessServiceLayer = InProcessAgentService.Default.pipe(
-    Layer.provide(agentRegistryLayer)
-  )
-
-  // Map InProcessAgentService to AgentService interface
-  const agentServiceLayer = Layer.map(InProcessAgentService, (service) => ({
-    addEvents: service.addEvents,
-    tapEventStream: service.tapEventStream,
-    getEvents: service.getEvents,
-    getState: service.getState
-  })).pipe(Layer.provideTo(AgentService))
-
-  const serviceLayer = Layer.mergeAll(inProcessServiceLayer, agentServiceLayer)
-
-  // HTTP server layer
-  // Set idleTimeout high for SSE streaming - Bun defaults to 10s which kills long-running streams
-  const serverLayer = HttpServer.serve(makeRouter).pipe(
-    Layer.provide(BunHttpServer.layer({ port, idleTimeout: 120 })),
-    Layer.provide(serviceLayer)
-  )
-
-  return yield* Layer.launch(serverLayer)
-})
-
 const loggingLayer = createLoggingLayer({
   stdoutLogLevel: LogLevel.Info,
   fileLogLevel: LogLevel.Debug,
   baseDir: ".mini-agent"
 })
 
+const serverLayer = Layer.unwrapEffect(
+  Effect.gen(function*() {
+    const llmConfig = yield* resolveLlmConfig.pipe(Effect.withConfigProvider(ConfigProvider.fromEnv()))
+    yield* Effect.log(`Starting server on port ${port}`)
+    yield* Effect.logDebug("Using LLM config", { provider: llmConfig.apiFormat, model: llmConfig.model })
+
+    const languageModelLayer = makeLanguageModelLayer(llmConfig)
+    const llmConfigLayer = CurrentLlmConfig.fromConfig(llmConfig)
+
+    // Build the full layer stack
+    // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
+    const agentRegistryLayer = AgentRegistry.Default.pipe(
+      Layer.provide(LlmTurnLive),
+      Layer.provide(languageModelLayer),
+      Layer.provide(llmConfigLayer),
+      Layer.provide(EventStoreFileSystem),
+      Layer.provide(EventReducer.Default),
+      Layer.provide(appConfigLayer),
+      Layer.provide(BunContext.layer)
+    )
+
+    // AgentService uses AgentRegistry - provide both InProcessAgentService and AgentService
+    const inProcessServiceLayer = InProcessAgentService.Default.pipe(
+      Layer.provide(agentRegistryLayer)
+    )
+
+    // Map InProcessAgentService to AgentService interface
+    const agentServiceLayer = Layer.effect(
+      AgentService,
+      Effect.gen(function*() {
+        const inProcessService = yield* InProcessAgentService
+        return {
+          addEvents: inProcessService.addEvents,
+          tapEventStream: inProcessService.tapEventStream,
+          getEvents: inProcessService.getEvents,
+          getState: inProcessService.getState
+        }
+      })
+    ).pipe(Layer.provide(inProcessServiceLayer))
+
+    const serviceLayer = Layer.mergeAll(inProcessServiceLayer, agentServiceLayer)
+
+    // HTTP server layer
+    // Set idleTimeout high for SSE streaming - Bun defaults to 10s which kills long-running streams
+    return HttpServer.serve(makeRouter).pipe(
+      Layer.provide(BunHttpServer.layer({ port, idleTimeout: 120 })),
+      Layer.provide(serviceLayer),
+      Layer.provide(agentRegistryLayer)
+    )
+  }).pipe(
+    Effect.provide(loggingLayer),
+    Effect.provide(Layer.setConfigProvider(ConfigProvider.fromEnv()))
+  )
+)
+
+const program = Effect.gen(function*() {
+  yield* Layer.launch(serverLayer)
+})
+
 const mainLayer = Layer.mergeAll(loggingLayer, BunContext.layer)
 
-program.pipe(
+const runProgram = program.pipe(
   Effect.provide(mainLayer),
-  BunRuntime.runMain
+  Effect.catchAllCause((cause) => Cause.isInterruptedOnly(cause) ? Effect.void : Effect.failCause(cause))
 )
+
+BunRuntime.runMain(runProgram)

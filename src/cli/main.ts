@@ -8,6 +8,7 @@ import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
 import { AgentRegistry } from "../agent-registry.ts"
+import { AgentService, HttpAgentService, InProcessAgentService } from "../agent-service.ts"
 import {
   AppConfig,
   extractConfigPath,
@@ -78,6 +79,26 @@ const makeLoggingLayer = (config: MiniAgentConfigType) =>
     baseDir: resolveBaseDir(config)
   })
 
+/** Extract remote URL from CLI args (--remote or REMOTE env var) */
+const extractRemoteUrl = (args: ReadonlyArray<string>): string | null => {
+  // Check env var first
+  if (process.env.MINI_AGENT_REMOTE) {
+    return process.env.MINI_AGENT_REMOTE
+  }
+
+  // Check CLI args for --remote
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === "--remote" && i + 1 < args.length) {
+      return args[i + 1] ?? null
+    } else if (arg?.startsWith("--remote=")) {
+      return arg.slice("--remote=".length) || null
+    }
+  }
+
+  return null
+}
+
 const makeMainLayer = (args: ReadonlyArray<string>) =>
   Layer.unwrapEffect(
     Effect.gen(function*() {
@@ -99,8 +120,11 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
         const languageModelLayer = makeLanguageModelLayer(llmConfig)
         const tracingLayer = createTracingLayer("mini-agent")
 
+        // Check for remote mode
+        const remoteUrl = extractRemoteUrl(args)
+
         // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
-        return AgentRegistry.Default.pipe(
+        const agentRegistryLayer = AgentRegistry.Default.pipe(
           Layer.provideMerge(LlmTurnLive),
           Layer.provideMerge(languageModelLayer),
           Layer.provideMerge(llmConfigLayer),
@@ -112,6 +136,42 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
           Layer.provideMerge(loggingLayer),
           Layer.provideMerge(BunContext.layer)
         )
+
+        // Provide AgentService - either in-process or HTTP client
+        if (remoteUrl) {
+          yield* Effect.log(`Using remote agent service: ${remoteUrl}`)
+          const httpServiceLayer = HttpAgentService.fromUrl(remoteUrl)
+          // Map HttpAgentService to AgentService interface
+          const agentServiceLayer = Layer.effect(
+            AgentService,
+            Effect.gen(function*() {
+              const httpService = yield* HttpAgentService
+              return {
+                addEvents: httpService.addEvents,
+                tapEventStream: httpService.tapEventStream,
+                getEvents: httpService.getEvents,
+                getState: httpService.getState
+              }
+            })
+          ).pipe(Layer.provide(httpServiceLayer))
+          return Layer.mergeAll(httpServiceLayer, agentServiceLayer)
+        } else {
+          const inProcessServiceLayer = InProcessAgentService.Default.pipe(Layer.provide(agentRegistryLayer))
+          // Map InProcessAgentService to AgentService interface
+          const agentServiceLayer = Layer.effect(
+            AgentService,
+            Effect.gen(function*() {
+              const inProcessService = yield* InProcessAgentService
+              return {
+                addEvents: inProcessService.addEvents,
+                tapEventStream: inProcessService.tapEventStream,
+                getEvents: inProcessService.getEvents,
+                getState: inProcessService.getState
+              }
+            })
+          ).pipe(Layer.provide(inProcessServiceLayer))
+          return Layer.mergeAll(agentRegistryLayer, inProcessServiceLayer, agentServiceLayer)
+        }
       })
 
       return Layer.unwrapEffect(buildLayers.pipe(Effect.provide(loggingLayer)))
