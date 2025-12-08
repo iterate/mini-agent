@@ -2,16 +2,16 @@
  * HTTP Routes.
  *
  * Endpoints:
- * - POST /agent/:agentName - Send message, receive SSE stream of events
+ * - POST /agent/:agentName/events - Add events and optionally stream back until idle
  * - GET /agent/:agentName/events - Subscribe to agent events (SSE)
  * - GET /agent/:agentName/state - Get reduced agent state
  * - GET /health - Health check
  */
 
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Chunk, Effect, Fiber, Schema, Stream } from "effect"
-import { AgentRegistry } from "./agent-registry.ts"
-import { type AgentName, ContextEvent, makeBaseEventFields, UserMessageEvent } from "./domain.ts"
+import { Chunk, Duration, Effect, Schema, Stream } from "effect"
+import { AgentService } from "./agent-service.ts"
+import { type AgentName, ContextEvent } from "./domain.ts"
 
 const encodeEvent = Schema.encodeSync(ContextEvent)
 
@@ -19,27 +19,27 @@ const encodeEvent = Schema.encodeSync(ContextEvent)
 const encodeSSE = (event: ContextEvent): Uint8Array =>
   new TextEncoder().encode(`data: ${JSON.stringify(encodeEvent(event))}\n\n`)
 
-/** Input message schema - accepts both legacy and new tag names */
-const InputMessage = Schema.Struct({
-  _tag: Schema.Union(Schema.Literal("UserMessage"), Schema.Literal("UserMessageEvent")),
-  content: Schema.String
+/** Input schema for adding events */
+const AddEventsInput = Schema.Struct({
+  events: Schema.Array(ContextEvent),
+  streamUntilIdle: Schema.optional(Schema.Boolean, { default: () => false })
 })
-type InputMessage = typeof InputMessage.Type
+type AddEventsInput = typeof AddEventsInput.Type
 
-/** Parse JSON body into InputMessage */
-const parseBody = (body: string) =>
+/** Parse JSON body into AddEventsInput */
+const parseAddEventsBody = (body: string) =>
   Effect.gen(function*() {
     const json = yield* Effect.try({
       try: () => JSON.parse(body) as unknown,
       catch: (e) => new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
     })
-    return yield* Schema.decodeUnknown(InputMessage)(json)
+    return yield* Schema.decodeUnknown(AddEventsInput)(json)
   })
 
-/** Handler for POST /agent/:agentName */
-const agentHandler = Effect.gen(function*() {
+/** Handler for POST /agent/:agentName/events - Add events and optionally stream until idle */
+const addEventsHandler = Effect.gen(function*() {
   const request = yield* HttpServerRequest.HttpServerRequest
-  const registry = yield* AgentRegistry
+  const service = yield* AgentService
   const params = yield* HttpRouter.params
 
   const agentName = params.agentName
@@ -47,7 +47,7 @@ const agentHandler = Effect.gen(function*() {
     return HttpServerResponse.text("Missing agentName", { status: 400 })
   }
 
-  yield* Effect.logDebug("POST /agent/:agentName", { agentName })
+  yield* Effect.logDebug("POST /agent/:agentName/events", { agentName })
 
   // Read body
   const body = yield* request.text
@@ -56,56 +56,34 @@ const agentHandler = Effect.gen(function*() {
     return HttpServerResponse.text("Empty request body", { status: 400 })
   }
 
-  const parseResult = yield* parseBody(body).pipe(Effect.either)
+  const parseResult = yield* parseAddEventsBody(body).pipe(Effect.either)
 
   if (parseResult._tag === "Left") {
     return HttpServerResponse.text(parseResult.left.message, { status: 400 })
   }
 
-  const message = parseResult.right
+  const { events, streamUntilIdle } = parseResult.right
 
-  // Get or create agent
-  const agent = yield* registry.getOrCreate(agentName as AgentName)
+  // Add events
+  yield* service.addEvents({ agentName: agentName as AgentName, events })
 
-  // Get existing events to include initial session events
-  const existingEvents = yield* agent.getEvents
+  // If not streaming, return success immediately
+  if (!streamUntilIdle) {
+    return HttpServerResponse.json({ success: true, eventsAdded: events.length })
+  }
 
-  const ctx = yield* agent.getReducedContext
+  // Stream events until idle (50ms idle timeout)
+  const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
 
-  // Prepare user event
-  const userEvent = new UserMessageEvent({
-    ...makeBaseEventFields(agentName as AgentName, agent.contextName, ctx.nextEventNumber, true),
-    content: message.content
-  })
-
-  // Subscribe BEFORE adding event to guarantee we catch all events
-  // PubSub.subscribe guarantees subscription is established when this completes
-  const liveEvents = yield* agent.subscribe
-
-  // Fork collection before adding event
-  const eventFiber = yield* liveEvents.pipe(
-    Stream.takeUntil((e) =>
-      e._tag === "AgentTurnCompletedEvent" ||
-      e._tag === "AgentTurnFailedEvent" ||
-      e._tag === "AgentTurnInterruptedEvent"
-    ),
-    Stream.runCollect,
-    Effect.fork
+  // Use groupedWithin to collect events in 50ms windows
+  // Take events until we get an empty window (idle period)
+  const streamWithIdleDetection = eventStream.pipe(
+    Stream.groupedWithin({ count: Infinity, time: Duration.millis(50) }),
+    Stream.takeWhile((chunk) => Chunk.size(chunk) > 0), // Continue while we get events
+    Stream.flatMap((chunk) => Stream.fromIterable(Chunk.toArray(chunk)))
   )
 
-  yield* agent.addEvent(userEvent)
-
-  // Wait for the turn to complete and get all new events
-  const newEventsChunk = yield* Fiber.join(eventFiber).pipe(
-    Effect.catchAll(() => Effect.succeed(Chunk.empty<ContextEvent>()))
-  )
-  const newEvents = Chunk.toArray(newEventsChunk)
-
-  // Build SSE stream: existing events + user event + new events from turn
-  const allEvents: Array<ContextEvent> = [...existingEvents, userEvent, ...newEvents]
-  const sseStream = Stream.fromIterable(allEvents).pipe(
-    Stream.map(encodeSSE)
-  )
+  const sseStream = streamWithIdleDetection.pipe(Stream.map(encodeSSE))
 
   return HttpServerResponse.stream(sseStream, {
     contentType: "text/event-stream",
@@ -118,7 +96,7 @@ const agentHandler = Effect.gen(function*() {
 
 /** Handler for GET /agent/:agentName/events - Subscribe to agent event stream */
 const agentEventsHandler = Effect.gen(function*() {
-  const registry = yield* AgentRegistry
+  const service = yield* AgentService
   const params = yield* HttpRouter.params
 
   const agentName = params.agentName
@@ -128,18 +106,10 @@ const agentEventsHandler = Effect.gen(function*() {
 
   yield* Effect.logDebug("GET /agent/:agentName/events", { agentName })
 
-  const agent = yield* registry.getOrCreate(agentName as AgentName)
-
-  // Subscribe to live events FIRST to guarantee we don't miss any
-  // PubSub.subscribe guarantees subscription is established when this completes
-  const liveEvents = yield* agent.subscribe
-
-  // Get existing events (captured at subscription time)
-  const existingEvents = yield* agent.getEvents
-  const existingStream = Stream.fromIterable(existingEvents)
+  const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
 
   // Stream terminates when SessionEndedEvent is received
-  const sseStream = Stream.concat(existingStream, liveEvents).pipe(
+  const sseStream = eventStream.pipe(
     Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
     Stream.map(encodeSSE)
   )
@@ -155,7 +125,7 @@ const agentEventsHandler = Effect.gen(function*() {
 
 /** Handler for GET /agent/:agentName/state - Get reduced agent state */
 const agentStateHandler = Effect.gen(function*() {
-  const registry = yield* AgentRegistry
+  const service = yield* AgentService
   const params = yield* HttpRouter.params
 
   const agentName = params.agentName
@@ -165,17 +135,14 @@ const agentStateHandler = Effect.gen(function*() {
 
   yield* Effect.logDebug("GET /agent/:agentName/state", { agentName })
 
-  const agent = yield* registry.getOrCreate(agentName as AgentName)
-  const reducedContext = yield* agent.getReducedContext
+  const events = yield* service.getEvents({ agentName: agentName as AgentName })
 
+  // Calculate reduced context from events
+  // For now, return basic info - full reducer would require EventReducer service
   return yield* HttpServerResponse.json({
     agentName,
-    contextName: agent.contextName,
-    nextEventNumber: reducedContext.nextEventNumber,
-    currentTurnNumber: reducedContext.currentTurnNumber,
-    messageCount: reducedContext.messages.length,
-    hasLlmConfig: reducedContext.llmConfig._tag === "Some",
-    isAgentTurnInProgress: reducedContext.agentTurnStartedAtEventId._tag === "Some"
+    eventCount: events.length,
+    lastEvent: events.length > 0 ? encodeEvent(events[events.length - 1]!) : null
   })
 })
 
@@ -187,7 +154,7 @@ const healthHandler = Effect.gen(function*() {
 
 /** HTTP router */
 export const makeRouter = HttpRouter.empty.pipe(
-  HttpRouter.post("/agent/:agentName", agentHandler),
+  HttpRouter.post("/agent/:agentName/events", addEventsHandler),
   HttpRouter.get("/agent/:agentName/events", agentEventsHandler),
   HttpRouter.get("/agent/:agentName/state", agentStateHandler),
   HttpRouter.get("/health", healthHandler)

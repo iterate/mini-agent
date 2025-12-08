@@ -531,17 +531,15 @@ export const makeMiniAgent = (
 
       addEvent: (event) => addEventInternal(event),
 
-      subscribe: Effect.gen(function*() {
+      tapEventStream: Effect.gen(function*() {
         // PubSub.subscribe guarantees subscription is established when this effect completes
         const dequeue = yield* PubSub.subscribe(pubsub)
         return Stream.fromQueue(dequeue)
       }),
 
-      events: broadcast,
-
       getEvents: Ref.get(stateRef).pipe(Effect.map((s) => s.events)),
 
-      getReducedContext: Ref.get(stateRef).pipe(Effect.map((s) => s.reducedContext)),
+      getState: Ref.get(stateRef).pipe(Effect.map((s) => s.reducedContext)),
 
       endSession: endSessionEffect,
 
