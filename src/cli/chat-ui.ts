@@ -24,9 +24,9 @@ export class ChatUI extends Effect.Service<ChatUI>()("@mini-agent/ChatUI", {
   effect: Effect.gen(function*() {
     const registry = yield* AgentRegistry
 
-    const runChat = Effect.fn("ChatUI.runChat")(function*(contextName: string) {
+    const runChat = Effect.fn("ChatUI.runChat")(function*(agentName: string) {
       // Get or create the agent
-      const agent = yield* registry.getOrCreate(contextName as AgentName)
+      const agent = yield* registry.getOrCreate(agentName as AgentName)
 
       // Get existing events for history display
       const existingEvents = yield* agent.getEvents
@@ -34,7 +34,7 @@ export class ChatUI extends Effect.Service<ChatUI>()("@mini-agent/ChatUI", {
       const mailbox = yield* Mailbox.make<ChatSignal>()
 
       const chat = yield* Effect.promise(() =>
-        runOpenTUIChat(contextName, existingEvents, {
+        runOpenTUIChat(agentName, existingEvents, {
           onSubmit: (text) => {
             mailbox.unsafeOffer({ _tag: "Input", text })
           },
@@ -45,20 +45,27 @@ export class ChatUI extends Effect.Service<ChatUI>()("@mini-agent/ChatUI", {
       )
 
       // Subscribe to agent events and forward to UI
-      const subscriptionFiber = yield* agent.events.pipe(
-        Stream.runForEach((event) => Effect.sync(() => chat.addEvent(event))),
-        Effect.fork
-      )
+      // Wrap in Effect.scoped to provide the Scope required by tapEventStream (PubSub.subscribe)
+      // The scope stays open for the entire chat session
+      yield* Effect.scoped(
+        Effect.gen(function*() {
+          const eventStream = yield* agent.tapEventStream
+          const subscriptionFiber = yield* eventStream.pipe(
+            Stream.runForEach((event) => Effect.sync(() => chat.addEvent(event))),
+            Effect.fork
+          )
 
-      yield* runChatLoop(agent, chat, mailbox).pipe(
-        Effect.catchAllCause(() => Effect.void),
-        Effect.ensuring(
-          Effect.gen(function*() {
-            yield* Fiber.interrupt(subscriptionFiber)
-            yield* agent.endSession
-            chat.cleanup()
-          })
-        )
+          yield* runChatLoop(agent, chat, mailbox).pipe(
+            Effect.catchAllCause(() => Effect.void),
+            Effect.ensuring(
+              Effect.gen(function*() {
+                yield* Fiber.interrupt(subscriptionFiber)
+                yield* agent.endSession
+                chat.cleanup()
+              })
+            )
+          )
+        })
       )
     })
 
@@ -106,8 +113,8 @@ const runChatTurn = (
       return { _tag: "continue" } as const
     }
 
-    // Get current context to build proper event
-    const ctx = yield* agent.getReducedContext
+    // Get current state to build proper event
+    const ctx = yield* agent.getState
 
     // Create user event with triggersAgentTurn=true to start LLM turn
     const userEvent = new UserMessageEvent({
@@ -150,7 +157,7 @@ const runChatTurnWithPending = (
   pendingMessage: string
 ): Effect.Effect<TurnResult, ReducerError | ContextSaveError> =>
   Effect.gen(function*() {
-    const ctx = yield* agent.getReducedContext
+    const ctx = yield* agent.getState
 
     const userEvent = new UserMessageEvent({
       id: makeEventId(agent.contextName, ctx.nextEventNumber),

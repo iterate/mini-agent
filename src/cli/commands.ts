@@ -125,14 +125,14 @@ const handleEvent = (
 
 /** Run the event stream, handling each event */
 const runEventStream = (
-  contextName: string,
+  agentName: string,
   userMessage: string,
   options: OutputOptions,
   images: ReadonlyArray<string> = []
 ) =>
   Effect.gen(function*() {
     const registry = yield* AgentRegistry
-    const agent = yield* registry.getOrCreate(contextName as AgentName)
+    const agent = yield* registry.getOrCreate(agentName as AgentName)
 
     // Get existing events first (includes SessionStartedEvent emitted during agent creation)
     const existingEvents = yield* agent.getEvents
@@ -140,8 +140,8 @@ const runEventStream = (
       yield* handleEvent(event, options)
     }
 
-    // Get current context to build proper event
-    const ctx = yield* agent.getReducedContext
+    // Get current state to build proper event
+    const ctx = yield* agent.getState
 
     // Create user event with triggersAgentTurn=true
     const userEvent = new UserMessageEvent({
@@ -154,31 +154,43 @@ const runEventStream = (
       images: images.length > 0 ? images : undefined
     })
 
-    // Subscribe to events - wait for turn completion first
-    const turnFiber = yield* agent.events.pipe(
-      Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
-      Stream.runForEach((event) => handleEvent(event, options)),
-      Effect.fork
+    // Subscribe to events BEFORE adding event to guarantee we catch all events
+    // Use Effect.scoped to provide the Scope required by tapEventStream (PubSub.subscribe)
+    yield* Effect.scoped(
+      Effect.gen(function*() {
+        const eventStream = yield* agent.tapEventStream
+        const turnFiber = yield* eventStream.pipe(
+          Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
+          Stream.runForEach((event) => handleEvent(event, options)),
+          Effect.fork
+        )
+
+        // Add event to agent - triggers LLM turn
+        yield* agent.addEvent(userEvent)
+
+        // Wait for turn to complete
+        yield* Fiber.join(turnFiber).pipe(Effect.catchAllCause(() => Effect.void))
+      })
     )
-
-    // Add event to agent - triggers LLM turn
-    yield* agent.addEvent(userEvent)
-
-    // Wait for turn to complete
-    yield* Fiber.join(turnFiber).pipe(Effect.catchAllCause(() => Effect.void))
 
     // Subscribe to capture SessionEndedEvent
-    const sessionEndFiber = yield* agent.events.pipe(
-      Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
-      Stream.runForEach((event) => handleEvent(event, options)),
-      Effect.fork
+    // Use Effect.scoped for the second subscription too
+    yield* Effect.scoped(
+      Effect.gen(function*() {
+        const sessionEndStream = yield* agent.tapEventStream
+        const sessionEndFiber = yield* sessionEndStream.pipe(
+          Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
+          Stream.runForEach((event) => handleEvent(event, options)),
+          Effect.fork
+        )
+
+        // End session (emits SessionEndedEvent)
+        yield* agent.endSession
+
+        // Wait for SessionEndedEvent
+        yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
+      })
     )
-
-    // End session (emits SessionEndedEvent)
-    yield* agent.endSession
-
-    // Wait for SessionEndedEvent
-    yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
   })
 
 /** CLI interaction mode - determines how input/output is handled */
@@ -229,10 +241,10 @@ const stdinEvents = BunStream.stdin.pipe(
   )
 )
 
-const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
+const scriptInteractiveLoop = (agentName: string, options: OutputOptions) =>
   Effect.gen(function*() {
     const registry = yield* AgentRegistry
-    const agent = yield* registry.getOrCreate(contextName as AgentName)
+    const agent = yield* registry.getOrCreate(agentName as AgentName)
 
     // Output existing events first (includes SessionStartedEvent)
     const existingEvents = yield* agent.getEvents
@@ -248,8 +260,8 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
           const isUserMessage = inputMsg._tag === "UserMessage" || inputMsg._tag === "UserMessageEvent"
 
           if (isUserMessage) {
-            // Get current context
-            const ctx = yield* agent.getReducedContext
+            // Get current state
+            const ctx = yield* agent.getState
 
             // Create proper event with triggersAgentTurn
             const userEvent = new UserMessageEvent({
@@ -262,14 +274,20 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
             })
 
             // Subscribe to events - wait for turn completion to process next message
-            const eventFiber = yield* agent.events.pipe(
-              Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
-              Stream.runForEach((outputEvent) => handleEvent(outputEvent, options)),
-              Effect.fork
-            )
+            // Use Effect.scoped for the PubSub subscription
+            yield* Effect.scoped(
+              Effect.gen(function*() {
+                const eventStream = yield* agent.tapEventStream
+                const eventFiber = yield* eventStream.pipe(
+                  Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
+                  Stream.runForEach((outputEvent) => handleEvent(outputEvent, options)),
+                  Effect.fork
+                )
 
-            yield* agent.addEvent(userEvent)
-            yield* Fiber.join(eventFiber).pipe(Effect.catchAllCause(() => Effect.void))
+                yield* agent.addEvent(userEvent)
+                yield* Fiber.join(eventFiber).pipe(Effect.catchAllCause(() => Effect.void))
+              })
+            )
           } else {
             yield* Effect.logDebug("SystemPrompt events in script mode are echoed but not persisted")
           }
@@ -279,14 +297,20 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
     )
 
     // Subscribe to capture SessionEndedEvent
-    const sessionEndFiber = yield* agent.events.pipe(
-      Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
-      Stream.runForEach((event) => handleEvent(event, options)),
-      Effect.fork
-    )
+    // Use Effect.scoped for the PubSub subscription
+    yield* Effect.scoped(
+      Effect.gen(function*() {
+        const sessionEndStream = yield* agent.tapEventStream
+        const sessionEndFiber = yield* sessionEndStream.pipe(
+          Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
+          Stream.runForEach((event) => handleEvent(event, options)),
+          Effect.fork
+        )
 
-    yield* agent.endSession
-    yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
+        yield* agent.endSession
+        yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
+      })
+    )
   })
 
 const NEW_CONTEXT_VALUE = "__new__"
@@ -375,7 +399,7 @@ const runChat = (options: {
   Effect.gen(function*() {
     yield* Effect.logDebug("Starting chat session")
     const mode = determineMode(options)
-    const contextName = Option.getOrElse(options.name, generateRandomContextName)
+    const agentName = Option.getOrElse(options.name, generateRandomContextName)
 
     const outputOptions: OutputOptions = {
       raw: mode === "script" || options.raw,
@@ -390,7 +414,7 @@ const runChat = (options: {
     switch (mode) {
       case "single-turn": {
         const message = Option.getOrElse(options.message, () => "")
-        yield* runEventStream(contextName, message, outputOptions, imageDataUris)
+        yield* runEventStream(agentName, message, outputOptions, imageDataUris)
         if (!outputOptions.raw) {
           yield* printTraceLinks
         }
@@ -400,19 +424,19 @@ const runChat = (options: {
       case "pipe": {
         const input = yield* readAllStdin
         if (input !== "") {
-          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false }, imageDataUris)
+          yield* runEventStream(agentName, input, { raw: false, showEphemeral: false }, imageDataUris)
         }
         break
       }
 
       case "script": {
-        yield* scriptInteractiveLoop(contextName, outputOptions)
+        yield* scriptInteractiveLoop(agentName, outputOptions)
         break
       }
 
       case "tty-interactive": {
         const resolvedName = Option.isSome(options.name)
-          ? contextName
+          ? agentName
           : yield* selectOrCreateContext
 
         const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))

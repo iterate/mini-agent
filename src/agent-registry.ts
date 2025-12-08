@@ -9,10 +9,12 @@
  * Future: Replace with @effect/cluster Sharding
  */
 
-import { Deferred, Effect, Exit, Layer, Ref, Scope } from "effect"
+import { Deferred, Effect, Exit, Layer, Ref, Scope, Stream } from "effect"
+import { AgentService } from "./agent-service.ts"
 import {
   type AgentName,
   AgentNotFoundError,
+  type ContextEvent,
   type ContextLoadError,
   type ContextName,
   type ContextSaveError,
@@ -200,5 +202,126 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
     Layer.provide(EventReducer.Default),
     Layer.provide(EventStore.InMemory),
     Layer.provide(MiniAgentTurn.Default)
+  )
+
+  /**
+   * InProcess implementation of AgentService.
+   * Wraps AgentRegistry to provide the unified service interface.
+   * Errors from agent creation are converted to defects (orDie).
+   */
+  static readonly InProcessAgentService: Layer.Layer<AgentService, never, AgentRegistry> = Layer.effect(
+    AgentService,
+    Effect.gen(function*() {
+      const registry = yield* AgentRegistry
+
+      return {
+        addEvents: ({ agentName, events }: { agentName: AgentName; events: ReadonlyArray<ContextEvent> }) =>
+          Effect.gen(function*() {
+            const agent = yield* registry.getOrCreate(agentName)
+            for (const event of events) {
+              yield* agent.addEvent(event)
+            }
+          }).pipe(Effect.orDie),
+
+        tapEventStream: ({ agentName }: { agentName: AgentName }) =>
+          Effect.gen(function*() {
+            const agent = yield* registry.getOrCreate(agentName)
+            return yield* agent.tapEventStream
+          }).pipe(Effect.orDie),
+
+        getEvents: ({ agentName }: { agentName: AgentName }) =>
+          Effect.gen(function*() {
+            const agent = yield* registry.getOrCreate(agentName)
+            return yield* agent.getEvents
+          }).pipe(Effect.orDie),
+
+        getState: ({ agentName }: { agentName: AgentName }) =>
+          Effect.gen(function*() {
+            const agent = yield* registry.getOrCreate(agentName)
+            return yield* agent.getState
+          }).pipe(Effect.orDie),
+
+        addEventsAndStreamUntilIdle: (
+          { agentName, events, idleTimeoutMs = 50 }: {
+            agentName: AgentName
+            events: ReadonlyArray<ContextEvent>
+            idleTimeoutMs?: number
+          }
+        ) =>
+          Stream.unwrapScoped(
+            Effect.gen(function*() {
+              const agent = yield* registry.getOrCreate(agentName)
+
+              // Get existing events first
+              const existingEvents = yield* agent.getEvents
+
+              // Subscribe to live events BEFORE adding new events
+              const liveEvents = yield* agent.tapEventStream
+
+              // Add the new events
+              for (const event of events) {
+                yield* agent.addEvent(event)
+              }
+
+              // Stream existing + live events until idle
+              const existingStream = Stream.fromIterable(existingEvents)
+              const liveUntilIdle = liveEvents.pipe(
+                Stream.takeUntil((e) =>
+                  e._tag === "AgentTurnCompletedEvent" ||
+                  e._tag === "AgentTurnFailedEvent" ||
+                  e._tag === "AgentTurnInterruptedEvent" ||
+                  e._tag === "SessionEndedEvent"
+                ),
+                // Add idle timeout check after turn events
+                Stream.concat(
+                  Stream.fromEffect(
+                    Effect.gen(function*() {
+                      // Wait for idle
+                      yield* Effect.iterate(0, {
+                        while: () => true,
+                        body: () =>
+                          Effect.gen(function*() {
+                            const isIdle = yield* agent.isIdle
+                            if (isIdle) {
+                              return Effect.fail("idle" as const)
+                            }
+                            yield* Effect.sleep(`${idleTimeoutMs} millis`)
+                            return Effect.succeed(0)
+                          }).pipe(Effect.flatten)
+                      }).pipe(
+                        Effect.catchAll(() => Effect.void),
+                        Effect.timeout("30 seconds"),
+                        Effect.orDie
+                      )
+                    })
+                  ).pipe(Stream.drain)
+                )
+              )
+
+              return Stream.concat(existingStream, liveUntilIdle)
+            }).pipe(Effect.orDie)
+          ),
+
+        endSession: ({ agentName }: { agentName: AgentName }) =>
+          Effect.gen(function*() {
+            const agent = yield* registry.getOrCreate(agentName)
+            yield* agent.endSession
+          }).pipe(Effect.orDie),
+
+        interruptTurn: ({ agentName }: { agentName: AgentName }) =>
+          Effect.gen(function*() {
+            const agent = yield* registry.getOrCreate(agentName)
+            yield* agent.interruptTurn
+          }).pipe(Effect.orDie),
+
+        isIdle: ({ agentName }: { agentName: AgentName }) =>
+          Effect.gen(function*() {
+            const agent = yield* registry.getOrCreate(agentName)
+            return yield* agent.isIdle
+          }).pipe(Effect.orDie),
+
+        listAgents: () => registry.list
+      } as unknown as AgentService
+    })
   )
 }

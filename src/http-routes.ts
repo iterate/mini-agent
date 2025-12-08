@@ -3,12 +3,14 @@
  *
  * Endpoints:
  * - POST /agent/:agentName - Send message, receive SSE stream of events
+ *   Query params:
+ *   - idle_timeout: ms to wait after turn completion before closing stream (default: 0)
  * - GET /agent/:agentName/events - Subscribe to agent events (SSE)
  * - GET /agent/:agentName/state - Get reduced agent state
  * - GET /health - Health check
  */
 
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
+import { HttpRouter, HttpServerRequest, HttpServerResponse, UrlParams } from "@effect/platform"
 import { Chunk, Effect, Fiber, Schema, Stream } from "effect"
 import { AgentRegistry } from "./agent-registry.ts"
 import { type AgentName, ContextEvent, makeBaseEventFields, UserMessageEvent } from "./domain.ts"
@@ -47,7 +49,12 @@ const agentHandler = Effect.gen(function*() {
     return HttpServerResponse.text("Missing agentName", { status: 400 })
   }
 
-  yield* Effect.logDebug("POST /agent/:agentName", { agentName })
+  // Parse idle_timeout query param (ms to wait after turn completion, default 0)
+  const urlParams = yield* request.urlParamsBody.pipe(Effect.orElse(() => Effect.succeed(UrlParams.empty)))
+  const idleTimeoutParam = UrlParams.getFirst(urlParams, "idle_timeout")
+  const idleTimeoutMs = idleTimeoutParam._tag === "Some" ? parseInt(idleTimeoutParam.value, 10) || 0 : 0
+
+  yield* Effect.logDebug("POST /agent/:agentName", { agentName, idleTimeoutMs })
 
   // Read body
   const body = yield* request.text
@@ -70,7 +77,7 @@ const agentHandler = Effect.gen(function*() {
   // Get existing events to include initial session events
   const existingEvents = yield* agent.getEvents
 
-  const ctx = yield* agent.getReducedContext
+  const ctx = yield* agent.getState
 
   // Prepare user event
   const userEvent = new UserMessageEvent({
@@ -80,7 +87,7 @@ const agentHandler = Effect.gen(function*() {
 
   // Subscribe BEFORE adding event to guarantee we catch all events
   // PubSub.subscribe guarantees subscription is established when this completes
-  const liveEvents = yield* agent.subscribe
+  const liveEvents = yield* agent.tapEventStream
 
   // Fork collection before adding event
   const eventFiber = yield* liveEvents.pipe(
@@ -100,6 +107,26 @@ const agentHandler = Effect.gen(function*() {
     Effect.catchAll(() => Effect.succeed(Chunk.empty<ContextEvent>()))
   )
   const newEvents = Chunk.toArray(newEventsChunk)
+
+  // If idle_timeout specified, wait for agent to be idle before returning
+  if (idleTimeoutMs > 0) {
+    yield* Effect.iterate(0, {
+      while: () => true,
+      body: () =>
+        Effect.gen(function*() {
+          const isIdle = yield* agent.isIdle
+          if (isIdle) {
+            return Effect.fail("idle" as const)
+          }
+          yield* Effect.sleep(`${idleTimeoutMs} millis`)
+          return Effect.succeed(0)
+        }).pipe(Effect.flatten)
+    }).pipe(
+      Effect.catchAll(() => Effect.void),
+      Effect.timeout("30 seconds"),
+      Effect.orDie
+    )
+  }
 
   // Build SSE stream: existing events + user event + new events from turn
   const allEvents: Array<ContextEvent> = [...existingEvents, userEvent, ...newEvents]
@@ -132,7 +159,7 @@ const agentEventsHandler = Effect.gen(function*() {
 
   // Subscribe to live events FIRST to guarantee we don't miss any
   // PubSub.subscribe guarantees subscription is established when this completes
-  const liveEvents = yield* agent.subscribe
+  const liveEvents = yield* agent.tapEventStream
 
   // Get existing events (captured at subscription time)
   const existingEvents = yield* agent.getEvents
@@ -166,16 +193,16 @@ const agentStateHandler = Effect.gen(function*() {
   yield* Effect.logDebug("GET /agent/:agentName/state", { agentName })
 
   const agent = yield* registry.getOrCreate(agentName as AgentName)
-  const reducedContext = yield* agent.getReducedContext
+  const state = yield* agent.getState
 
   return yield* HttpServerResponse.json({
     agentName,
     contextName: agent.contextName,
-    nextEventNumber: reducedContext.nextEventNumber,
-    currentTurnNumber: reducedContext.currentTurnNumber,
-    messageCount: reducedContext.messages.length,
-    hasLlmConfig: reducedContext.llmConfig._tag === "Some",
-    isAgentTurnInProgress: reducedContext.agentTurnStartedAtEventId._tag === "Some"
+    nextEventNumber: state.nextEventNumber,
+    currentTurnNumber: state.currentTurnNumber,
+    messageCount: state.messages.length,
+    hasLlmConfig: state.llmConfig._tag === "Some",
+    isAgentTurnInProgress: state.agentTurnStartedAtEventId._tag === "Some"
   })
 })
 
