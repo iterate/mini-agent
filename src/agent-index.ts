@@ -50,6 +50,7 @@ export {
 
 // Services
 export { AgentRegistry } from "./agent-registry.ts"
+export { AgentService } from "./agent-service.ts"
 export { EventReducer } from "./event-reducer.ts"
 export { EventStore } from "./event-store.ts"
 
@@ -57,5 +58,7 @@ export { EventStore } from "./event-store.ts"
 export { makeMiniAgent } from "./mini-agent.ts"
 
 // Production layers
+export { LocalAgentServiceDefault, LocalAgentServiceLive } from "./agent-service-local.ts"
+export { makeRemoteAgentServiceLive, type RemoteAgentServiceConfig } from "./agent-service-remote.ts"
 export { EventStoreFileSystem } from "./event-store-fs.ts"
 export { LlmTurnLive } from "./llm-turn.ts"

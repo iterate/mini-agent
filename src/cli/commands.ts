@@ -92,6 +92,11 @@ const imageOption = Options.file("image").pipe(
   Options.repeated
 )
 
+const remoteOption = Options.text("remote").pipe(
+  Options.withDescription("URL of remote mini-agent server (e.g., http://localhost:3001)"),
+  Options.optional
+)
+
 interface OutputOptions {
   raw: boolean
   showEphemeral: boolean
@@ -141,7 +146,7 @@ const runEventStream = (
     }
 
     // Get current context to build proper event
-    const ctx = yield* agent.getReducedContext
+    const ctx = yield* agent.getState
 
     // Create user event with triggersAgentTurn=true
     const userEvent = new UserMessageEvent({
@@ -155,7 +160,8 @@ const runEventStream = (
     })
 
     // Subscribe to events - wait for turn completion first
-    const turnFiber = yield* agent.events.pipe(
+    const eventStream = yield* agent.tapEventStream
+    const turnFiber = yield* eventStream.pipe(
       Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
       Stream.runForEach((event) => handleEvent(event, options)),
       Effect.fork
@@ -168,7 +174,8 @@ const runEventStream = (
     yield* Fiber.join(turnFiber).pipe(Effect.catchAllCause(() => Effect.void))
 
     // Subscribe to capture SessionEndedEvent
-    const sessionEndFiber = yield* agent.events.pipe(
+    const sessionEndStream = yield* agent.tapEventStream
+    const sessionEndFiber = yield* sessionEndStream.pipe(
       Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
       Stream.runForEach((event) => handleEvent(event, options)),
       Effect.fork
@@ -249,7 +256,7 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
 
           if (isUserMessage) {
             // Get current context
-            const ctx = yield* agent.getReducedContext
+            const ctx = yield* agent.getState
 
             // Create proper event with triggersAgentTurn
             const userEvent = new UserMessageEvent({
@@ -262,7 +269,8 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
             })
 
             // Subscribe to events - wait for turn completion to process next message
-            const eventFiber = yield* agent.events.pipe(
+            const eventStream = yield* agent.tapEventStream
+            const eventFiber = yield* eventStream.pipe(
               Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
               Stream.runForEach((outputEvent) => handleEvent(outputEvent, options)),
               Effect.fork
@@ -279,7 +287,8 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
     )
 
     // Subscribe to capture SessionEndedEvent
-    const sessionEndFiber = yield* agent.events.pipe(
+    const sessionEndStream = yield* agent.tapEventStream
+    const sessionEndFiber = yield* sessionEndStream.pipe(
       Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
       Stream.runForEach((event) => handleEvent(event, options)),
       Effect.fork
@@ -371,11 +380,18 @@ const runChat = (options: {
   script: boolean
   showEphemeral: boolean
   images: ReadonlyArray<string>
+  remote: Option.Option<string>
 }) =>
   Effect.gen(function*() {
     yield* Effect.logDebug("Starting chat session")
+
+    // Log if connecting to remote server
+    if (Option.isSome(options.remote)) {
+      yield* Effect.logDebug("Connecting to remote server", { url: options.remote.value })
+    }
+
     const mode = determineMode(options)
-    const contextName = Option.getOrElse(options.name, generateRandomContextName)
+    const agentName = Option.getOrElse(options.name, generateRandomContextName)
 
     const outputOptions: OutputOptions = {
       raw: mode === "script" || options.raw,
@@ -390,7 +406,7 @@ const runChat = (options: {
     switch (mode) {
       case "single-turn": {
         const message = Option.getOrElse(options.message, () => "")
-        yield* runEventStream(contextName, message, outputOptions, imageDataUris)
+        yield* runEventStream(agentName, message, outputOptions, imageDataUris)
         if (!outputOptions.raw) {
           yield* printTraceLinks
         }
@@ -400,19 +416,20 @@ const runChat = (options: {
       case "pipe": {
         const input = yield* readAllStdin
         if (input !== "") {
-          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false }, imageDataUris)
+          yield* runEventStream(agentName, input, { raw: false, showEphemeral: false }, imageDataUris)
+          yield* printTraceLinks
         }
         break
       }
 
       case "script": {
-        yield* scriptInteractiveLoop(contextName, outputOptions)
+        yield* scriptInteractiveLoop(agentName, outputOptions)
         break
       }
 
       case "tty-interactive": {
         const resolvedName = Option.isSome(options.name)
-          ? contextName
+          ? agentName
           : yield* selectOrCreateContext
 
         const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))
@@ -420,7 +437,12 @@ const runChat = (options: {
 
         yield* chatUI.runChat(resolvedName).pipe(
           Effect.catchAllCause(() => Effect.void),
-          Effect.ensuring(printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!"))))
+          Effect.ensuring(
+            Effect.all([
+              printTraceLinks.pipe(Effect.catchAll(() => Effect.void)),
+              Console.log("\nGoodbye!")
+            ], { discard: true })
+          )
         )
         break
       }
@@ -498,10 +520,11 @@ const chatCommand = Command.make(
     raw: rawOption,
     script: scriptOption,
     showEphemeral: showEphemeralOption,
-    images: imageOption
+    images: imageOption,
+    remote: remoteOption
   },
-  ({ images, message, name, raw, script, showEphemeral }) =>
-    runChat({ images, message, name, raw, script, showEphemeral })
+  ({ images, message, name, raw, remote, script, showEphemeral }) =>
+    runChat({ images, message, name, raw, remote, script, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
 const logTestCommand = Command.make(

@@ -45,7 +45,8 @@ export class ChatUI extends Effect.Service<ChatUI>()("@mini-agent/ChatUI", {
       )
 
       // Subscribe to agent events and forward to UI
-      const subscriptionFiber = yield* agent.events.pipe(
+      const eventStream = yield* agent.tapEventStream
+      const subscriptionFiber = yield* eventStream.pipe(
         Stream.runForEach((event) => Effect.sync(() => chat.addEvent(event))),
         Effect.fork
       )
@@ -107,7 +108,7 @@ const runChatTurn = (
     }
 
     // Get current context to build proper event
-    const ctx = yield* agent.getReducedContext
+    const ctx = yield* agent.getState
 
     // Create user event with triggersAgentTurn=true to start LLM turn
     const userEvent = new UserMessageEvent({
@@ -150,7 +151,7 @@ const runChatTurnWithPending = (
   pendingMessage: string
 ): Effect.Effect<TurnResult, ReducerError | ContextSaveError> =>
   Effect.gen(function*() {
-    const ctx = yield* agent.getReducedContext
+    const ctx = yield* agent.getState
 
     const userEvent = new UserMessageEvent({
       id: makeEventId(agent.contextName, ctx.nextEventNumber),

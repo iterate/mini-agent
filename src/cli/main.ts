@@ -123,6 +123,7 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
 const args = process.argv.slice(2)
 
 cli(process.argv).pipe(
+  Effect.scoped,
   Effect.provide(makeMainLayer(args)),
   Effect.catchAllCause((cause) => Cause.isInterruptedOnly(cause) ? Effect.void : Effect.failCause(cause)),
   (effect) => BunRuntime.runMain(effect, { disablePrettyLogger: true })

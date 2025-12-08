@@ -3,13 +3,14 @@
  *
  * Endpoints:
  * - POST /agent/:agentName - Send message, receive SSE stream of events
+ * - POST /agent/:agentName/stream - Send message, stream events until idle (50ms timeout)
  * - GET /agent/:agentName/events - Subscribe to agent events (SSE)
  * - GET /agent/:agentName/state - Get reduced agent state
  * - GET /health - Health check
  */
 
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Chunk, Effect, Fiber, Schema, Stream } from "effect"
+import { Chunk, Duration, Effect, Fiber, Schema, Stream } from "effect"
 import { AgentRegistry } from "./agent-registry.ts"
 import { type AgentName, ContextEvent, makeBaseEventFields, UserMessageEvent } from "./domain.ts"
 
@@ -70,7 +71,7 @@ const agentHandler = Effect.gen(function*() {
   // Get existing events to include initial session events
   const existingEvents = yield* agent.getEvents
 
-  const ctx = yield* agent.getReducedContext
+  const ctx = yield* agent.getState
 
   // Prepare user event
   const userEvent = new UserMessageEvent({
@@ -80,7 +81,7 @@ const agentHandler = Effect.gen(function*() {
 
   // Subscribe BEFORE adding event to guarantee we catch all events
   // PubSub.subscribe guarantees subscription is established when this completes
-  const liveEvents = yield* agent.subscribe
+  const liveEvents = yield* agent.tapEventStream
 
   // Fork collection before adding event
   const eventFiber = yield* liveEvents.pipe(
@@ -116,7 +117,103 @@ const agentHandler = Effect.gen(function*() {
   })
 })
 
-/** Handler for GET /agent/:agentName/events - Subscribe to agent event stream */
+/**
+ * Handler for POST /agent/:agentName/stream - Send message, stream until idle.
+ *
+ * Streams events until the agent has been idle for 50ms after completing the turn.
+ * This is useful for clients that want to add an event and wait for the response
+ * without keeping a long-lived subscription.
+ */
+const agentStreamHandler = Effect.gen(function*() {
+  const request = yield* HttpServerRequest.HttpServerRequest
+  const registry = yield* AgentRegistry
+  const params = yield* HttpRouter.params
+
+  const agentName = params.agentName
+  if (!agentName) {
+    return HttpServerResponse.text("Missing agentName", { status: 400 })
+  }
+
+  yield* Effect.logDebug("POST /agent/:agentName/stream", { agentName })
+
+  const body = yield* request.text
+
+  if (body.trim() === "") {
+    return HttpServerResponse.text("Empty request body", { status: 400 })
+  }
+
+  const parseResult = yield* parseBody(body).pipe(Effect.either)
+
+  if (parseResult._tag === "Left") {
+    return HttpServerResponse.text(parseResult.left.message, { status: 400 })
+  }
+
+  const message = parseResult.right
+
+  const agent = yield* registry.getOrCreate(agentName as AgentName)
+  const ctx = yield* agent.getState
+
+  const userEvent = new UserMessageEvent({
+    ...makeBaseEventFields(agentName as AgentName, agent.contextName, ctx.nextEventNumber, true),
+    content: message.content
+  })
+
+  // Subscribe BEFORE adding event
+  const liveEvents = yield* agent.tapEventStream
+
+  // Create a stream that emits events and terminates when idle for 50ms
+  const streamWithIdleTimeout = liveEvents.pipe(
+    Stream.tap(() => Effect.void),
+    // Timeout after 50ms of no events when turn is complete
+    Stream.timeoutTo(Duration.millis(50), Stream.empty),
+    // Also stop if we see a turn completion event
+    Stream.takeUntilEffect((e) =>
+      Effect.gen(function*() {
+        if (
+          e._tag === "AgentTurnCompletedEvent" ||
+          e._tag === "AgentTurnFailedEvent" ||
+          e._tag === "AgentTurnInterruptedEvent"
+        ) {
+          // Wait 50ms for any final events, then terminate
+          yield* Effect.sleep("50 millis")
+          return true
+        }
+        return false
+      })
+    )
+  )
+
+  // Fork the stream collection
+  const eventFiber = yield* streamWithIdleTimeout.pipe(
+    Stream.runCollect,
+    Effect.fork
+  )
+
+  // Add the user event to trigger the turn
+  yield* agent.addEvent(userEvent)
+
+  // Wait for stream to complete
+  const collectedChunk = yield* Fiber.join(eventFiber).pipe(
+    Effect.catchAll(() => Effect.succeed(Chunk.empty<ContextEvent>()))
+  )
+  const collectedEvents = Chunk.toArray(collectedChunk)
+
+  // Build SSE response with user event + collected events
+  const allEvents: Array<ContextEvent> = [userEvent, ...collectedEvents]
+  const sseStream = Stream.fromIterable(allEvents).pipe(
+    Stream.map(encodeSSE)
+  )
+
+  return HttpServerResponse.stream(sseStream, {
+    contentType: "text/event-stream",
+    headers: {
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    }
+  })
+})
+
+/** Handler for GET /agent/:agentName/events - Subscribe to agent events (SSE) */
 const agentEventsHandler = Effect.gen(function*() {
   const registry = yield* AgentRegistry
   const params = yield* HttpRouter.params
@@ -132,7 +229,7 @@ const agentEventsHandler = Effect.gen(function*() {
 
   // Subscribe to live events FIRST to guarantee we don't miss any
   // PubSub.subscribe guarantees subscription is established when this completes
-  const liveEvents = yield* agent.subscribe
+  const liveEvents = yield* agent.tapEventStream
 
   // Get existing events (captured at subscription time)
   const existingEvents = yield* agent.getEvents
@@ -166,7 +263,7 @@ const agentStateHandler = Effect.gen(function*() {
   yield* Effect.logDebug("GET /agent/:agentName/state", { agentName })
 
   const agent = yield* registry.getOrCreate(agentName as AgentName)
-  const reducedContext = yield* agent.getReducedContext
+  const reducedContext = yield* agent.getState
 
   return yield* HttpServerResponse.json({
     agentName,
@@ -188,6 +285,7 @@ const healthHandler = Effect.gen(function*() {
 /** HTTP router */
 export const makeRouter = HttpRouter.empty.pipe(
   HttpRouter.post("/agent/:agentName", agentHandler),
+  HttpRouter.post("/agent/:agentName/stream", agentStreamHandler),
   HttpRouter.get("/agent/:agentName/events", agentEventsHandler),
   HttpRouter.get("/agent/:agentName/state", agentStateHandler),
   HttpRouter.get("/health", healthHandler)
