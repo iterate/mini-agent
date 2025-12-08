@@ -1,13 +1,13 @@
-import { Chunk, Duration, Effect, Layer, Option, Schema, Stream, type Scope } from "effect"
+import { Chunk, Context, Duration, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
 import { AgentRegistry } from "./agent-registry.ts"
 import {
   type AgentName,
   ContextEvent,
+  ContextLoadError,
   type ContextName,
   type EventId,
   makeBaseEventFields,
   type MiniAgent,
-  type ContextLoadError,
   type ContextSaveError,
   type ReducerError,
   UserMessageEvent
@@ -37,81 +37,96 @@ const EndSessionInput = Schema.Struct({
 export const AgentEventInput = Schema.Union(UserMessageInput, InterruptTurnInput, EndSessionInput)
 export type AgentEventInput = typeof AgentEventInput.Type
 
+export interface AgentService {
+  readonly getEvents: (args: { agentName: AgentName }) => Effect.Effect<AgentEventsSnapshot, MiniAgentCreationError>
+  readonly tapEventStream: (
+    args: { agentName: AgentName }
+  ) => Effect.Effect<Stream.Stream<ContextEvent, never>, MiniAgentCreationError>
+  readonly addEvents: (
+    args: { agentName: AgentName; events: ReadonlyArray<AgentEventInput> }
+  ) => Effect.Effect<void, MiniAgentCreationError>
+}
+
 type MiniAgentCreationError = ReducerError | ContextLoadError | ContextSaveError
 
-export class AgentService extends Effect.Service<AgentService>()("@mini-agent/AgentService", {
-  effect: Effect.gen(function*() {
-    const registry = yield* AgentRegistry
+export const AgentService = Context.Tag<AgentService>()("@mini-agent/AgentService")
 
-    const loadAgent = (agentName: AgentName): Effect.Effect<MiniAgent, MiniAgentCreationError> =>
-      registry.getOrCreate(agentName)
+const makeLocalAgentService = Effect.gen(function*(): AgentService {
+  const registry = yield* AgentRegistry
 
-    const getEvents = ({ agentName }: { agentName: AgentName }) =>
-      Effect.gen(function*() {
-        const agent = yield* loadAgent(agentName)
-        const events = yield* agent.getEvents
-        return {
-          agentName: agent.agentName,
-          contextName: agent.contextName,
-          events
-        }
-      })
+  const loadAgent = (agentName: AgentName): Effect.Effect<MiniAgent, MiniAgentCreationError> =>
+    registry.getOrCreate(agentName)
 
-    const tapEventStream = ({ agentName }: { agentName: AgentName }) =>
-      Effect.gen(function*() {
-        const agent = yield* loadAgent(agentName)
-        return yield* agent.tapEventStream
-      })
+  const getEvents = ({ agentName }: { agentName: AgentName }) =>
+    Effect.gen(function*() {
+      const agent = yield* loadAgent(agentName)
+      const events = yield* agent.getEvents
+      return {
+        agentName: agent.agentName,
+        contextName: agent.contextName,
+        events
+      }
+    })
 
-    const addEvents = ({ agentName, events }: { agentName: AgentName; events: ReadonlyArray<AgentEventInput> }) =>
-      Effect.gen(function*() {
-        if (events.length === 0) {
-          return
-        }
+  const tapEventStream = ({ agentName }: { agentName: AgentName }) =>
+    Effect.gen(function*() {
+      const agent = yield* loadAgent(agentName)
+      return yield* agent.tapEventStream
+    })
 
-        const agent = yield* loadAgent(agentName)
-        const state = yield* agent.getState
-        let nextEventNumber = state.nextEventNumber
+  const addEvents = ({ agentName, events }: { agentName: AgentName; events: ReadonlyArray<AgentEventInput> }) =>
+    Effect.gen(function*() {
+      if (events.length === 0) {
+        return
+      }
 
-        for (const input of events) {
-          switch (input._tag) {
-            case "UserMessageEvent": {
-              const event = new UserMessageEvent({
-                ...makeBaseEventFields(
-                  agent.agentName,
-                  agent.contextName,
-                  nextEventNumber,
-                  input.triggersAgentTurn ?? true
-                ),
-                content: input.content,
-                images: input.images && input.images.length > 0 ? input.images : undefined
-              })
-              nextEventNumber += 1
-              yield* agent.addEvent(event)
-              break
-            }
-            case "InterruptTurn": {
-              yield* agent.interruptTurn
-              break
-            }
-            case "EndSession": {
-              yield* agent.endSession
-              break
-            }
-            default: {
-              const _exhaustive: never = input
-              return _exhaustive
-            }
+      const agent = yield* loadAgent(agentName)
+      const state = yield* agent.getState
+      let nextEventNumber = state.nextEventNumber
+
+      for (const input of events) {
+        switch (input._tag) {
+          case "UserMessageEvent": {
+            const event = new UserMessageEvent({
+              ...makeBaseEventFields(
+                agent.agentName,
+                agent.contextName,
+                nextEventNumber,
+                input.triggersAgentTurn ?? true
+              ),
+              content: input.content,
+              images: input.images && input.images.length > 0 ? input.images : undefined
+            })
+            nextEventNumber += 1
+            yield* agent.addEvent(event)
+            break
+          }
+          case "InterruptTurn": {
+            yield* agent.interruptTurn
+            break
+          }
+          case "EndSession": {
+            yield* agent.endSession
+            break
+          }
+          default: {
+            const _exhaustive: never = input
+            return _exhaustive
           }
         }
-      })
+      }
+    })
 
-    return { getEvents, tapEventStream, addEvents }
-  }),
-  dependencies: [AgentRegistry.Default]
-}) {}
+  return {
+    getEvents,
+    tapEventStream,
+    addEvents
+  }
+})
 
-export const AgentServiceLive = AgentService.Default
+export const AgentServiceLive = Layer.effect(AgentService, makeLocalAgentService).pipe(
+  Layer.provide(AgentRegistry.Default)
+)
 
 interface RemoteOptions {
   readonly baseUrl: string
@@ -158,39 +173,37 @@ export const AgentServiceRemote = (options: RemoteOptions): Layer.Layer<never, n
 
   const makeUrl = (path: string) => `${sanitizedBase}${path}`
 
-  const remoteLayer = Layer.effect(
-    AgentService,
-    Effect.gen(function*() {
-      const decodeEvents = (agentName: AgentName, response: { events: ReadonlyArray<unknown> }) =>
-        Effect.forEach(response.events, (event) => Schema.decodeUnknown(ContextEvent)(event)).pipe(
+  const decodeEvents = (agentName: AgentName, payload: ReadonlyArray<unknown>) =>
+    Effect.forEach(payload, (event) => Schema.decodeUnknown(ContextEvent)(event)).pipe(
+      Effect.catchAll((err) => Effect.fail(intoLoadError(agentName, err)))
+    )
+
+  const remoteService: AgentService = {
+    getEvents: ({ agentName }) =>
+      Effect.gen(function*() {
+        const raw = (yield* fetchJson(makeUrl(`/agent/${agentName}/history`)).pipe(
           Effect.catchAll((err) => Effect.fail(intoLoadError(agentName, err)))
-        )
+        )) as { agentName: string; contextName: string; events: ReadonlyArray<unknown> }
+        const events = yield* decodeEvents(agentName, raw.events)
+        return {
+          agentName: raw.agentName as AgentName,
+          contextName: raw.contextName as ContextName,
+          events
+        }
+      }),
 
-      const getEvents = ({ agentName }: { agentName: AgentName }) =>
-        Effect.gen(function*() {
-          const raw = (yield* fetchJson(makeUrl(`/agent/${agentName}/history`)).pipe(
-            Effect.catchAll((err) => Effect.fail(intoLoadError(agentName, err)))
-          )) as { agentName: string; contextName: string; events: ReadonlyArray<unknown> }
-          const events = yield* decodeEvents(agentName, raw)
-          return {
-            agentName: raw.agentName as AgentName,
-            contextName: raw.contextName as ContextName,
-            events
-          }
-        })
+    tapEventStream: ({ agentName }) =>
+      Effect.gen(function*() {
+        const initialSnapshot = yield* remoteService.getEvents({ agentName })
+        let lastEventId: EventId | null = initialSnapshot.events.length > 0
+          ? initialSnapshot.events[initialSnapshot.events.length - 1]!.id
+          : null
 
-      const tapEventStream = ({ agentName }: { agentName: AgentName }) =>
-        Effect.gen(function*() {
-          const initialSnapshot = yield* getEvents({ agentName })
-          let lastEventId: EventId | null = initialSnapshot.events.length > 0
-            ? initialSnapshot.events[initialSnapshot.events.length - 1]!.id
-            : null
-
-          return Stream.asyncScoped<ContextEvent, never>((emit) =>
-            Effect.gen(function*() {
-              const loop = Effect.gen(function*() {
-                while (true) {
-                  const snapshot = yield* getEvents({ agentName })
+        return Stream.asyncScoped<ContextEvent, never>((emit) =>
+          Effect.gen(function*() {
+            const loop = Effect.forever(
+              remoteService.getEvents({ agentName }).pipe(
+                Effect.flatMap((snapshot) => {
                   let startIdx = -1
                   if (lastEventId !== null) {
                     startIdx = snapshot.events.findIndex((event) => event.id === lastEventId)
@@ -200,25 +213,25 @@ export const AgentServiceRemote = (options: RemoteOptions): Layer.Layer<never, n
                   const newEvents = snapshot.events.slice(startIdx + 1)
                   if (newEvents.length > 0) {
                     lastEventId = newEvents[newEvents.length - 1]!.id
-                    yield* emit(Effect.succeed(Chunk.fromIterable(newEvents)))
+                    return emit(Effect.succeed(Chunk.fromIterable(newEvents)))
                   }
-                  yield* Effect.sleep(pollInterval)
-                }
-              })
+                  return Effect.void
+                }),
+                Effect.zipRight(Effect.sleep(pollInterval))
+              )
+            )
 
-              return yield* loop.pipe(Effect.forkScoped)
-            })
-          )
-        })
-
-      const addEvents = ({ agentName, events }: { agentName: AgentName; events: ReadonlyArray<AgentEventInput> }) =>
-        postJson(makeUrl(`/agent/${agentName}/events`), { events }).pipe(
-          Effect.catchAll((err) => Effect.fail(intoLoadError(agentName, err)))
+            const fiber = yield* Effect.fork(loop)
+            yield* Effect.addFinalizer(() => Fiber.interrupt(fiber))
+          })
         )
+      }),
 
-      return { getEvents, tapEventStream, addEvents }
-    })
-  )
+    addEvents: ({ agentName, events }) =>
+      postJson(makeUrl(`/agent/${agentName}/events`), { events }).pipe(
+        Effect.catchAll((err) => Effect.fail(intoLoadError(agentName, err)))
+      )
+  }
 
-  return remoteLayer
+  return Layer.succeed(AgentService, remoteService)
 }
