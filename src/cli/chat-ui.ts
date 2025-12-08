@@ -39,7 +39,8 @@ export class ChatUI extends Effect.Service<ChatUI>()("@mini-agent/ChatUI", {
       )
 
       // Subscribe to agent events and forward to UI
-      const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
+      // tapEventStream requires Scope
+      const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName }).pipe(Effect.scoped)
       const subscriptionFiber = yield* eventStream.pipe(
         Stream.runForEach((event) => Effect.sync(() => chat.addEvent(event))),
         Effect.fork

@@ -56,6 +56,11 @@ export const llmOption = Options.text("llm").pipe(
   Options.optional
 )
 
+export const remoteOption = Options.text("remote").pipe(
+  Options.withDescription("Remote server URL (e.g., http://localhost:3000). If set, CLI connects to remote server instead of running in-process."),
+  Options.optional
+)
+
 const nameOption = Options.text("name").pipe(
   Options.withAlias("n"),
   Options.withDescription("Context name (slug identifier for the conversation)"),
@@ -151,19 +156,51 @@ const runEventStream = (
       images: images.length > 0 ? images : undefined
     })
 
-    // Subscribe to events - wait for turn completion first
-    const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
-    const turnFiber = yield* eventStream.pipe(
-      Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
-      Stream.runForEach((event) => handleEvent(event, options)),
-      Effect.fork
+    // Subscribe to events BEFORE adding event to ensure we catch everything
+    // tapEventStream requires Scope - use scoped to manage it
+    yield* Effect.scoped(
+      Effect.gen(function*() {
+        // Get the stream - this establishes the subscription
+        const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
+        
+        // Fork event handler - this keeps the stream alive
+        const eventHandlerFiber = yield* eventStream.pipe(
+          Stream.runForEach((event) => handleEvent(event, options)),
+          Effect.fork
+        )
+
+        // Add event to agent - triggers LLM turn
+        yield* service.addEvents({ agentName: agentName as AgentName, events: [userEvent] })
+
+        // Wait for turn to complete (poll isIdle)
+        yield* Effect.iterate(0, {
+          while: () => true,
+          body: () =>
+            Effect.gen(function*() {
+              const isIdle = yield* service.isIdle({ agentName: agentName as AgentName })
+              if (isIdle) {
+                return Effect.fail("idle" as const)
+              }
+              yield* Effect.sleep("50 millis")
+              return Effect.succeed(0)
+            }).pipe(Effect.flatten)
+        }).pipe(
+          Effect.catchAll(() => Effect.void),
+          Effect.timeout("30 seconds"),
+          Effect.orDie
+        )
+
+        // End session (emits SessionEndedEvent)
+        yield* service.endSession({ agentName: agentName as AgentName })
+
+        // Wait for SessionEndedEvent to be processed and stream to finish
+        yield* Effect.sleep("200 millis")
+
+        // The scope will close when this effect completes, which will clean up the subscription
+        // Interrupt the handler to stop processing
+        yield* Fiber.interrupt(eventHandlerFiber).pipe(Effect.catchAllCause(() => Effect.void))
+      })
     )
-
-    // Add event to agent - triggers LLM turn
-    yield* service.addEvents({ agentName: agentName as AgentName, events: [userEvent] })
-
-    // Wait for turn to complete
-    yield* Fiber.join(turnFiber).pipe(Effect.catchAllCause(() => Effect.void))
   })
 
 /** CLI interaction mode - determines how input/output is handled */
@@ -226,6 +263,15 @@ const scriptInteractiveLoop = (agentName: string, options: OutputOptions) =>
 
     let eventCounter = existingEvents.length
 
+    // Subscribe to all events once, before processing stdin
+    const allEventStream = yield* service.tapEventStream({ agentName: agentName as AgentName }).pipe(Effect.scoped)
+    
+    // Fork a collector that handles all new events
+    const eventCollectorFiber = yield* allEventStream.pipe(
+      Stream.runForEach((event) => handleEvent(event, options)),
+      Effect.fork
+    )
+
     yield* stdinEvents.pipe(
       Stream.mapEffect((inputMsg) =>
         Effect.gen(function*() {
@@ -234,27 +280,39 @@ const scriptInteractiveLoop = (agentName: string, options: OutputOptions) =>
           const isUserMessage = inputMsg._tag === "UserMessage" || inputMsg._tag === "UserMessageEvent"
 
           if (isUserMessage) {
+            // Get current events to determine next event number
+            const currentEvents = yield* service.getEvents({ agentName: agentName as AgentName })
+            
             // Create proper event with triggersAgentTurn
             const userEvent = new UserMessageEvent({
-              id: makeEventId(`${agentName}-v1` as any, eventCounter),
+              id: makeEventId(`${agentName}-v1` as any, currentEvents.length),
               timestamp: DateTime.unsafeNow(),
               agentName: agentName as AgentName,
               parentEventId: Option.none(),
               triggersAgentTurn: true,
               content: inputMsg.content
             })
-            eventCounter++
 
-            // Subscribe to events - wait for turn completion to process next message
-            const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
-            const eventFiber = yield* eventStream.pipe(
-              Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
-              Stream.runForEach((outputEvent) => handleEvent(outputEvent, options)),
-              Effect.fork
-            )
-
+            // Add event - the collector fiber will handle the response events
             yield* service.addEvents({ agentName: agentName as AgentName, events: [userEvent] })
-            yield* Fiber.join(eventFiber).pipe(Effect.catchAllCause(() => Effect.void))
+            
+            // Wait for turn to complete before processing next message
+            yield* Effect.iterate(0, {
+              while: () => true,
+              body: () =>
+                Effect.gen(function*() {
+                  const isIdle = yield* service.isIdle({ agentName: agentName as AgentName })
+                  if (isIdle) {
+                    return Effect.fail("idle" as const)
+                  }
+                  yield* Effect.sleep("50 millis")
+                  return Effect.succeed(0)
+                }).pipe(Effect.flatten)
+            }).pipe(
+              Effect.catchAll(() => Effect.void),
+              Effect.timeout("30 seconds"),
+              Effect.orDie
+            )
           } else {
             yield* Effect.logDebug("SystemPrompt events in script mode are echoed but not persisted")
           }
@@ -262,6 +320,15 @@ const scriptInteractiveLoop = (agentName: string, options: OutputOptions) =>
       ),
       Stream.runDrain
     )
+
+    // End session (emits SessionEndedEvent)
+    yield* service.endSession({ agentName: agentName as AgentName })
+
+    // Wait a bit for SessionEndedEvent to be processed
+    yield* Effect.sleep("100 millis")
+
+    // Interrupt the collector
+    yield* Fiber.interrupt(eventCollectorFiber).pipe(Effect.catchAllCause(() => Effect.void))
   })
 
 const NEW_CONTEXT_VALUE = "__new__"
@@ -588,7 +655,8 @@ const rootCommand = Command.make(
     configFile: configFileOption,
     cwd: cwdOption,
     stdoutLogLevel: stdoutLogLevelOption,
-    llm: llmOption
+    llm: llmOption,
+    remote: remoteOption
   }
 ).pipe(
   Command.withSubcommands([

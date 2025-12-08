@@ -6,8 +6,9 @@ import { GoogleClient, GoogleLanguageModel } from "@effect/ai-google"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
-import { Cause, Effect, Layer } from "effect"
+import { Cause, Effect, Layer, Option } from "effect"
 import { AgentRegistry } from "../agent-registry.ts"
+import { AgentService } from "../agent-service.ts"
 import {
   AppConfig,
   extractConfigPath,
@@ -78,38 +79,70 @@ const makeLoggingLayer = (config: MiniAgentConfigType) =>
     baseDir: resolveBaseDir(config)
   })
 
+const extractRemoteUrl = (args: ReadonlyArray<string>): Option.Option<string> => {
+  const remoteIdx = args.findIndex((a) => a === "--remote")
+  if (remoteIdx >= 0 && args[remoteIdx + 1]) {
+    return Option.some(args[remoteIdx + 1]!)
+  }
+  // Also check for REMOTE env var
+  const envRemote = process.env.REMOTE
+  if (envRemote) {
+    return Option.some(envRemote)
+  }
+  return Option.none()
+}
+
 const makeMainLayer = (args: ReadonlyArray<string>) =>
   Layer.unwrapEffect(
     Effect.gen(function*() {
       const configPath = extractConfigPath(args)
       const configProvider = yield* makeConfigProvider(configPath, args)
       const config = yield* MiniAgentConfig.pipe(Effect.withConfigProvider(configProvider))
+      const remoteUrl = extractRemoteUrl(args)
 
       const loggingLayer = makeLoggingLayer(config)
 
       const buildLayers = Effect.gen(function*() {
         yield* Effect.logDebug("Using config", config)
 
-        const llmConfig = yield* resolveLlmConfig.pipe(Effect.withConfigProvider(configProvider))
-        yield* Effect.logDebug("Using LLM config", { provider: llmConfig.apiFormat, model: llmConfig.model })
+        // Configure AgentService based on remote flag
+        let agentServiceLayer: Layer.Layer<AgentService>
+        if (Option.isNone(remoteUrl)) {
+          // In-process mode - need full stack
+          const llmConfig = yield* resolveLlmConfig.pipe(Effect.withConfigProvider(configProvider))
+          yield* Effect.logDebug("Using LLM config", { provider: llmConfig.apiFormat, model: llmConfig.model })
 
-        const configProviderLayer = Layer.setConfigProvider(configProvider)
-        const appConfigLayer = AppConfig.fromConfig(config)
-        const llmConfigLayer = CurrentLlmConfig.fromConfig(llmConfig)
-        const languageModelLayer = makeLanguageModelLayer(llmConfig)
-        const tracingLayer = createTracingLayer("mini-agent")
+          const configProviderLayer = Layer.setConfigProvider(configProvider)
+          const appConfigLayer = AppConfig.fromConfig(config)
+          const llmConfigLayer = CurrentLlmConfig.fromConfig(llmConfig)
+          const languageModelLayer = makeLanguageModelLayer(llmConfig)
+          const tracingLayer = createTracingLayer("mini-agent")
 
-        // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
-        return AgentRegistry.Default.pipe(
-          Layer.provideMerge(LlmTurnLive),
-          Layer.provideMerge(languageModelLayer),
-          Layer.provideMerge(llmConfigLayer),
-          Layer.provideMerge(EventStoreFileSystem),
-          Layer.provideMerge(EventReducer.Default),
-          Layer.provideMerge(tracingLayer),
-          Layer.provideMerge(appConfigLayer),
-          Layer.provideMerge(configProviderLayer),
-          Layer.provideMerge(loggingLayer),
+          // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
+          const registryLayer = AgentRegistry.Default.pipe(
+            Layer.provideMerge(LlmTurnLive),
+            Layer.provideMerge(languageModelLayer),
+            Layer.provideMerge(llmConfigLayer),
+            Layer.provideMerge(EventStoreFileSystem),
+            Layer.provideMerge(EventReducer.Default),
+            Layer.provideMerge(tracingLayer),
+            Layer.provideMerge(appConfigLayer),
+            Layer.provideMerge(configProviderLayer),
+            Layer.provideMerge(loggingLayer),
+            Layer.provideMerge(BunContext.layer)
+          )
+
+          // AgentService.InProcess requires AgentRegistry, which is provided by registryLayer
+          agentServiceLayer = AgentService.InProcess.pipe(Layer.provideMerge(registryLayer))
+        } else {
+          // Remote mode - use HTTP client
+          yield* Effect.logDebug("Using remote server", { url: remoteUrl.value })
+          agentServiceLayer = AgentService.HttpClient(remoteUrl.value).pipe(Layer.provide(FetchHttpClient.layer))
+        }
+
+        // Always provide platform services (FileSystem, etc.) regardless of mode
+        // BunContext.layer provides FileSystem, Path, Terminal, etc.
+        return agentServiceLayer.pipe(
           Layer.provideMerge(BunContext.layer)
         )
       })
@@ -121,6 +154,12 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
   )
 
 const args = process.argv.slice(2)
+
+// Extract remote URL early for logging
+const remoteUrl = extractRemoteUrl(args)
+if (Option.isSome(remoteUrl)) {
+  console.log(`Connecting to remote server: ${remoteUrl.value}`)
+}
 
 cli(process.argv).pipe(
   Effect.provide(makeMainLayer(args)),

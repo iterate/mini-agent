@@ -20,10 +20,11 @@ const encodeSSE = (event: ContextEvent): Uint8Array =>
   new TextEncoder().encode(`data: ${JSON.stringify(encodeEvent(event))}\n\n`)
 
 /** Input schema for adding events */
-const AddEventsInput = Schema.Struct({
+const AddEventsInputSchema = Schema.Struct({
   events: Schema.Array(ContextEvent),
-  streamUntilIdle: Schema.optional(Schema.Boolean, { default: () => false })
+  streamUntilIdle: Schema.optional(Schema.Boolean)
 })
+type AddEventsInput = typeof AddEventsInputSchema.Type
 type AddEventsInput = typeof AddEventsInput.Type
 
 /** Parse JSON body into AddEventsInput */
@@ -33,7 +34,7 @@ const parseAddEventsBody = (body: string) =>
       try: () => JSON.parse(body) as unknown,
       catch: (e) => new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
     })
-    return yield* Schema.decodeUnknown(AddEventsInput)(json)
+    return yield* Schema.decodeUnknown(AddEventsInputSchema)(json)
   })
 
 /** Handler for POST /agent/:agentName/events - Add events and optionally stream until idle */
@@ -44,7 +45,7 @@ const addEventsHandler = Effect.gen(function*() {
 
   const agentName = params.agentName
   if (!agentName) {
-    return HttpServerResponse.text("Missing agentName", { status: 400 })
+    return yield* HttpServerResponse.text("Missing agentName", { status: 400 })
   }
 
   yield* Effect.logDebug("POST /agent/:agentName/events", { agentName })
@@ -53,39 +54,42 @@ const addEventsHandler = Effect.gen(function*() {
   const body = yield* request.text
 
   if (body.trim() === "") {
-    return HttpServerResponse.text("Empty request body", { status: 400 })
+    return yield* HttpServerResponse.text("Empty request body", { status: 400 })
   }
 
   const parseResult = yield* parseAddEventsBody(body).pipe(Effect.either)
 
   if (parseResult._tag === "Left") {
-    return HttpServerResponse.text(parseResult.left.message, { status: 400 })
+    return yield* HttpServerResponse.text(parseResult.left.message, { status: 400 })
   }
 
-  const { events, streamUntilIdle } = parseResult.right
+  const input = parseResult.right
+  const events = input.events
+  const streamUntilIdle = input.streamUntilIdle ?? false
 
   // Add events
   yield* service.addEvents({ agentName: agentName as AgentName, events })
 
   // If not streaming, return success immediately
   if (!streamUntilIdle) {
-    return HttpServerResponse.json({ success: true, eventsAdded: events.length })
+    return yield* HttpServerResponse.json({ success: true, eventsAdded: events.length })
   }
 
   // Stream events until idle (50ms idle timeout)
-  const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
+  // tapEventStream requires Scope - create one for the HTTP request
+  const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName }).pipe(Effect.scoped)
 
   // Use groupedWithin to collect events in 50ms windows
   // Take events until we get an empty window (idle period)
   const streamWithIdleDetection = eventStream.pipe(
-    Stream.groupedWithin({ count: Infinity, time: Duration.millis(50) }),
+    Stream.groupedWithin(Infinity, Duration.millis(50)),
     Stream.takeWhile((chunk) => Chunk.size(chunk) > 0), // Continue while we get events
-    Stream.flatMap((chunk) => Stream.fromIterable(Chunk.toArray(chunk)))
+    Stream.flatMap((chunk) => Stream.fromIterable(Chunk.toReadonlyArray(chunk)))
   )
 
   const sseStream = streamWithIdleDetection.pipe(Stream.map(encodeSSE))
 
-  return HttpServerResponse.stream(sseStream, {
+  return yield* HttpServerResponse.stream(sseStream, {
     contentType: "text/event-stream",
     headers: {
       "Cache-Control": "no-cache",
@@ -101,12 +105,13 @@ const agentEventsHandler = Effect.gen(function*() {
 
   const agentName = params.agentName
   if (!agentName) {
-    return HttpServerResponse.text("Missing agentName", { status: 400 })
+    return yield* HttpServerResponse.text("Missing agentName", { status: 400 })
   }
 
   yield* Effect.logDebug("GET /agent/:agentName/events", { agentName })
 
-  const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName })
+  // tapEventStream requires Scope - create one for the HTTP request
+  const eventStream = yield* service.tapEventStream({ agentName: agentName as AgentName }).pipe(Effect.scoped)
 
   // Stream terminates when SessionEndedEvent is received
   const sseStream = eventStream.pipe(
@@ -114,7 +119,7 @@ const agentEventsHandler = Effect.gen(function*() {
     Stream.map(encodeSSE)
   )
 
-  return HttpServerResponse.stream(sseStream, {
+  return yield* HttpServerResponse.stream(sseStream, {
     contentType: "text/event-stream",
     headers: {
       "Cache-Control": "no-cache",
@@ -130,7 +135,7 @@ const agentStateHandler = Effect.gen(function*() {
 
   const agentName = params.agentName
   if (!agentName) {
-    return HttpServerResponse.text("Missing agentName", { status: 400 })
+    return yield* HttpServerResponse.text("Missing agentName", { status: 400 })
   }
 
   yield* Effect.logDebug("GET /agent/:agentName/state", { agentName })
