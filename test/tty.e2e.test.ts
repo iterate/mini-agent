@@ -97,11 +97,11 @@ describe.sequential("TTY Interactive Mode", () => {
     }
   })
 
-  test("shows context name in footer", { timeout: 10000 }, async ({ llmEnv, testDir }) => {
-    const contextName = "my-special-context"
+  test("shows agent name in footer", { timeout: 10000 }, async ({ llmEnv, testDir }) => {
+    const agentName = "my-special-agent"
     const session = await launchTerminal({
       command: "bun",
-      args: [CLI_PATH, "--cwd", testDir, "chat", "-n", contextName],
+      args: [CLI_PATH, "--cwd", testDir, "chat", "-n", agentName],
       cols: 100,
       rows: 30,
       env: testEnv(llmEnv)
@@ -109,8 +109,8 @@ describe.sequential("TTY Interactive Mode", () => {
 
     try {
       await session.waitForText("Starting new conversation", { timeout: 5000 })
-      const text = await session.waitForText(contextName, { timeout: 3000 })
-      expect(text).toContain(`Agent: ${contextName}`)
+      const text = await session.waitForText(agentName, { timeout: 3000 })
+      expect(text).toContain(`Agent: ${agentName}`)
     } finally {
       await session.press(["ctrl", "c"])
       session.close()

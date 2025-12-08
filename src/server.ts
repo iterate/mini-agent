@@ -11,6 +11,7 @@ import { FetchHttpClient, HttpServer } from "@effect/platform"
 import { BunContext, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { ConfigProvider, Effect, Layer, LogLevel, Option } from "effect"
 import { AgentRegistry } from "./agent-registry.ts"
+import { LocalAgentService } from "./agent-service.ts"
 import { AppConfig, type MiniAgentConfig } from "./config.ts"
 import { EventReducer } from "./event-reducer.ts"
 import { EventStoreFileSystem } from "./event-store-fs.ts"
@@ -96,8 +97,8 @@ const program = Effect.gen(function*() {
   const llmConfigLayer = CurrentLlmConfig.fromConfig(llmConfig)
 
   // Build the full layer stack
-  // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
-  const serviceLayer = AgentRegistry.Default.pipe(
+  // AgentService → AgentRegistry → dependencies
+  const agentRegistryLayer = AgentRegistry.Default.pipe(
     Layer.provide(LlmTurnLive),
     Layer.provide(languageModelLayer),
     Layer.provide(llmConfigLayer),
@@ -107,11 +108,18 @@ const program = Effect.gen(function*() {
     Layer.provide(BunContext.layer)
   )
 
+  const serviceLayer = LocalAgentService.Default.pipe(
+    Layer.provide(agentRegistryLayer)
+  )
+
   // HTTP server layer
   // Set idleTimeout high for SSE streaming - Bun defaults to 10s which kills long-running streams
+  // Must merge llmConfigLayer and appConfigLayer so makeMiniAgent can access them via serviceOption
   const serverLayer = HttpServer.serve(makeRouter).pipe(
     Layer.provide(BunHttpServer.layer({ port, idleTimeout: 120 })),
-    Layer.provide(serviceLayer)
+    Layer.provide(serviceLayer),
+    Layer.provide(llmConfigLayer),
+    Layer.provide(appConfigLayer)
   )
 
   return yield* Layer.launch(serverLayer)

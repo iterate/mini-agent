@@ -8,6 +8,7 @@ import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
 import { AgentRegistry } from "../agent-registry.ts"
+import { LocalAgentService } from "../agent-service.ts"
 import {
   AppConfig,
   extractConfigPath,
@@ -99,15 +100,25 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
         const languageModelLayer = makeLanguageModelLayer(llmConfig)
         const tracingLayer = createTracingLayer("mini-agent")
 
-        // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
-        return AgentRegistry.Default.pipe(
-          Layer.provideMerge(LlmTurnLive),
-          Layer.provideMerge(languageModelLayer),
-          Layer.provideMerge(llmConfigLayer),
+        // Build layer stack: AgentService → AgentRegistry → dependencies
+        const agentRegistryLayer = AgentRegistry.Default.pipe(
+          Layer.provide(LlmTurnLive),
+          Layer.provide(languageModelLayer),
+          Layer.provide(llmConfigLayer),
+          Layer.provide(EventStoreFileSystem),
+          Layer.provide(EventReducer.Default)
+        )
+
+        const agentServiceLayer = LocalAgentService.Default.pipe(
+          Layer.provide(agentRegistryLayer)
+        )
+
+        return agentServiceLayer.pipe(
+          Layer.provideMerge(agentRegistryLayer),
           Layer.provideMerge(EventStoreFileSystem),
-          Layer.provideMerge(EventReducer.Default),
           Layer.provideMerge(tracingLayer),
           Layer.provideMerge(appConfigLayer),
+          Layer.provideMerge(llmConfigLayer),
           Layer.provideMerge(configProviderLayer),
           Layer.provideMerge(loggingLayer),
           Layer.provideMerge(BunContext.layer)
@@ -123,6 +134,7 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
 const args = process.argv.slice(2)
 
 cli(process.argv).pipe(
+  Effect.scoped,
   Effect.provide(makeMainLayer(args)),
   Effect.catchAllCause((cause) => Cause.isInterruptedOnly(cause) ? Effect.void : Effect.failCause(cause)),
   (effect) => BunRuntime.runMain(effect, { disablePrettyLogger: true })

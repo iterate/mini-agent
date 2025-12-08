@@ -102,10 +102,10 @@ describe("MiniAgent", () => {
         Effect.provide(TestLayer)
       ))
 
-    it.effect("initializes with empty messages in reducedContext", () =>
+    it.effect("initializes with empty messages in state", () =>
       Effect.gen(function*() {
         const agent = yield* makeMiniAgent(testAgentName, testContextName)
-        const ctx = yield* agent.getReducedContext
+        const ctx = yield* agent.getState
         // SessionStartedEvent doesn't add to messages array
         expect(ctx.messages).toEqual([])
       }).pipe(
@@ -147,7 +147,7 @@ describe("MiniAgent", () => {
         // Wait for event to be processed (fire-and-forget)
         yield* waitForEventTag(agent, "UserMessageEvent")
 
-        const ctx = yield* agent.getReducedContext
+        const ctx = yield* agent.getState
         // SessionStarted (1) + UserMessage (1) = 2
         expect(ctx.nextEventNumber).toBe(2)
       }).pipe(
@@ -168,7 +168,7 @@ describe("MiniAgent", () => {
         // Wait for event to be processed (fire-and-forget)
         yield* waitForEventTag(agent, "UserMessageEvent")
 
-        const ctx = yield* agent.getReducedContext
+        const ctx = yield* agent.getState
         expect(ctx.messages.length).toBe(1)
         expect(ctx.messages[0]?.role).toBe("user")
       }).pipe(
@@ -185,7 +185,7 @@ describe("MiniAgent", () => {
         yield* waitForEventTag(agent, "SessionStartedEvent")
 
         // Subscribe for UserMessages
-        const stream = yield* agent.subscribe
+        const stream = yield* agent.tapEventStream
         const collector = yield* stream.pipe(
           Stream.filter((e) => e._tag === "UserMessageEvent"),
           Stream.take(2),
@@ -221,7 +221,7 @@ describe("MiniAgent", () => {
       ))
   })
 
-  describe("getReducedContext", () => {
+  describe("getState", () => {
     it.effect("accumulates multiple messages", () =>
       Effect.gen(function*() {
         const agent = yield* makeMiniAgent(testAgentName, testContextName)
@@ -229,7 +229,7 @@ describe("MiniAgent", () => {
         yield* waitForEventTag(agent, "SessionStartedEvent")
 
         // Subscribe for the 3 messages
-        const stream = yield* agent.subscribe
+        const stream = yield* agent.tapEventStream
         const collector = yield* stream.pipe(
           Stream.filter((e) => e._tag === "AssistantMessageEvent"),
           Stream.take(1),
@@ -259,7 +259,7 @@ describe("MiniAgent", () => {
         // Wait for AssistantMessage (last one) to be processed
         yield* Fiber.join(collector)
 
-        const ctx = yield* agent.getReducedContext
+        const ctx = yield* agent.getState
         expect(ctx.messages.length).toBe(3)
         expect(ctx.messages[0]?.role).toBe("system")
         expect(ctx.messages[1]?.role).toBe("user")
@@ -276,11 +276,11 @@ describe("MiniAgent", () => {
         yield* waitForEventTag(agent, "SessionStartedEvent")
 
         // SessionStarted = 1
-        let ctx = yield* agent.getReducedContext
+        let ctx = yield* agent.getState
         expect(ctx.nextEventNumber).toBe(1)
 
         // Subscribe for the 3 UserMessages
-        const stream = yield* agent.subscribe
+        const stream = yield* agent.tapEventStream
         const collector = yield* stream.pipe(
           Stream.filter((e) => e._tag === "UserMessageEvent"),
           Stream.take(3),
@@ -311,7 +311,7 @@ describe("MiniAgent", () => {
         // Wait for all 3 to be processed
         yield* Fiber.join(collector)
 
-        ctx = yield* agent.getReducedContext
+        ctx = yield* agent.getState
         expect(ctx.nextEventNumber).toBe(4)
       }).pipe(
         Effect.scoped,
@@ -402,7 +402,7 @@ describe("MiniAgent", () => {
         yield* waitForEventTag(agent, "SessionStartedEvent")
 
         // Subscribe for the 2 UserMessages
-        const stream = yield* agent.subscribe
+        const stream = yield* agent.tapEventStream
         const collector = yield* stream.pipe(
           Stream.filter((e) => e._tag === "UserMessageEvent"),
           Stream.take(2),
@@ -607,7 +607,7 @@ describe("MiniAgent", () => {
         const agent = yield* makeMiniAgent(testAgentName, testContextName)
 
         // Subscribe to events - when this completes, subscription MUST be established
-        const eventStream = yield* agent.subscribe
+        const eventStream = yield* agent.tapEventStream
 
         // Fork collection of events - no sleep needed because subscription is guaranteed
         const collectorFiber = yield* eventStream.pipe(
@@ -646,7 +646,7 @@ describe("MiniAgent", () => {
         const agent = yield* makeMiniAgent(testAgentName, testContextName)
 
         // Subscribe and immediately add multiple events
-        const eventStream = yield* agent.subscribe
+        const eventStream = yield* agent.tapEventStream
 
         const collectorFiber = yield* eventStream.pipe(
           Stream.filter((e) => e._tag === "UserMessageEvent"),
@@ -719,7 +719,7 @@ describe("MiniAgent", () => {
         yield* waitForEventTag(agent, "SessionStartedEvent")
 
         // Subscribe to events - we want to receive SessionEndedEvent
-        const eventStream = yield* agent.subscribe
+        const eventStream = yield* agent.tapEventStream
 
         // Fork a collector that waits for SessionEndedEvent
         const collectorFiber = yield* eventStream.pipe(
