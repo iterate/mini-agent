@@ -7,10 +7,11 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
-import { AgentServiceLive } from "../agent-service.ts"
+import { AgentServiceLive, RemoteAgentConfig } from "../agent-service.ts"
 import {
   AppConfig,
   extractConfigPath,
+  extractRemoteUrl,
   makeConfigProvider,
   MiniAgentConfig,
   type MiniAgentConfig as MiniAgentConfigType,
@@ -82,6 +83,7 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
   Layer.unwrapEffect(
     Effect.gen(function*() {
       const configPath = extractConfigPath(args)
+      const remoteUrl = extractRemoteUrl(args)
       const configProvider = yield* makeConfigProvider(configPath, args)
       const config = yield* MiniAgentConfig.pipe(Effect.withConfigProvider(configProvider))
 
@@ -98,6 +100,7 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
         const llmConfigLayer = CurrentLlmConfig.fromConfig(llmConfig)
         const languageModelLayer = makeLanguageModelLayer(llmConfig)
         const tracingLayer = createTracingLayer("mini-agent")
+        const remoteConfigLayer = Layer.succeed(RemoteAgentConfig, remoteUrl)
 
         return AgentServiceLive.pipe(
           Layer.provideMerge(LlmTurnLive),
@@ -108,6 +111,7 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
           Layer.provideMerge(tracingLayer),
           Layer.provideMerge(appConfigLayer),
           Layer.provideMerge(configProviderLayer),
+          Layer.provideMerge(remoteConfigLayer),
           Layer.provideMerge(loggingLayer),
           Layer.provideMerge(BunContext.layer)
         )

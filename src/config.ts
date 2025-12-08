@@ -149,6 +149,25 @@ export const extractConfigPath = (args: ReadonlyArray<string>): string => {
   return "mini-agent.config.yaml"
 }
 
+export const extractRemoteUrl = (args: ReadonlyArray<string>): Option.Option<string> => {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (!arg) continue
+    if (arg === "--remote-url" || arg === "-R") {
+      const value = args[i + 1]
+      if (value && !value.startsWith("--")) {
+        return Option.some(value)
+      }
+    } else if (arg.startsWith("--remote-url=")) {
+      const value = arg.slice("--remote-url=".length)
+      if (value) {
+        return Option.some(value)
+      }
+    }
+  }
+  return Option.none()
+}
+
 export const resolveBaseDir = (config: MiniAgentConfig): string => {
   const cwd = Option.getOrElse(config.cwd, () => process.cwd())
   return `${cwd}/${config.dataStorageDir}`

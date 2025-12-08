@@ -9,7 +9,7 @@ import { type Error as PlatformError, FileSystem, HttpServer, type Terminal } fr
 import { BunHttpServer, BunStream } from "@effect/platform-bun"
 import { Chunk, Console, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
 import { contextNameFromAgent } from "../agent-registry.ts"
-import { AgentService, type AgentServiceApi, makeAgentServiceHttpLayer } from "../agent-service.ts"
+import { AgentService, type AgentServiceApi } from "../agent-service.ts"
 import { AppConfig, resolveBaseDir } from "../config.ts"
 import {
   type AgentName,
@@ -58,6 +58,12 @@ export const llmOption = Options.text("llm").pipe(
   Options.optional
 )
 
+const remoteUrlOption = Options.text("remote-url").pipe(
+  Options.withAlias("R"),
+  Options.withDescription("Base URL of a running mini-agent server (enables remote mode)"),
+  Options.optional
+)
+
 const nameOption = Options.text("name").pipe(
   Options.withAlias("n"),
   Options.withDescription("Context name (slug identifier for the conversation)"),
@@ -67,11 +73,6 @@ const nameOption = Options.text("name").pipe(
 const messageOption = Options.text("message").pipe(
   Options.withAlias("m"),
   Options.withDescription("Message to send (non-interactive single-turn mode)"),
-  Options.optional
-)
-
-const remoteUrlOption = Options.text("remote-url").pipe(
-  Options.withDescription("Base URL for remote mini-agent service (enables remote mode)"),
   Options.optional
 )
 
@@ -161,6 +162,7 @@ const appendSessionEnd = (agentService: AgentServiceApi, agentName: AgentName) =
       ...makeBaseEventFields(agentName, contextName, events.length, false)
     })
     yield* agentService.addEvents({ agentName, events: [sessionEnd] })
+    return sessionEnd as ContextEvent
   })
 
 /** Run the event stream, handling each event */
@@ -187,7 +189,8 @@ const runEventStream = (
     })
 
     yield* streamTurn(agentService, agentName, options, agentService.addEvents({ agentName, events: [userEvent] }))
-    yield* appendSessionEnd(agentService, agentName)
+    const sessionEndedEvent = yield* appendSessionEnd(agentService, agentName)
+    yield* handleEvent(sessionEndedEvent, options)
   })
 
 /** CLI interaction mode - determines how input/output is handled */
@@ -277,7 +280,8 @@ const scriptInteractiveLoop = (agentNameInput: string, options: OutputOptions) =
       Stream.runDrain
     )
 
-    yield* appendSessionEnd(agentService, agentName)
+    const sessionEndedEvent = yield* appendSessionEnd(agentService, agentName)
+    yield* handleEvent(sessionEndedEvent, options)
   })
 
 const NEW_CONTEXT_VALUE = "__new__"
@@ -362,7 +366,6 @@ const runChat = (options: {
   script: boolean
   showEphemeral: boolean
   images: ReadonlyArray<string>
-  remoteUrl: Option.Option<string>
 }) =>
   Effect.gen(function*() {
     yield* Effect.logDebug("Starting chat session")
@@ -427,11 +430,6 @@ const runChat = (options: {
       }
     }
   }).pipe(
-    (effect) =>
-      Option.match(options.remoteUrl, {
-        onNone: () => effect,
-        onSome: (url) => effect.pipe(Effect.provide(makeAgentServiceHttpLayer({ baseUrl: url })))
-      }),
     Effect.provide(makeChatUILayer()),
     Effect.withSpan("chat-session")
   )
@@ -504,11 +502,10 @@ const chatCommand = Command.make(
     raw: rawOption,
     script: scriptOption,
     showEphemeral: showEphemeralOption,
-    images: imageOption,
-    remoteUrl: remoteUrlOption
+    images: imageOption
   },
-  ({ images, message, name, raw, remoteUrl, script, showEphemeral }) =>
-    runChat({ images, message, name, raw, remoteUrl, script, showEphemeral })
+  ({ images, message, name, raw, script, showEphemeral }) =>
+    runChat({ images, message, name, raw, script, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
 const logTestCommand = Command.make(
@@ -626,7 +623,8 @@ const rootCommand = Command.make(
     configFile: configFileOption,
     cwd: cwdOption,
     stdoutLogLevel: stdoutLogLevelOption,
-    llm: llmOption
+    llm: llmOption,
+    remoteUrl: remoteUrlOption
   }
 ).pipe(
   Command.withSubcommands([

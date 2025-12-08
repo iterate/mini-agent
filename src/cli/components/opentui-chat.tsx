@@ -627,7 +627,7 @@ function ChatApp({ agentName, callbacks, controllerRef, initialEvents }: ChatApp
         <box flexGrow={1} />
         <text fg={colors.dim}>
           <span fg={colors.yellow}>Agent:</span> {agentName} ·
-          <span fg={colors.yellow}>Ctrl+C to exit</span>
+          <span fg={colors.yellow}>{isStreaming ? " Return to interrupt" : " Ctrl+C to exit"}</span>
         </text>
       </box>
     </box>

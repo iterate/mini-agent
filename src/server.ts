@@ -10,7 +10,7 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient, HttpServer } from "@effect/platform"
 import { BunContext, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { ConfigProvider, Effect, Layer, LogLevel, Option } from "effect"
-import { AgentServiceLive } from "./agent-service.ts"
+import { AgentServiceLive, RemoteAgentConfig } from "./agent-service.ts"
 import { AppConfig, type MiniAgentConfig } from "./config.ts"
 import { EventReducer } from "./event-reducer.ts"
 import { EventStoreFileSystem } from "./event-store-fs.ts"
@@ -101,6 +101,7 @@ const program = Effect.gen(function*() {
     Layer.provideMerge(llmConfigLayer),
     Layer.provideMerge(EventStoreFileSystem),
     Layer.provideMerge(EventReducer.Default),
+    Layer.provideMerge(Layer.succeed(RemoteAgentConfig, Option.none<string>())),
     Layer.provideMerge(appConfigLayer),
     Layer.provideMerge(BunContext.layer)
   )
