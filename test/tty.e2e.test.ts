@@ -10,7 +10,9 @@
  * they compete for terminal resources and cause flaky failures.
  */
 import { Effect } from "effect"
+import * as fs from "node:fs"
 import { resolve } from "node:path"
+import * as path from "node:path"
 import { launchTerminal } from "tuistory"
 import { describe } from "vitest"
 
@@ -57,6 +59,40 @@ describe.sequential("TTY Interactive Mode", () => {
     }
   )
 
+  test(
+    "does not duplicate config events when reopening session",
+    { timeout: 20000 },
+    async ({ llmEnv, testDir }) => {
+      const agentName = "tty-resume-test"
+
+      const openSession = async () => {
+        const session = await launchTerminal({
+          command: "bun",
+          args: [CLI_PATH, "--cwd", testDir, "chat", "-n", agentName],
+          cols: 80,
+          rows: 24,
+          env: testEnv(llmEnv)
+        })
+        try {
+          await session.waitForText("Agent:", { timeout: 5000 })
+        } finally {
+          await session.press(["ctrl", "c"])
+          session.close()
+        }
+      }
+
+      await openSession()
+      await openSession()
+
+      const contextFile = path.join(testDir, ".mini-agent", "contexts", `${agentName}-v1.yaml`)
+      const contents = fs.readFileSync(contextFile, "utf8")
+      const llmMatches = contents.match(/SetLlmConfigEvent/g) ?? []
+      const promptMatches = contents.match(/SystemPromptEvent/g) ?? []
+      expect(llmMatches.length).toBe(1)
+      expect(promptMatches.length).toBe(1)
+    }
+  )
+
   // ============================================
   // UI-only tests (no LLM needed, fast)
   // ============================================
@@ -98,10 +134,10 @@ describe.sequential("TTY Interactive Mode", () => {
   })
 
   test("shows context name in footer", { timeout: 10000 }, async ({ llmEnv, testDir }) => {
-    const contextName = "my-special-context"
+    const agentName = "my-special-context"
     const session = await launchTerminal({
       command: "bun",
-      args: [CLI_PATH, "--cwd", testDir, "chat", "-n", contextName],
+      args: [CLI_PATH, "--cwd", testDir, "chat", "-n", agentName],
       cols: 100,
       rows: 30,
       env: testEnv(llmEnv)
@@ -109,8 +145,8 @@ describe.sequential("TTY Interactive Mode", () => {
 
     try {
       await session.waitForText("Starting new conversation", { timeout: 5000 })
-      const text = await session.waitForText(contextName, { timeout: 3000 })
-      expect(text).toContain(`Agent: ${contextName}`)
+      const text = await session.waitForText(agentName, { timeout: 3000 })
+      expect(text).toContain(`Agent: ${agentName}`)
     } finally {
       await session.press(["ctrl", "c"])
       session.close()

@@ -284,7 +284,8 @@ const makeMiniAgent = (agentName: AgentName) =>
  * For tests: subscribe before adding events, or use Deferred for coordination.
  * ```typescript
  * const ready = yield* Deferred.make<void>()
- * const fiber = yield* agent.events.pipe(
+ * const stream = yield* agent.tapEventStream
+ * const fiber = yield* stream.pipe(
  *   Stream.tap(() => Deferred.succeed(ready, void 0)),
  *   Stream.runCollect, Effect.fork
  * )

@@ -381,7 +381,6 @@ export const makeMiniAgent = (
 
       // Now signal completion to all subscribers:
       yield* PubSub.shutdown(pubsub) // Signal to PubSub subscribers that stream is done
-      yield* mailbox.end // Signal to deprecated .events subscribers
     })
 
     // Internal shutdown for scope cleanup - bypasses queue to avoid deadlock
@@ -422,12 +421,12 @@ export const makeMiniAgent = (
 
       // Signal completion to all subscribers
       yield* PubSub.shutdown(pubsub).pipe(Effect.catchAll(() => Effect.void))
-      yield* mailbox.end
     })
 
     // Try to get config and LLM config (optional - may not be available in tests)
     const appConfigOption = yield* Effect.serviceOption(AppConfig)
     const llmConfigOption = yield* Effect.serviceOption(CurrentLlmConfig)
+    const isFirstSession = existingEvents.length === 0
 
     // Emit session started (use current nextEventNumber to avoid collision with loaded events)
     const state = yield* Ref.get(stateRef)
@@ -440,8 +439,8 @@ export const makeMiniAgent = (
     })
     yield* addEventInternal(sessionStartEvent)
 
-    // Emit LLM config event if available
-    if (Option.isSome(llmConfigOption)) {
+    // Emit LLM config event on first-ever session
+    if (isFirstSession && Option.isSome(llmConfigOption)) {
       const llmConfig = llmConfigOption.value
       const stateAfterLlm = yield* Ref.get(stateRef)
       const llmConfigEvent = new SetLlmConfigEvent({
@@ -457,9 +456,10 @@ export const makeMiniAgent = (
       })
       yield* addEventInternal(llmConfigEvent)
     }
+    // TODO: If CLI LLM config diverges from reduced context, emit SetLlmConfigEvent to update
 
-    // Emit system prompt event if config available
-    if (Option.isSome(appConfigOption)) {
+    // Emit system prompt event on first-ever session
+    if (isFirstSession && Option.isSome(appConfigOption)) {
       const appConfig = appConfigOption.value
       const stateAfterConfig = yield* Ref.get(stateRef)
       const systemPromptEvent = new SystemPromptEvent({
@@ -531,17 +531,15 @@ export const makeMiniAgent = (
 
       addEvent: (event) => addEventInternal(event),
 
-      subscribe: Effect.gen(function*() {
+      tapEventStream: Effect.gen(function*() {
         // PubSub.subscribe guarantees subscription is established when this effect completes
         const dequeue = yield* PubSub.subscribe(pubsub)
         return Stream.fromQueue(dequeue)
       }),
 
-      events: broadcast,
-
       getEvents: Ref.get(stateRef).pipe(Effect.map((s) => s.events)),
 
-      getReducedContext: Ref.get(stateRef).pipe(Effect.map((s) => s.reducedContext)),
+      getState: Ref.get(stateRef).pipe(Effect.map((s) => s.reducedContext)),
 
       endSession: endSessionEffect,
 

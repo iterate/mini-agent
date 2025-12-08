@@ -416,13 +416,13 @@ export interface MiniAgent {
   readonly addEvent: (event: ContextEvent) => Effect.Effect<void, MiniAgentError>
 
   /** LIVE event stream - each call creates new subscriber. Late subscribers miss history. */
-  readonly events: Stream.Stream<ContextEvent, never>
+  readonly tapEventStream: Effect.Effect<Stream.Stream<ContextEvent, never>, never, Scope.Scope>
 
   /** Get all events from in-memory state (for historical events) */
   readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
 
   /** Get current derived state */
-  readonly getReducedContext: Effect.Effect<ReducedContext>
+  readonly getState: Effect.Effect<ReducedContext>
 
   /** Gracefully shutdown: complete in-flight work, emit SessionEndedEvent, close streams */
   readonly shutdown: Effect.Effect<void>
@@ -461,7 +461,8 @@ export const sampleProgram = Effect.gen(function*() {
   const agent = yield* registry.getOrCreate(agentName)
 
   // Subscribe to event stream
-  const streamFiber = yield* agent.events.pipe(
+  const eventStream = yield* agent.tapEventStream
+  const streamFiber = yield* eventStream.pipe(
     Stream.tap((event) => Effect.log(`Event: ${event._tag}`)),
     Stream.runDrain,
     Effect.fork

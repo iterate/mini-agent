@@ -188,6 +188,29 @@ describe("CLI", () => {
       expect(jsonOutput).toContain("\"AssistantMessageEvent\"")
       expect(jsonOutput).toContain("\"AgentTurnCompletedEvent\"")
     })
+
+    test("omits config events on resumed sessions", { timeout: 20000 }, async ({ llmEnv, testDir }) => {
+      const contextName = "raw-resume"
+
+      await Effect.runPromise(
+        runCli(["chat", "-n", contextName, "-m", "seed", "--raw"], {
+          cwd: testDir,
+          env: llmEnv
+        })
+      )
+
+      const secondRun = await Effect.runPromise(
+        runCli(["chat", "-n", contextName, "-m", "second run", "--raw"], {
+          cwd: testDir,
+          env: llmEnv
+        })
+      )
+
+      const jsonOutput = extractJsonOutput(secondRun.stdout)
+      expect(jsonOutput).not.toContain("\"SetLlmConfigEvent\"")
+      expect(jsonOutput).not.toContain("\"SystemPromptEvent\"")
+      expect(jsonOutput).toContain("\"SessionStartedEvent\"")
+    })
   })
 
   describe("pipe mode (default for piped stdin)", () => {

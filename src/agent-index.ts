@@ -50,6 +50,7 @@ export {
 
 // Services
 export { AgentRegistry } from "./agent-registry.ts"
+export { AgentService } from "./agent-service.ts"
 export { EventReducer } from "./event-reducer.ts"
 export { EventStore } from "./event-store.ts"
 
