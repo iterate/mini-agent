@@ -7,14 +7,16 @@ import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
 import { type Error as PlatformError, FileSystem, HttpServer, type Terminal } from "@effect/platform"
 import { BunHttpServer, BunStream } from "@effect/platform-bun"
-import { Chunk, Console, DateTime, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
-import { AgentRegistry } from "../agent-registry.ts"
+import { Chunk, Console, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { contextNameFromAgent } from "../agent-registry.ts"
+import { AgentService, type AgentServiceApi, makeAgentServiceHttpLayer } from "../agent-service.ts"
 import { AppConfig, resolveBaseDir } from "../config.ts"
 import {
   type AgentName,
   type AssistantMessageEvent,
   ContextEvent,
-  makeEventId,
+  makeBaseEventFields,
+  SessionEndedEvent,
   type TextDeltaEvent,
   UserMessageEvent
 } from "../domain.ts"
@@ -65,6 +67,11 @@ const nameOption = Options.text("name").pipe(
 const messageOption = Options.text("message").pipe(
   Options.withAlias("m"),
   Options.withDescription("Message to send (non-interactive single-turn mode)"),
+  Options.optional
+)
+
+const remoteUrlOption = Options.text("remote-url").pipe(
+  Options.withDescription("Base URL for remote mini-agent service (enables remote mode)"),
   Options.optional
 )
 
@@ -123,62 +130,64 @@ const handleEvent = (
     }
   })
 
+const streamTurn = (
+  agentService: AgentServiceApi,
+  agentName: AgentName,
+  options: OutputOptions,
+  run: Effect.Effect<void>
+) =>
+  Effect.gen(function*() {
+    const turnFiber = yield* Effect.scoped(
+      Effect.gen(function*() {
+        const stream = yield* agentService.tapEventStream({ agentName })
+        return yield* stream.pipe(
+          Stream.takeUntil(
+            (event) => event._tag === "AgentTurnCompletedEvent" || event._tag === "AgentTurnFailedEvent"
+          ),
+          Stream.runForEach((event) => handleEvent(event, options))
+        )
+      })
+    ).pipe(Effect.fork)
+
+    yield* run
+    yield* Fiber.join(turnFiber).pipe(Effect.catchAllCause(() => Effect.void))
+  })
+
+const appendSessionEnd = (agentService: AgentServiceApi, agentName: AgentName) =>
+  Effect.gen(function*() {
+    const events = yield* agentService.getEvents({ agentName })
+    const contextName = contextNameFromAgent(agentName)
+    const sessionEnd = new SessionEndedEvent({
+      ...makeBaseEventFields(agentName, contextName, events.length, false)
+    })
+    yield* agentService.addEvents({ agentName, events: [sessionEnd] })
+  })
+
 /** Run the event stream, handling each event */
 const runEventStream = (
-  contextName: string,
+  agentNameInput: string,
   userMessage: string,
   options: OutputOptions,
   images: ReadonlyArray<string> = []
 ) =>
   Effect.gen(function*() {
-    const registry = yield* AgentRegistry
-    const agent = yield* registry.getOrCreate(contextName as AgentName)
-
-    // Get existing events first (includes SessionStartedEvent emitted during agent creation)
-    const existingEvents = yield* agent.getEvents
+    const agentService = yield* AgentService
+    const agentName = agentNameInput as AgentName
+    const existingEvents = yield* agentService.getEvents({ agentName })
     for (const event of existingEvents) {
       yield* handleEvent(event, options)
     }
 
-    // Get current context to build proper event
-    const ctx = yield* agent.getReducedContext
-
-    // Create user event with triggersAgentTurn=true
+    const contextName = contextNameFromAgent(agentName)
+    const nextEventNumber = existingEvents.length
     const userEvent = new UserMessageEvent({
-      id: makeEventId(agent.contextName, ctx.nextEventNumber),
-      timestamp: DateTime.unsafeNow(),
-      agentName: agent.agentName,
-      parentEventId: Option.none(),
-      triggersAgentTurn: true,
+      ...makeBaseEventFields(agentName, contextName, nextEventNumber, true),
       content: userMessage,
       images: images.length > 0 ? images : undefined
     })
 
-    // Subscribe to events - wait for turn completion first
-    const turnFiber = yield* agent.events.pipe(
-      Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
-      Stream.runForEach((event) => handleEvent(event, options)),
-      Effect.fork
-    )
-
-    // Add event to agent - triggers LLM turn
-    yield* agent.addEvent(userEvent)
-
-    // Wait for turn to complete
-    yield* Fiber.join(turnFiber).pipe(Effect.catchAllCause(() => Effect.void))
-
-    // Subscribe to capture SessionEndedEvent
-    const sessionEndFiber = yield* agent.events.pipe(
-      Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
-      Stream.runForEach((event) => handleEvent(event, options)),
-      Effect.fork
-    )
-
-    // End session (emits SessionEndedEvent)
-    yield* agent.endSession
-
-    // Wait for SessionEndedEvent
-    yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
+    yield* streamTurn(agentService, agentName, options, agentService.addEvents({ agentName, events: [userEvent] }))
+    yield* appendSessionEnd(agentService, agentName)
   })
 
 /** CLI interaction mode - determines how input/output is handled */
@@ -229,13 +238,11 @@ const stdinEvents = BunStream.stdin.pipe(
   )
 )
 
-const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
+const scriptInteractiveLoop = (agentNameInput: string, options: OutputOptions) =>
   Effect.gen(function*() {
-    const registry = yield* AgentRegistry
-    const agent = yield* registry.getOrCreate(contextName as AgentName)
-
-    // Output existing events first (includes SessionStartedEvent)
-    const existingEvents = yield* agent.getEvents
+    const agentService = yield* AgentService
+    const agentName = agentNameInput as AgentName
+    const existingEvents = yield* agentService.getEvents({ agentName })
     for (const event of existingEvents) {
       yield* handleEvent(event, options)
     }
@@ -248,28 +255,20 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
           const isUserMessage = inputMsg._tag === "UserMessage" || inputMsg._tag === "UserMessageEvent"
 
           if (isUserMessage) {
-            // Get current context
-            const ctx = yield* agent.getReducedContext
-
-            // Create proper event with triggersAgentTurn
+            const events = yield* agentService.getEvents({ agentName })
+            const nextEventNumber = events.length
+            const context = contextNameFromAgent(agentName)
             const userEvent = new UserMessageEvent({
-              id: makeEventId(agent.contextName, ctx.nextEventNumber),
-              timestamp: DateTime.unsafeNow(),
-              agentName: agent.agentName,
-              parentEventId: Option.none(),
-              triggersAgentTurn: true,
+              ...makeBaseEventFields(agentName, context, nextEventNumber, true),
               content: inputMsg.content
             })
 
-            // Subscribe to events - wait for turn completion to process next message
-            const eventFiber = yield* agent.events.pipe(
-              Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
-              Stream.runForEach((outputEvent) => handleEvent(outputEvent, options)),
-              Effect.fork
+            yield* streamTurn(
+              agentService,
+              agentName,
+              options,
+              agentService.addEvents({ agentName, events: [userEvent] })
             )
-
-            yield* agent.addEvent(userEvent)
-            yield* Fiber.join(eventFiber).pipe(Effect.catchAllCause(() => Effect.void))
           } else {
             yield* Effect.logDebug("SystemPrompt events in script mode are echoed but not persisted")
           }
@@ -278,20 +277,12 @@ const scriptInteractiveLoop = (contextName: string, options: OutputOptions) =>
       Stream.runDrain
     )
 
-    // Subscribe to capture SessionEndedEvent
-    const sessionEndFiber = yield* agent.events.pipe(
-      Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
-      Stream.runForEach((event) => handleEvent(event, options)),
-      Effect.fork
-    )
-
-    yield* agent.endSession
-    yield* Fiber.join(sessionEndFiber).pipe(Effect.catchAllCause(() => Effect.void))
+    yield* appendSessionEnd(agentService, agentName)
   })
 
 const NEW_CONTEXT_VALUE = "__new__"
 
-const selectOrCreateContext = Effect.gen(function*() {
+const selectOrCreateAgentName = Effect.gen(function*() {
   const store = yield* EventStore
   const contextNames = yield* store.list()
   // Convert context names (e.g. "my-agent-v1") to agent names (e.g. "my-agent")
@@ -329,7 +320,7 @@ const selectOrCreateContext = Effect.gen(function*() {
   return selected
 })
 
-const generateRandomContextName = (): string => {
+const generateRandomAgentName = (): string => {
   const chars = "abcdefghijklmnopqrstuvwxyz0123456789"
   const suffix = Array.from({ length: 5 }, () => chars[Math.floor(Math.random() * chars.length)]).join("")
   return `chat-${suffix}`
@@ -371,11 +362,12 @@ const runChat = (options: {
   script: boolean
   showEphemeral: boolean
   images: ReadonlyArray<string>
+  remoteUrl: Option.Option<string>
 }) =>
   Effect.gen(function*() {
     yield* Effect.logDebug("Starting chat session")
     const mode = determineMode(options)
-    const contextName = Option.getOrElse(options.name, generateRandomContextName)
+    const agentName = Option.getOrElse(options.name, generateRandomAgentName)
 
     const outputOptions: OutputOptions = {
       raw: mode === "script" || options.raw,
@@ -390,7 +382,7 @@ const runChat = (options: {
     switch (mode) {
       case "single-turn": {
         const message = Option.getOrElse(options.message, () => "")
-        yield* runEventStream(contextName, message, outputOptions, imageDataUris)
+        yield* runEventStream(agentName, message, outputOptions, imageDataUris)
         if (!outputOptions.raw) {
           yield* printTraceLinks
         }
@@ -400,32 +392,46 @@ const runChat = (options: {
       case "pipe": {
         const input = yield* readAllStdin
         if (input !== "") {
-          yield* runEventStream(contextName, input, { raw: false, showEphemeral: false }, imageDataUris)
+          yield* runEventStream(agentName, input, { raw: false, showEphemeral: false }, imageDataUris)
+          yield* printTraceLinks
         }
         break
       }
 
       case "script": {
-        yield* scriptInteractiveLoop(contextName, outputOptions)
+        yield* scriptInteractiveLoop(agentName, outputOptions)
         break
       }
 
       case "tty-interactive": {
         const resolvedName = Option.isSome(options.name)
-          ? contextName
-          : yield* selectOrCreateContext
+          ? agentName
+          : yield* selectOrCreateAgentName
 
         const { ChatUI } = yield* Effect.promise(() => import("./chat-ui.ts"))
         const chatUI = yield* ChatUI
 
         yield* chatUI.runChat(resolvedName).pipe(
           Effect.catchAllCause(() => Effect.void),
-          Effect.ensuring(printTraceLinks.pipe(Effect.flatMap(() => Console.log("\nGoodbye!"))))
+          Effect.ensuring(
+            Effect.all(
+              [
+                printTraceLinks.pipe(Effect.catchAll(() => Effect.void)),
+                Console.log("\nGoodbye!")
+              ],
+              { discard: true }
+            )
+          )
         )
         break
       }
     }
   }).pipe(
+    (effect) =>
+      Option.match(options.remoteUrl, {
+        onNone: () => effect,
+        onSome: (url) => effect.pipe(Effect.provide(makeAgentServiceHttpLayer({ baseUrl: url })))
+      }),
     Effect.provide(makeChatUILayer()),
     Effect.withSpan("chat-session")
   )
@@ -498,10 +504,11 @@ const chatCommand = Command.make(
     raw: rawOption,
     script: scriptOption,
     showEphemeral: showEphemeralOption,
-    images: imageOption
+    images: imageOption,
+    remoteUrl: remoteUrlOption
   },
-  ({ images, message, name, raw, script, showEphemeral }) =>
-    runChat({ images, message, name, raw, script, showEphemeral })
+  ({ images, message, name, raw, remoteUrl, script, showEphemeral }) =>
+    runChat({ images, message, name, raw, remoteUrl, script, showEphemeral })
 ).pipe(Command.withDescription("Chat with an AI assistant using persistent context history"))
 
 const logTestCommand = Command.make(
@@ -577,8 +584,14 @@ export const serveCommand = Command.make(
       yield* Console.log("  POST /agent/:agentName")
       yield* Console.log("       Send user message, receive SSE stream of events")
       yield* Console.log("")
+      yield* Console.log("  POST /agent/:agentName/events")
+      yield* Console.log("       Append pre-built events (JSON body)")
+      yield* Console.log("")
       yield* Console.log("  GET  /agent/:agentName/events")
       yield* Console.log("       Subscribe to agent event stream (SSE)")
+      yield* Console.log("")
+      yield* Console.log("  GET  /agent/:agentName/log")
+      yield* Console.log("       Fetch full event log as JSON")
       yield* Console.log("")
       yield* Console.log("  GET  /agent/:agentName/state")
       yield* Console.log("       Get current agent state")

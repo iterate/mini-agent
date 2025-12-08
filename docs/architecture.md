@@ -25,7 +25,7 @@ Reference: **[design.ts](./design.ts)** for complete service interfaces and type
 │  addEvent(e) → persist → add to events → reduce → Mailbox.offer  │
 │                                                      │            │
 │  BROADCAST:                                          ▼            │
-│  agent.events ◀── Stream.broadcastDynamic ◀──────────┘            │
+│  tapEventStream ◀── PubSub.subscribe ◀───────────────┘            │
 │       │                                                           │
 │  PROCESSING (when event.triggersAgentTurn=true):                  │
 │       └──▶ debounce(100ms) ──▶ MiniAgentTurn.execute(ctx)        │
@@ -72,10 +72,10 @@ MiniAgent is NOT a service - it's an interface returned by `AgentRegistry.getOrC
 
 ```typescript
 // Production
-const MainLayer = AgentRegistry.Default  // includes all dependencies
+const MainLayer = AgentServiceLive  // includes all dependencies
 
 // Tests - swap EventStore
-const TestLayer = Layer.provide(AgentRegistry.Default, EventStoreInMemory)
+const TestLayer = Layer.provide(AgentServiceLive, EventStoreInMemory)
 ```
 
 ## Future

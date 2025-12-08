@@ -26,6 +26,8 @@ import { makeMiniAgent } from "./mini-agent.ts"
 
 type MiniAgentCreationError = ReducerError | ContextLoadError | ContextSaveError
 
+export const contextNameFromAgent = (agentName: AgentName): ContextName => `${agentName}-v1` as ContextName
+
 /**
  * AgentRegistry manages MiniAgent instances.
  */
@@ -40,7 +42,7 @@ export class AgentRegistry extends Effect.Service<AgentRegistry>()("@mini-agent/
     const agents = yield* Ref.make(new Map<AgentName, { agent: MiniAgent; scope: Scope.CloseableScope }>())
 
     // Generate context name from agent name
-    const makeContextName = (agentName: AgentName): ContextName => `${agentName}-v1` as ContextName
+    const makeContextName = contextNameFromAgent
 
     // Track in-progress creations using Deferred for proper synchronization
     const creationLocks = yield* Ref.make(

@@ -7,7 +7,7 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
 import { BunContext, BunRuntime } from "@effect/platform-bun"
 import { Cause, Effect, Layer } from "effect"
-import { AgentRegistry } from "../agent-registry.ts"
+import { AgentServiceLive } from "../agent-service.ts"
 import {
   AppConfig,
   extractConfigPath,
@@ -99,8 +99,7 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
         const languageModelLayer = makeLanguageModelLayer(llmConfig)
         const tracingLayer = createTracingLayer("mini-agent")
 
-        // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
-        return AgentRegistry.Default.pipe(
+        return AgentServiceLive.pipe(
           Layer.provideMerge(LlmTurnLive),
           Layer.provideMerge(languageModelLayer),
           Layer.provideMerge(llmConfigLayer),

@@ -541,13 +541,13 @@ export interface ChatController {
 }
 
 interface ChatAppProps {
-  contextName: string
+  agentName: string
   initialEvents: ReadonlyArray<ContextEvent>
   callbacks: ChatCallbacks
   controllerRef: React.MutableRefObject<ChatController | null>
 }
 
-function ChatApp({ callbacks, contextName, controllerRef, initialEvents }: ChatAppProps) {
+function ChatApp({ agentName, callbacks, controllerRef, initialEvents }: ChatAppProps) {
   // Derive initial feed items from initial events (runs once on mount)
   const initialFeedItems = useMemo(
     () =>
@@ -592,8 +592,6 @@ function ChatApp({ callbacks, contextName, controllerRef, initialEvents }: ChatA
       if (trimmed) {
         setInputValue("")
         callbacks.onSubmit(trimmed)
-      } else if (isStreamingRef.current) {
-        callbacks.onSubmit("")
       }
     },
     [callbacks]
@@ -628,8 +626,8 @@ function ChatApp({ callbacks, contextName, controllerRef, initialEvents }: ChatA
       <box height={1} width="100%" flexDirection="row">
         <box flexGrow={1} />
         <text fg={colors.dim}>
-          <span fg={colors.yellow}>Agent:</span> {contextName} ·
-          <span fg={colors.yellow}>{isStreaming ? " Return to interrupt" : " Ctrl+C to exit"}</span>
+          <span fg={colors.yellow}>Agent:</span> {agentName} ·
+          <span fg={colors.yellow}>Ctrl+C to exit</span>
         </text>
       </box>
     </box>
@@ -637,7 +635,7 @@ function ChatApp({ callbacks, contextName, controllerRef, initialEvents }: ChatA
 }
 
 export async function runOpenTUIChat(
-  contextName: string,
+  agentName: string,
   initialEvents: ReadonlyArray<ContextEvent>,
   callbacks: ChatCallbacks
 ): Promise<ChatController> {
@@ -669,7 +667,7 @@ export async function runOpenTUIChat(
 
   root.render(
     <ChatApp
-      contextName={contextName}
+      agentName={agentName}
       initialEvents={initialEvents}
       callbacks={callbacks}
       controllerRef={controllerRef}

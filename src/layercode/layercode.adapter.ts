@@ -15,13 +15,13 @@
  *   data: {"type":"response.tts","content":"Hi","turn_id":"123"}
  */
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Chunk, Effect, Fiber, Option, Schema, Stream } from "effect"
-import { AgentRegistry } from "../agent-registry.ts"
+import { Chunk, Effect, Option, Schema, Stream } from "effect"
+import { contextNameFromAgent } from "../agent-registry.ts"
+import { AgentService } from "../agent-service.ts"
 import { AppConfig } from "../config.ts"
 import {
   type AgentName,
   type ContextEvent,
-  type ContextName,
   makeBaseEventFields,
   type TextDeltaEvent,
   UserMessageEvent
@@ -118,7 +118,7 @@ const toLayerCodeResponse = (
 const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
   Effect.gen(function*() {
     const request = yield* HttpServerRequest.HttpServerRequest
-    const registry = yield* AgentRegistry
+    const agentService = yield* AgentService
     const config = yield* AppConfig
 
     yield* Effect.logDebug("POST /layercode/webhook")
@@ -162,30 +162,28 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
     switch (webhookEvent.type) {
       case "message": {
         const agentName = sessionToAgentName(webhookEvent.session_id)
-        const contextName = `${agentName}-v1` as ContextName
+        const contextName = contextNameFromAgent(agentName)
         const turnId = webhookEvent.turn_id
 
-        const agent = yield* registry.getOrCreate(agentName)
-        const ctx = yield* agent.getReducedContext
+        const existingEvents = yield* agentService.getEvents({ agentName })
+        const nextEventNumber = existingEvents.length
 
         const userEvent = new UserMessageEvent({
-          ...makeBaseEventFields(agentName, contextName, ctx.nextEventNumber, true),
+          ...makeBaseEventFields(agentName, contextName, nextEventNumber, true),
           content: webhookEvent.text
         })
 
-        // Subscribe to events - subscription is guaranteed established when this completes
-        const eventStream = yield* agent.subscribe
-        const eventFiber = yield* eventStream.pipe(
-          Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
-          Stream.runCollect,
-          Effect.fork
+        const liveStream: Stream.Stream<ContextEvent, never, never> = Stream.unwrapScoped(
+          Effect.gen(function*() {
+            const stream = yield* agentService.tapEventStream({ agentName })
+            yield* agentService.addEvents({ agentName, events: [userEvent] })
+            return stream
+          })
         )
 
-        // Add the user event to trigger the turn (no delay needed - subscription is guaranteed)
-        yield* agent.addEvent(userEvent)
-
-        // Wait for the turn to complete and get all new events
-        const newEventsChunk = yield* Fiber.join(eventFiber).pipe(
+        const newEventsChunk = yield* liveStream.pipe(
+          Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
+          Stream.runCollect,
           Effect.catchAll(() => Effect.succeed(Chunk.empty<ContextEvent>()))
         )
         const newEvents = Chunk.toArray(newEventsChunk)
@@ -314,7 +312,7 @@ export const makeLayerCodeRouter = (
   welcomeMessage: Option.Option<string>
 ): HttpRouter.HttpRouter<
   never,
-  | AgentRegistry
+  | AgentService
   | AppConfig
 > =>
   HttpRouter.empty.pipe(

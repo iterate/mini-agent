@@ -10,7 +10,7 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient, HttpServer } from "@effect/platform"
 import { BunContext, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { ConfigProvider, Effect, Layer, LogLevel, Option } from "effect"
-import { AgentRegistry } from "./agent-registry.ts"
+import { AgentServiceLive } from "./agent-service.ts"
 import { AppConfig, type MiniAgentConfig } from "./config.ts"
 import { EventReducer } from "./event-reducer.ts"
 import { EventStoreFileSystem } from "./event-store-fs.ts"
@@ -95,16 +95,14 @@ const program = Effect.gen(function*() {
   const languageModelLayer = makeLanguageModelLayer(llmConfig)
   const llmConfigLayer = CurrentLlmConfig.fromConfig(llmConfig)
 
-  // Build the full layer stack
-  // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
-  const serviceLayer = AgentRegistry.Default.pipe(
-    Layer.provide(LlmTurnLive),
-    Layer.provide(languageModelLayer),
-    Layer.provide(llmConfigLayer),
-    Layer.provide(EventStoreFileSystem),
-    Layer.provide(EventReducer.Default),
-    Layer.provide(appConfigLayer),
-    Layer.provide(BunContext.layer)
+  const serviceLayer = AgentServiceLive.pipe(
+    Layer.provideMerge(LlmTurnLive),
+    Layer.provideMerge(languageModelLayer),
+    Layer.provideMerge(llmConfigLayer),
+    Layer.provideMerge(EventStoreFileSystem),
+    Layer.provideMerge(EventReducer.Default),
+    Layer.provideMerge(appConfigLayer),
+    Layer.provideMerge(BunContext.layer)
   )
 
   // HTTP server layer
