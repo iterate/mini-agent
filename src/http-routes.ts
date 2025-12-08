@@ -2,16 +2,18 @@
  * HTTP Routes.
  *
  * Endpoints:
- * - POST /agent/:agentName - Send message, receive SSE stream of events
- * - GET /agent/:agentName/events - Subscribe to agent events (SSE)
- * - GET /agent/:agentName/state - Get reduced agent state
+ * - POST /agent/:agentName - Add events + stream results (SSE)
+ * - GET /agent/:agentName/events - Subscribe to event stream (SSE)
+ * - GET /agent/:agentName/history - Fetch existing events
+ * - GET /agent/:agentName/state - Derived state snapshot
  * - GET /health - Health check
  */
 
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
-import { Chunk, Effect, Fiber, Schema, Stream } from "effect"
-import { AgentRegistry } from "./agent-registry.ts"
-import { type AgentName, ContextEvent, makeBaseEventFields, UserMessageEvent } from "./domain.ts"
+import { Duration, Effect, Fiber, Option, Queue, Ref, Schema, Stream } from "effect"
+import { AgentEventInput, AgentService } from "./agent-service.ts"
+import { EventReducer } from "./event-reducer.ts"
+import { type AgentName, ContextEvent } from "./domain.ts"
 
 const encodeEvent = Schema.encodeSync(ContextEvent)
 
@@ -19,91 +21,140 @@ const encodeEvent = Schema.encodeSync(ContextEvent)
 const encodeSSE = (event: ContextEvent): Uint8Array =>
   new TextEncoder().encode(`data: ${JSON.stringify(encodeEvent(event))}\n\n`)
 
-/** Input message schema - accepts both legacy and new tag names */
-const InputMessage = Schema.Struct({
-  _tag: Schema.Union(Schema.Literal("UserMessage"), Schema.Literal("UserMessageEvent")),
-  content: Schema.String
-})
-type InputMessage = typeof InputMessage.Type
+const decodeEventInput = Schema.decodeUnknown(AgentEventInput)
 
-/** Parse JSON body into InputMessage */
-const parseBody = (body: string) =>
+const parseEventsPayload = (payload: unknown) =>
+  Effect.gen(function*() {
+    if (Array.isArray(payload)) {
+      if (payload.length === 0) {
+        return yield* Effect.fail(new Error("events array must not be empty"))
+      }
+      return yield* Effect.all(payload.map((item) => decodeEventInput(item)))
+    }
+
+    if (
+      payload &&
+      typeof payload === "object" &&
+      Array.isArray((payload as { events?: ReadonlyArray<unknown> }).events)
+    ) {
+      const events = (payload as { events: ReadonlyArray<unknown> }).events
+      if (events.length === 0) {
+        return yield* Effect.fail(new Error("events array must not be empty"))
+      }
+      return yield* Effect.all(events.map((item) => decodeEventInput(item)))
+    }
+
+    const single = yield* decodeEventInput(payload)
+    return [single] as const
+  })
+
+const readEventsFromRequest = (body: string) =>
   Effect.gen(function*() {
     const json = yield* Effect.try({
       try: () => JSON.parse(body) as unknown,
-      catch: (e) => new Error(`Invalid JSON: ${e instanceof Error ? e.message : String(e)}`)
+      catch: (error) => new Error(`Invalid JSON: ${error instanceof Error ? error.message : String(error)}`)
     })
-    return yield* Schema.decodeUnknown(InputMessage)(json)
+    return yield* parseEventsPayload(json)
   })
+
+const isTurnTerminal = (event: ContextEvent): boolean =>
+  event._tag === "AgentTurnCompletedEvent" ||
+  event._tag === "AgentTurnFailedEvent" ||
+  event._tag === "AgentTurnInterruptedEvent"
 
 /** Handler for POST /agent/:agentName */
 const agentHandler = Effect.gen(function*() {
   const request = yield* HttpServerRequest.HttpServerRequest
-  const registry = yield* AgentRegistry
+  const service = yield* AgentService
   const params = yield* HttpRouter.params
 
-  const agentName = params.agentName
-  if (!agentName) {
+  const agentNameText = params.agentName
+  if (!agentNameText) {
     return HttpServerResponse.text("Missing agentName", { status: 400 })
   }
+  const agentName = agentNameText as AgentName
 
-  yield* Effect.logDebug("POST /agent/:agentName", { agentName })
-
-  // Read body
-  const body = yield* request.text
-
-  if (body.trim() === "") {
+  const rawBody = (yield* request.text).trim()
+  if (rawBody === "") {
     return HttpServerResponse.text("Empty request body", { status: 400 })
   }
 
-  const parseResult = yield* parseBody(body).pipe(Effect.either)
+  const decodeResult = yield* readEventsFromRequest(rawBody).pipe(Effect.either)
+  if (decodeResult._tag === "Left") {
+    return HttpServerResponse.text(decodeResult.left.message, { status: 400 })
+  }
+  const events = decodeResult.right
 
-  if (parseResult._tag === "Left") {
-    return HttpServerResponse.text(parseResult.left.message, { status: 400 })
+  const url = new URL(request.url, "http://local.test")
+  const waitParam = url.searchParams.get("waitForIdleMs")
+  const waitForIdleMs = waitParam ? Number.parseInt(waitParam, 10) : NaN
+  const idleDuration = Number.isFinite(waitForIdleMs) && waitForIdleMs > 0 ? Duration.millis(waitForIdleMs) : null
+
+  const snapshot = yield* service.getEvents({ agentName })
+  const queue = yield* Queue.unbounded<ContextEvent>()
+
+  for (const event of snapshot.events) {
+    yield* Queue.offer(queue, event)
   }
 
-  const message = parseResult.right
+  const idleTimerRef = idleDuration ? yield* Ref.make(Option.none<Fiber.RuntimeFiber<void, never>>()) : null
 
-  // Get or create agent
-  const agent = yield* registry.getOrCreate(agentName as AgentName)
+  const shutdownQueue = Queue.shutdown(queue).pipe(Effect.catchAll(() => Effect.void))
 
-  // Get existing events to include initial session events
-  const existingEvents = yield* agent.getEvents
+  const cancelIdleTimer = idleTimerRef
+    ? Effect.gen(function*() {
+      const current = yield* Ref.getAndSet(idleTimerRef, Option.none())
+      if (Option.isSome(current)) {
+        yield* Fiber.interrupt(current.value).pipe(Effect.catchAll(() => Effect.void))
+      }
+    })
+    : Effect.void
 
-  const ctx = yield* agent.getReducedContext
+  const startIdleTimer = idleTimerRef && idleDuration
+    ? Effect.gen(function*() {
+      yield* cancelIdleTimer
+      const fiber = yield* Effect.sleep(idleDuration).pipe(
+        Effect.zipRight(shutdownQueue),
+        Effect.forkScoped
+      )
+      yield* Ref.set(idleTimerRef, Option.some(fiber))
+    })
+    : Effect.void
 
-  // Prepare user event
-  const userEvent = new UserMessageEvent({
-    ...makeBaseEventFields(agentName as AgentName, agent.contextName, ctx.nextEventNumber, true),
-    content: message.content
-  })
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function*() {
+      yield* cancelIdleTimer
+      yield* shutdownQueue
+    })
+  )
 
-  // Subscribe BEFORE adding event to guarantee we catch all events
-  // PubSub.subscribe guarantees subscription is established when this completes
-  const liveEvents = yield* agent.subscribe
+  const liveStream = Stream.unwrapScoped(service.tapEventStream({ agentName }))
 
-  // Fork collection before adding event
-  const eventFiber = yield* liveEvents.pipe(
-    Stream.takeUntil((e) =>
-      e._tag === "AgentTurnCompletedEvent" ||
-      e._tag === "AgentTurnFailedEvent" ||
-      e._tag === "AgentTurnInterruptedEvent"
+  yield* liveStream.pipe(
+    Stream.runForEach((event) =>
+      Effect.gen(function*() {
+        yield* Queue.offer(queue, event).pipe(Effect.catchAll(() => Effect.void))
+        if (idleDuration) {
+          if (event._tag === "AgentTurnStartedEvent") {
+            yield* cancelIdleTimer
+          }
+          if (isTurnTerminal(event)) {
+            yield* startIdleTimer
+          }
+        } else if (isTurnTerminal(event)) {
+          yield* shutdownQueue
+        }
+            if (event._tag === "SessionEndedEvent") {
+              yield* shutdownQueue
+            }
+      })
     ),
-    Stream.runCollect,
-    Effect.fork
+    Effect.forkScoped
   )
 
-  yield* agent.addEvent(userEvent)
+  yield* service.addEvents({ agentName, events })
 
-  // Wait for the turn to complete and get all new events
-  const newEventsChunk = yield* Fiber.join(eventFiber).pipe(
-    Effect.catchAll(() => Effect.succeed(Chunk.empty<ContextEvent>()))
-  )
-  const newEvents = Chunk.toArray(newEventsChunk)
-
-  // Build SSE stream: existing events + user event + new events from turn
-  const allEvents: Array<ContextEvent> = [...existingEvents, userEvent, ...newEvents]
-  const sseStream = Stream.fromIterable(allEvents).pipe(
+  const sseStream = Stream.fromQueue(queue).pipe(
     Stream.map(encodeSSE)
   )
 
@@ -118,29 +169,49 @@ const agentHandler = Effect.gen(function*() {
 
 /** Handler for GET /agent/:agentName/events - Subscribe to agent event stream */
 const agentEventsHandler = Effect.gen(function*() {
-  const registry = yield* AgentRegistry
+  const service = yield* AgentService
   const params = yield* HttpRouter.params
 
-  const agentName = params.agentName
-  if (!agentName) {
+  const agentNameText = params.agentName
+  if (!agentNameText) {
     return HttpServerResponse.text("Missing agentName", { status: 400 })
   }
+  const agentName = agentNameText as AgentName
 
-  yield* Effect.logDebug("GET /agent/:agentName/events", { agentName })
+  const snapshot = yield* service.getEvents({ agentName })
+  const queue = yield* Queue.unbounded<ContextEvent>()
+  for (const event of snapshot.events) {
+    yield* Queue.offer(queue, event)
+  }
 
-  const agent = yield* registry.getOrCreate(agentName as AgentName)
+  const shutdownQueue = Queue.shutdown(queue).pipe(Effect.catchAll(() => Effect.void))
 
-  // Subscribe to live events FIRST to guarantee we don't miss any
-  // PubSub.subscribe guarantees subscription is established when this completes
-  const liveEvents = yield* agent.subscribe
+  const liveFiber = yield* Effect.scoped(
+    Effect.gen(function*() {
+      const liveStream = yield* service.tapEventStream({ agentName })
+      return yield* liveStream.pipe(
+        Stream.runForEach((event) =>
+          Effect.gen(function*() {
+            yield* Queue.offer(queue, event).pipe(Effect.catchAll(() => Effect.void))
+            if (event._tag === "SessionEndedEvent") {
+              yield* shutdownQueue
+            }
+          })
+        ),
+        Effect.forkScoped
+      )
+    })
+  )
 
-  // Get existing events (captured at subscription time)
-  const existingEvents = yield* agent.getEvents
-  const existingStream = Stream.fromIterable(existingEvents)
+  yield* Effect.addFinalizer(() =>
+    Effect.gen(function*() {
+      yield* Fiber.interrupt(liveFiber).pipe(Effect.catchAll(() => Effect.void))
+      yield* shutdownQueue
+    })
+  )
 
-  // Stream terminates when SessionEndedEvent is received
-  const sseStream = Stream.concat(existingStream, liveEvents).pipe(
-    Stream.takeUntil((e) => e._tag === "SessionEndedEvent"),
+  const sseStream = Stream.fromQueue(queue).pipe(
+    Stream.takeUntil((event) => event._tag === "SessionEndedEvent"),
     Stream.map(encodeSSE)
   )
 
@@ -153,29 +224,50 @@ const agentEventsHandler = Effect.gen(function*() {
   })
 })
 
-/** Handler for GET /agent/:agentName/state - Get reduced agent state */
-const agentStateHandler = Effect.gen(function*() {
-  const registry = yield* AgentRegistry
+/** Handler for GET /agent/:agentName/history */
+const agentHistoryHandler = Effect.gen(function*() {
+  const service = yield* AgentService
   const params = yield* HttpRouter.params
 
-  const agentName = params.agentName
-  if (!agentName) {
+  const agentNameText = params.agentName
+  if (!agentNameText) {
     return HttpServerResponse.text("Missing agentName", { status: 400 })
   }
+  const agentName = agentNameText as AgentName
 
-  yield* Effect.logDebug("GET /agent/:agentName/state", { agentName })
-
-  const agent = yield* registry.getOrCreate(agentName as AgentName)
-  const reducedContext = yield* agent.getReducedContext
+  const snapshot = yield* service.getEvents({ agentName })
+  const encodedEvents = snapshot.events.map((event) => encodeEvent(event))
 
   return yield* HttpServerResponse.json({
-    agentName,
-    contextName: agent.contextName,
-    nextEventNumber: reducedContext.nextEventNumber,
-    currentTurnNumber: reducedContext.currentTurnNumber,
-    messageCount: reducedContext.messages.length,
-    hasLlmConfig: reducedContext.llmConfig._tag === "Some",
-    isAgentTurnInProgress: reducedContext.agentTurnStartedAtEventId._tag === "Some"
+    agentName: snapshot.agentName,
+    contextName: snapshot.contextName,
+    events: encodedEvents
+  })
+})
+
+/** Handler for GET /agent/:agentName/state - Derived reduced state */
+const agentStateHandler = Effect.gen(function*() {
+  const service = yield* AgentService
+  const reducer = yield* EventReducer
+  const params = yield* HttpRouter.params
+
+  const agentNameText = params.agentName
+  if (!agentNameText) {
+    return HttpServerResponse.text("Missing agentName", { status: 400 })
+  }
+  const agentName = agentNameText as AgentName
+
+  const snapshot = yield* service.getEvents({ agentName })
+  const state = yield* reducer.reduce(reducer.initialReducedContext, snapshot.events)
+
+  return yield* HttpServerResponse.json({
+    agentName: snapshot.agentName,
+    contextName: snapshot.contextName,
+    nextEventNumber: state.nextEventNumber,
+    currentTurnNumber: state.currentTurnNumber,
+    messageCount: state.messages.length,
+    hasLlmConfig: state.llmConfig._tag === "Some",
+    isAgentTurnInProgress: state.agentTurnStartedAtEventId._tag === "Some"
   })
 })
 
@@ -188,7 +280,9 @@ const healthHandler = Effect.gen(function*() {
 /** HTTP router */
 export const makeRouter = HttpRouter.empty.pipe(
   HttpRouter.post("/agent/:agentName", agentHandler),
+  HttpRouter.post("/agent/:agentName/events", agentHandler),
   HttpRouter.get("/agent/:agentName/events", agentEventsHandler),
+  HttpRouter.get("/agent/:agentName/history", agentHistoryHandler),
   HttpRouter.get("/agent/:agentName/state", agentStateHandler),
   HttpRouter.get("/health", healthHandler)
 )

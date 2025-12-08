@@ -146,6 +146,7 @@ export const makeMiniAgent = (
 
     // Load existing events from store and replay them
     const existingEvents = yield* store.load(contextName)
+    const isFreshContext = existingEvents.length === 0
 
     // Replay events to build initial state
     const initialReducedContext = existingEvents.length > 0
@@ -174,7 +175,7 @@ export const makeMiniAgent = (
     // When PubSub.subscribe completes, the subscription IS established
     const pubsub = yield* PubSub.unbounded<ContextEvent>()
 
-    // Create broadcast stream from mailbox (kept for backwards compat, deprecated)
+    // Create broadcast stream from mailbox for internal turn orchestration
     const broadcast = yield* Stream.broadcastDynamic(
       Mailbox.toStream(mailbox),
       { capacity: "unbounded" }
@@ -380,8 +381,7 @@ export const makeMiniAgent = (
       )
 
       // Now signal completion to all subscribers:
-      yield* PubSub.shutdown(pubsub) // Signal to PubSub subscribers that stream is done
-      yield* mailbox.end // Signal to deprecated .events subscribers
+    yield* PubSub.shutdown(pubsub) // Signal to PubSub subscribers that stream is done
     })
 
     // Internal shutdown for scope cleanup - bypasses queue to avoid deadlock
@@ -440,8 +440,8 @@ export const makeMiniAgent = (
     })
     yield* addEventInternal(sessionStartEvent)
 
-    // Emit LLM config event if available
-    if (Option.isSome(llmConfigOption)) {
+    // Emit bootstrap config only for first-ever session
+    if (isFreshContext && Option.isSome(llmConfigOption)) {
       const llmConfig = llmConfigOption.value
       const stateAfterLlm = yield* Ref.get(stateRef)
       const llmConfigEvent = new SetLlmConfigEvent({
@@ -456,10 +456,10 @@ export const makeMiniAgent = (
         apiKeyEnvVar: llmConfig.apiKeyEnvVar
       })
       yield* addEventInternal(llmConfigEvent)
+      // TODO: If CLI llmConfig differs from agent's reduced config, emit SetLlmConfigEvent to update
     }
 
-    // Emit system prompt event if config available
-    if (Option.isSome(appConfigOption)) {
+    if (isFreshContext && Option.isSome(appConfigOption)) {
       const appConfig = appConfigOption.value
       const stateAfterConfig = yield* Ref.get(stateRef)
       const systemPromptEvent = new SystemPromptEvent({
@@ -531,17 +531,15 @@ export const makeMiniAgent = (
 
       addEvent: (event) => addEventInternal(event),
 
-      subscribe: Effect.gen(function*() {
+      tapEventStream: Effect.gen(function*() {
         // PubSub.subscribe guarantees subscription is established when this effect completes
         const dequeue = yield* PubSub.subscribe(pubsub)
         return Stream.fromQueue(dequeue)
       }),
 
-      events: broadcast,
-
       getEvents: Ref.get(stateRef).pipe(Effect.map((s) => s.events)),
 
-      getReducedContext: Ref.get(stateRef).pipe(Effect.map((s) => s.reducedContext)),
+      getState: Ref.get(stateRef).pipe(Effect.map((s) => s.reducedContext)),
 
       endSession: endSessionEffect,
 

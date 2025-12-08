@@ -10,8 +10,8 @@ import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient, HttpServer } from "@effect/platform"
 import { BunContext, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { ConfigProvider, Effect, Layer, LogLevel, Option } from "effect"
-import { AgentRegistry } from "./agent-registry.ts"
 import { AppConfig, type MiniAgentConfig } from "./config.ts"
+import { AgentServiceLive } from "./agent-service.ts"
 import { EventReducer } from "./event-reducer.ts"
 import { EventStoreFileSystem } from "./event-store-fs.ts"
 import { makeRouter } from "./http-routes.ts"
@@ -96,8 +96,7 @@ const program = Effect.gen(function*() {
   const llmConfigLayer = CurrentLlmConfig.fromConfig(llmConfig)
 
   // Build the full layer stack
-  // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
-  const serviceLayer = AgentRegistry.Default.pipe(
+  const serviceLayer = AgentServiceLive.pipe(
     Layer.provide(LlmTurnLive),
     Layer.provide(languageModelLayer),
     Layer.provide(llmConfigLayer),
