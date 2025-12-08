@@ -11,6 +11,7 @@ import { FetchHttpClient, HttpServer } from "@effect/platform"
 import { BunContext, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { ConfigProvider, Effect, Layer, LogLevel, Option } from "effect"
 import { AgentRegistry } from "./agent-registry.ts"
+import { AgentService, InProcessAgentService } from "./agent-service.ts"
 import { AppConfig, type MiniAgentConfig } from "./config.ts"
 import { EventReducer } from "./event-reducer.ts"
 import { EventStoreFileSystem } from "./event-store-fs.ts"
@@ -97,7 +98,7 @@ const program = Effect.gen(function*() {
 
   // Build the full layer stack
   // AgentRegistry.Default requires EventStore, EventReducer, and MiniAgentTurn
-  const serviceLayer = AgentRegistry.Default.pipe(
+  const agentRegistryLayer = AgentRegistry.Default.pipe(
     Layer.provide(LlmTurnLive),
     Layer.provide(languageModelLayer),
     Layer.provide(llmConfigLayer),
@@ -106,6 +107,21 @@ const program = Effect.gen(function*() {
     Layer.provide(appConfigLayer),
     Layer.provide(BunContext.layer)
   )
+
+  // AgentService uses AgentRegistry - provide both InProcessAgentService and AgentService
+  const inProcessServiceLayer = InProcessAgentService.Default.pipe(
+    Layer.provide(agentRegistryLayer)
+  )
+
+  // Map InProcessAgentService to AgentService interface
+  const agentServiceLayer = Layer.map(InProcessAgentService, (service) => ({
+    addEvents: service.addEvents,
+    tapEventStream: service.tapEventStream,
+    getEvents: service.getEvents,
+    getState: service.getState
+  })).pipe(Layer.provideTo(AgentService))
+
+  const serviceLayer = Layer.mergeAll(inProcessServiceLayer, agentServiceLayer)
 
   // HTTP server layer
   // Set idleTimeout high for SSE streaming - Bun defaults to 10s which kills long-running streams
