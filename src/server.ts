@@ -11,6 +11,7 @@ import { FetchHttpClient, HttpServer } from "@effect/platform"
 import { BunContext, BunHttpServer, BunRuntime } from "@effect/platform-bun"
 import { ConfigProvider, Effect, Layer, LogLevel, Option } from "effect"
 import { AgentRegistry } from "./agent-registry.ts"
+import { AgentEvents } from "./agent-events.ts"
 import { AppConfig, type MiniAgentConfig } from "./config.ts"
 import { EventReducer } from "./event-reducer.ts"
 import { EventStoreFileSystem } from "./event-store-fs.ts"
@@ -104,7 +105,8 @@ const program = Effect.gen(function*() {
     Layer.provide(EventStoreFileSystem),
     Layer.provide(EventReducer.Default),
     Layer.provide(appConfigLayer),
-    Layer.provide(BunContext.layer)
+    Layer.provide(BunContext.layer),
+    Layer.provide(AgentEvents.Local)
   )
 
   // HTTP server layer

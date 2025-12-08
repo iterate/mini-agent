@@ -166,7 +166,7 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
         const turnId = webhookEvent.turn_id
 
         const agent = yield* registry.getOrCreate(agentName)
-        const ctx = yield* agent.getReducedContext
+        const ctx = yield* agent.getState
 
         const userEvent = new UserMessageEvent({
           ...makeBaseEventFields(agentName, contextName, ctx.nextEventNumber, true),
@@ -174,7 +174,7 @@ const layercodeWebhookHandler = (welcomeMessage: Option.Option<string>) =>
         })
 
         // Subscribe to events - subscription is guaranteed established when this completes
-        const eventStream = yield* agent.subscribe
+        const eventStream = yield* agent.tapEventStream
         const eventFiber = yield* eventStream.pipe(
           Stream.takeUntil((e) => e._tag === "AgentTurnCompletedEvent" || e._tag === "AgentTurnFailedEvent"),
           Stream.runCollect,

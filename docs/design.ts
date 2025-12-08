@@ -422,7 +422,7 @@ export interface MiniAgent {
   readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
 
   /** Get current derived state */
-  readonly getReducedContext: Effect.Effect<ReducedContext>
+  readonly getState: Effect.Effect<ReducedContext>
 
   /** Gracefully shutdown: complete in-flight work, emit SessionEndedEvent, close streams */
   readonly shutdown: Effect.Effect<void>
@@ -461,7 +461,8 @@ export const sampleProgram = Effect.gen(function*() {
   const agent = yield* registry.getOrCreate(agentName)
 
   // Subscribe to event stream
-  const streamFiber = yield* agent.events.pipe(
+  const stream = yield* agent.tapEventStream
+  const streamFiber = yield* stream.pipe(
     Stream.tap((event) => Effect.log(`Event: ${event._tag}`)),
     Stream.runDrain,
     Effect.fork

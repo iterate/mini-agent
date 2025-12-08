@@ -25,7 +25,7 @@ Reference: **[design.ts](./design.ts)** for complete service interfaces and type
 │  addEvent(e) → persist → add to events → reduce → Mailbox.offer  │
 │                                                      │            │
 │  BROADCAST:                                          ▼            │
-│  agent.events ◀── Stream.broadcastDynamic ◀──────────┘            │
+│  agent.tapEventStream ◀── Stream.broadcastDynamic ◀────────────── │
 │       │                                                           │
 │  PROCESSING (when event.triggersAgentTurn=true):                  │
 │       └──▶ debounce(100ms) ──▶ MiniAgentTurn.execute(ctx)        │

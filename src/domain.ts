@@ -283,17 +283,12 @@ export interface MiniAgent {
   /** Fire-and-forget: queues event for processing and returns immediately */
   readonly addEvent: (event: ContextEvent) => Effect.Effect<void>
   /**
-   * Subscribe to live events. Returns an Effect that, when it completes,
-   * guarantees the subscription is established. Use this instead of `events`
-   * when you need to ensure you don't miss events added immediately after subscribing.
-   *
-   * The returned stream is scoped to the caller's scope.
+   * Tap the live event stream. When the returned Effect completes, the subscription
+   * is established and ready to receive events emitted after that point.
    */
-  readonly subscribe: Effect.Effect<Stream.Stream<ContextEvent, never>, never, Scope.Scope>
-  /** @deprecated Use subscribe instead - events stream has race condition on subscription timing */
-  readonly events: Stream.Stream<ContextEvent, never>
+  readonly tapEventStream: Effect.Effect<Stream.Stream<ContextEvent, never>, never, Scope.Scope>
   readonly getEvents: Effect.Effect<ReadonlyArray<ContextEvent>>
-  readonly getReducedContext: Effect.Effect<ReducedContext>
+  readonly getState: Effect.Effect<ReducedContext>
   /** Gracefully end session: emit SessionEndedEvent (with AgentTurnInterruptedEvent if mid-turn), then close mailbox */
   readonly endSession: Effect.Effect<void>
   /** True when no LLM turn is in progress */

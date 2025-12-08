@@ -146,6 +146,7 @@ export const makeMiniAgent = (
 
     // Load existing events from store and replay them
     const existingEvents = yield* store.load(contextName)
+    const isFreshContext = existingEvents.length === 0
 
     // Replay events to build initial state
     const initialReducedContext = existingEvents.length > 0
@@ -381,7 +382,6 @@ export const makeMiniAgent = (
 
       // Now signal completion to all subscribers:
       yield* PubSub.shutdown(pubsub) // Signal to PubSub subscribers that stream is done
-      yield* mailbox.end // Signal to deprecated .events subscribers
     })
 
     // Internal shutdown for scope cleanup - bypasses queue to avoid deadlock
@@ -422,7 +422,6 @@ export const makeMiniAgent = (
 
       // Signal completion to all subscribers
       yield* PubSub.shutdown(pubsub).pipe(Effect.catchAll(() => Effect.void))
-      yield* mailbox.end
     })
 
     // Try to get config and LLM config (optional - may not be available in tests)
@@ -440,8 +439,8 @@ export const makeMiniAgent = (
     })
     yield* addEventInternal(sessionStartEvent)
 
-    // Emit LLM config event if available
-    if (Option.isSome(llmConfigOption)) {
+    // Emit LLM config event if available on first-ever session
+    if (isFreshContext && Option.isSome(llmConfigOption)) {
       const llmConfig = llmConfigOption.value
       const stateAfterLlm = yield* Ref.get(stateRef)
       const llmConfigEvent = new SetLlmConfigEvent({
@@ -458,8 +457,8 @@ export const makeMiniAgent = (
       yield* addEventInternal(llmConfigEvent)
     }
 
-    // Emit system prompt event if config available
-    if (Option.isSome(appConfigOption)) {
+    // Emit system prompt event only for the first session
+    if (isFreshContext && Option.isSome(appConfigOption)) {
       const appConfig = appConfigOption.value
       const stateAfterConfig = yield* Ref.get(stateRef)
       const systemPromptEvent = new SystemPromptEvent({
@@ -472,6 +471,8 @@ export const makeMiniAgent = (
       })
       yield* addEventInternal(systemPromptEvent)
     }
+
+    // TODO: If CLI llmConfig differs from agent's reduced config, emit SetLlmConfigEvent to update.
 
     // Wait for startup events to be processed before returning
     // This prevents race conditions where getEvents returns empty before events are processed
@@ -531,17 +532,15 @@ export const makeMiniAgent = (
 
       addEvent: (event) => addEventInternal(event),
 
-      subscribe: Effect.gen(function*() {
+      tapEventStream: Effect.gen(function*() {
         // PubSub.subscribe guarantees subscription is established when this effect completes
         const dequeue = yield* PubSub.subscribe(pubsub)
         return Stream.fromQueue(dequeue)
       }),
 
-      events: broadcast,
-
       getEvents: Ref.get(stateRef).pipe(Effect.map((s) => s.events)),
 
-      getReducedContext: Ref.get(stateRef).pipe(Effect.map((s) => s.reducedContext)),
+      getState: Ref.get(stateRef).pipe(Effect.map((s) => s.reducedContext)),
 
       endSession: endSessionEffect,
 

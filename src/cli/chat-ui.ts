@@ -4,17 +4,10 @@
  * Interactive chat with interruptible LLM streaming using MiniAgent actor.
  * Return during streaming interrupts (with optional new message); Escape exits.
  */
-import { DateTime, Effect, Fiber, Mailbox, Option, Stream } from "effect"
-import { AgentRegistry } from "../agent-registry.ts"
-import {
-  type AgentName,
-  type ContextSaveError,
-  makeEventId,
-  type MiniAgent,
-  type ReducerError,
-  UserMessageEvent
-} from "../domain.ts"
-import { type ChatController, runOpenTUIChat } from "./components/opentui-chat.tsx"
+import { Effect, Fiber, Mailbox, Ref, Stream } from "effect"
+import { AgentEventCommands, AgentEvents } from "../agent-events.ts"
+import { type AgentName, type ContextEvent } from "../domain.ts"
+import { runOpenTUIChat } from "./components/opentui-chat.tsx"
 
 type ChatSignal =
   | { readonly _tag: "Input"; readonly text: string }
@@ -22,191 +15,103 @@ type ChatSignal =
 
 export class ChatUI extends Effect.Service<ChatUI>()("@mini-agent/ChatUI", {
   effect: Effect.gen(function*() {
-    const registry = yield* AgentRegistry
+    const agentEvents = yield* AgentEvents
 
-    const runChat = Effect.fn("ChatUI.runChat")(function*(contextName: string) {
-      // Get or create the agent
-      const agent = yield* registry.getOrCreate(contextName as AgentName)
+    const runChat = Effect.fn("ChatUI.runChat")(function*(agentName: string) {
+      const resolvedName = agentName as AgentName
+      const existingEvents = yield* agentEvents.getEvents({ agentName: resolvedName })
 
-      // Get existing events for history display
-      const existingEvents = yield* agent.getEvents
-
+      // Unbounded mailbox - unsafeOffer always succeeds (idiomatic Effect pattern)
       const mailbox = yield* Mailbox.make<ChatSignal>()
 
-      const chat = yield* Effect.promise(() =>
-        runOpenTUIChat(contextName, existingEvents, {
-          onSubmit: (text) => {
-            mailbox.unsafeOffer({ _tag: "Input", text })
-          },
-          onExit: () => {
-            mailbox.unsafeOffer({ _tag: "Exit" })
-          }
+      const chat = yield* Effect.tryPromise({
+        try: () =>
+        runOpenTUIChat(resolvedName, existingEvents, {
+          onSubmit: (text) => mailbox.unsafeOffer({ _tag: "Input", text }),
+          onExit: () => mailbox.unsafeOffer({ _tag: "Exit" })
+        }),
+        catch: (error) => new Error(`Failed to start chat UI: ${String(error)}`)
+      })
+
+      const streamingRef = yield* Ref.make(false)
+
+      yield* Effect.scoped(
+        Effect.gen(function*() {
+          const stream = yield* agentEvents.tapEventStream({ agentName: resolvedName })
+          const subscriptionFiber = yield* stream.pipe(
+            Stream.runForEach((event: ContextEvent) =>
+              Effect.gen(function*() {
+                yield* updateStreamingState(streamingRef, event)
+                yield* Effect.sync(() => chat.addEvent(event))
+              })
+            ),
+            Effect.fork
+          )
+
+          yield* runChatLoop(resolvedName, agentEvents, mailbox, streamingRef).pipe(
+            Effect.catchAllCause(() => Effect.void),
+            Effect.ensuring(
+              Effect.gen(function*() {
+                yield* agentEvents.addEvents({
+                  agentName: resolvedName,
+                  events: [AgentEventCommands.endSession]
+                }).pipe(Effect.catchAllCause(() => Effect.void))
+                yield* Fiber.interrupt(subscriptionFiber)
+                chat.cleanup()
+              })
+            )
+          )
         })
-      )
-
-      // Subscribe to agent events and forward to UI
-      const subscriptionFiber = yield* agent.events.pipe(
-        Stream.runForEach((event) => Effect.sync(() => chat.addEvent(event))),
-        Effect.fork
-      )
-
-      yield* runChatLoop(agent, chat, mailbox).pipe(
-        Effect.catchAllCause(() => Effect.void),
-        Effect.ensuring(
-          Effect.gen(function*() {
-            yield* Fiber.interrupt(subscriptionFiber)
-            yield* agent.endSession
-            chat.cleanup()
-          })
-        )
       )
     })
 
     return { runChat }
-  }),
-  dependencies: [AgentRegistry.Default]
+  })
 }) {}
 
 const runChatLoop = (
-  agent: MiniAgent,
-  chat: ChatController,
-  mailbox: Mailbox.Mailbox<ChatSignal>
-): Effect.Effect<void, ReducerError | ContextSaveError> =>
-  Effect.fn("ChatUI.runChatLoop")(function*() {
-    while (true) {
-      const result = yield* runChatTurn(agent, chat, mailbox)
-      if (result._tag === "exit") {
-        return
-      }
-    }
-  })()
-
-type TurnResult =
-  | { readonly _tag: "continue" }
-  | { readonly _tag: "exit" }
-
-const runChatTurn = (
-  agent: MiniAgent,
-  chat: ChatController,
-  mailbox: Mailbox.Mailbox<ChatSignal>
-): Effect.Effect<TurnResult, ReducerError | ContextSaveError> =>
-  Effect.fn("ChatUI.runChatTurn")(function*() {
-    const signal = yield* mailbox.take.pipe(
-      Effect.catchTag("NoSuchElementException", () => Effect.succeed({ _tag: "Exit" } as const))
-    )
-
-    if (signal._tag === "Exit") {
-      return { _tag: "exit" } as const
-    }
-
-    const userMessage = signal.text.trim()
-
-    // Empty message = just interrupt, continue waiting
-    if (!userMessage) {
-      return { _tag: "continue" } as const
-    }
-
-    // Get current context to build proper event
-    const ctx = yield* agent.getReducedContext
-
-    // Create user event with triggersAgentTurn=true to start LLM turn
-    const userEvent = new UserMessageEvent({
-      id: makeEventId(agent.contextName, ctx.nextEventNumber),
-      timestamp: DateTime.unsafeNow(),
-      agentName: agent.agentName,
-      parentEventId: Option.none(),
-      triggersAgentTurn: true,
-      content: userMessage
-    })
-
-    // Add event to agent - this will broadcast to subscription and trigger LLM turn
-    yield* agent.addEvent(userEvent)
-
-    // Wait for turn to complete or user interrupt
-    const result = yield* awaitTurnCompletion(agent, mailbox)
-
-    if (result._tag === "exit") {
-      return { _tag: "exit" } as const
-    }
-
-    if (result._tag === "interrupted") {
-      if (result.newMessage) {
-        // User sent new message during streaming - this will trigger a new turn
-        // The agent's debounce processing will interrupt the current turn automatically
-        return yield* runChatTurnWithPending(agent, chat, mailbox, result.newMessage)
-      } else {
-        // User hit return with no text - just interrupt without starting new turn
-        yield* agent.interruptTurn
-      }
-    }
-
-    return { _tag: "continue" } as const
-  })()
-
-const runChatTurnWithPending = (
-  agent: MiniAgent,
-  chat: ChatController,
+  agentName: AgentName,
+  service: AgentEvents,
   mailbox: Mailbox.Mailbox<ChatSignal>,
-  pendingMessage: string
-): Effect.Effect<TurnResult, ReducerError | ContextSaveError> =>
+  streamingRef: Ref.Ref<boolean>
+): Effect.Effect<void> =>
   Effect.gen(function*() {
-    const ctx = yield* agent.getReducedContext
-
-    const userEvent = new UserMessageEvent({
-      id: makeEventId(agent.contextName, ctx.nextEventNumber),
-      timestamp: DateTime.unsafeNow(),
-      agentName: agent.agentName,
-      parentEventId: Option.none(),
-      triggersAgentTurn: true,
-      content: pendingMessage
-    })
-
-    yield* agent.addEvent(userEvent)
-
-    const result = yield* awaitTurnCompletion(agent, mailbox)
-
-    if (result._tag === "exit") {
-      return { _tag: "exit" } as const
-    }
-
-    if (result._tag === "interrupted" && result.newMessage) {
-      return yield* runChatTurnWithPending(agent, chat, mailbox, result.newMessage)
-    }
-
-    return { _tag: "continue" } as const
-  })
-
-type TurnCompletionResult =
-  | { readonly _tag: "completed" }
-  | { readonly _tag: "exit" }
-  | { readonly _tag: "interrupted"; readonly newMessage: string | null }
-
-const awaitTurnCompletion = (
-  agent: MiniAgent,
-  mailbox: Mailbox.Mailbox<ChatSignal>
-): Effect.Effect<TurnCompletionResult> =>
-  Effect.fn("ChatUI.awaitTurnCompletion")(function*() {
-    // Wait for either: turn completes OR user interrupts
-    const waitForIdle = Effect.gen(function*() {
-      // Poll for idle state
-      while (true) {
-        const isIdle = yield* agent.isIdle
-        if (isIdle) {
-          return { _tag: "completed" } as TurnCompletionResult
-        }
-        yield* Effect.sleep("50 millis")
-      }
-    })
-
-    const waitForInterrupt = Effect.gen(function*() {
+    while (true) {
       const signal = yield* mailbox.take.pipe(
         Effect.catchTag("NoSuchElementException", () => Effect.succeed({ _tag: "Exit" } as const))
       )
-      if (signal._tag === "Exit") {
-        return { _tag: "exit" } as TurnCompletionResult
-      }
-      return { _tag: "interrupted", newMessage: signal.text || null } as TurnCompletionResult
-    })
 
-    return yield* Effect.race(waitForIdle, waitForInterrupt)
-  })()
+      if (signal._tag === "Exit") {
+        return
+      }
+
+      const userMessage = signal.text.trim()
+
+      if (!userMessage) {
+        const streaming = yield* Ref.get(streamingRef)
+        if (streaming) {
+          yield* service.addEvents({ agentName, events: [AgentEventCommands.interruptTurn] })
+        }
+        continue
+      }
+
+      yield* service.addEvents({
+        agentName,
+        events: [AgentEventCommands.userMessage({ content: userMessage })]
+      })
+    }
+  })
+
+const updateStreamingState = (ref: Ref.Ref<boolean>, event: ContextEvent) => {
+  switch (event._tag) {
+    case "AgentTurnStartedEvent":
+      return Ref.set(ref, true)
+    case "AgentTurnCompletedEvent":
+    case "AgentTurnFailedEvent":
+    case "AgentTurnInterruptedEvent":
+    case "SessionEndedEvent":
+      return Ref.set(ref, false)
+    default:
+      return Effect.void
+  }
+}
