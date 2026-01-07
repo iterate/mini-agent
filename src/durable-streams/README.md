@@ -84,19 +84,19 @@ npx tsx src/durable-streams/main.ts server status
 npx tsx src/durable-streams/main.ts stream subscribe my-stream
 
 # Subscribe from beginning (offset -1)
-npx tsx src/durable-streams/main.ts stream subscribe my-stream --offset -1
+npx tsx src/durable-streams/main.ts stream subscribe --offset -1 my-stream
 
 # Get historic events (one-shot, exits after fetching)
 npx tsx src/durable-streams/main.ts stream get my-stream
 
 # Get events with offset and limit
-npx tsx src/durable-streams/main.ts stream get my-stream --offset 0000000000000005 --limit 10
+npx tsx src/durable-streams/main.ts stream get --offset 0000000000000005 --limit 10 my-stream
 
 # Append message (auto-wraps as {type:"message",text:"..."})
-npx tsx src/durable-streams/main.ts stream append my-stream -m "hello world"
+npx tsx src/durable-streams/main.ts stream append -m "hello world" my-stream
 
 # Append raw JSON
-npx tsx src/durable-streams/main.ts stream append my-stream -e '{"custom":"data"}'
+npx tsx src/durable-streams/main.ts stream append -e '{"custom":"data"}' my-stream
 
 # List all streams
 npx tsx src/durable-streams/main.ts stream list
@@ -131,7 +131,7 @@ tmux split-window -v -t ds:0.1
 tmux send-keys -t ds:0.0 'npx tsx src/durable-streams/main.ts server run' Enter
 
 # Pane 1: Subscriber (wait for server to start)
-tmux send-keys -t ds:0.1 'sleep 1 && npx tsx src/durable-streams/main.ts stream subscribe test' Enter
+tmux send-keys -t ds:0.1 'sleep 1 && npx tsx src/durable-streams/main.ts stream subscribe --offset -1 test' Enter
 
 # Pane 2: Publisher
 tmux send-keys -t ds:0.2 'sleep 2' Enter
@@ -142,9 +142,9 @@ tmux attach -t ds
 
 Then in pane 2, send messages:
 ```bash
-npx tsx src/durable-streams/main.ts stream append test -m "first message"
-npx tsx src/durable-streams/main.ts stream append test -m "second message"
-npx tsx src/durable-streams/main.ts stream append test -e '{"type":"custom","payload":123}'
+npx tsx src/durable-streams/main.ts stream append -m "first message" test
+npx tsx src/durable-streams/main.ts stream append -m "second message" test
+npx tsx src/durable-streams/main.ts stream append -e '{"type":"custom","payload":123}' test
 ```
 
 Watch them appear in pane 1 (subscriber).
