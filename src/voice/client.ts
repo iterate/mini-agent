@@ -63,20 +63,25 @@ export class GrokVoiceClient extends Effect.Service<GrokVoiceClient>()("@lome/Gr
         let isConfigured = false
 
         const sendSessionConfig = (socket: WebSocket) => {
-          const sessionConfig = new SessionUpdateMessage({
+          const config = {
+            type: "session.update",
             session: {
               instructions,
-              voice: voice as VoiceName,
-              audio: {
-                input: { format: { type: "audio/pcm", rate: sampleRate } },
-                output: { format: { type: "audio/pcm", rate: sampleRate } }
-              },
-              turn_detection: { type: "server_vad" }
+              voice,
+              input_audio_format: "pcm16",
+              output_audio_format: "pcm16",
+              input_audio_transcription: { model: "whisper-large-v3-turbo" },
+              turn_detection: {
+                type: "server_vad",
+                threshold: 0.5,
+                prefix_padding_ms: 300,
+                silence_duration_ms: 500,
+                create_response: true
+              }
             }
-          })
+          }
 
-          const encoded = Schema.encodeSync(SessionUpdateMessage)(sessionConfig)
-          socket.send(JSON.stringify({ type: "session.update", ...encoded }))
+          socket.send(JSON.stringify(config))
           isConfigured = true
         }
 
@@ -165,9 +170,8 @@ export class GrokVoiceClient extends Effect.Service<GrokVoiceClient>()("@lome/Gr
             const ws = holder.ws
             if (ws && ws.readyState === WebSocket.OPEN) {
               const base64Audio = audio.toString("base64")
-              const message = new InputAudioBufferAppendMessage({ audio: base64Audio })
-              const encoded = Schema.encodeSync(InputAudioBufferAppendMessage)(message)
-              ws.send(JSON.stringify({ type: "input_audio_buffer.append", ...encoded }))
+              const msg = { type: "input_audio_buffer.append", audio: base64Audio }
+              ws.send(JSON.stringify(msg))
             }
           })
 
