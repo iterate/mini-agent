@@ -91,28 +91,28 @@ npx tsx src/durable-streams/main.ts server status
 
 ```bash
 # Subscribe to stream (outputs JSON lines - waits for live events)
-npx tsx src/durable-streams/main.ts stream subscribe my-stream
+npx tsx src/durable-streams/main.ts stream subscribe -n my-stream
 
 # Subscribe from beginning (offset -1)
-npx tsx src/durable-streams/main.ts stream subscribe --offset -1 my-stream
+npx tsx src/durable-streams/main.ts stream subscribe -n my-stream --offset -1
 
 # Get historic events (one-shot, exits after fetching)
-npx tsx src/durable-streams/main.ts stream get my-stream
+npx tsx src/durable-streams/main.ts stream get -n my-stream
 
 # Get events with offset and limit
-npx tsx src/durable-streams/main.ts stream get --offset 0000000000000005 --limit 10 my-stream
+npx tsx src/durable-streams/main.ts stream get -n my-stream --offset 0000000000000005 -l 10
 
 # Append message (auto-wraps as {type:"message",text:"..."})
-npx tsx src/durable-streams/main.ts stream append -m "hello world" my-stream
+npx tsx src/durable-streams/main.ts stream append -n my-stream -m "hello world"
 
 # Append raw JSON
-npx tsx src/durable-streams/main.ts stream append -e '{"custom":"data"}' my-stream
+npx tsx src/durable-streams/main.ts stream append -n my-stream -e '{"custom":"data"}'
 
 # List all streams
 npx tsx src/durable-streams/main.ts stream list
 
 # Delete stream
-npx tsx src/durable-streams/main.ts stream delete my-stream
+npx tsx src/durable-streams/main.ts stream delete -n my-stream
 ```
 
 ### Environment Variables
@@ -141,7 +141,7 @@ tmux split-window -v -t ds:0.1
 tmux send-keys -t ds:0.0 'npx tsx src/durable-streams/main.ts server run' Enter
 
 # Pane 1: Subscriber (wait for server to start)
-tmux send-keys -t ds:0.1 'sleep 1 && npx tsx src/durable-streams/main.ts stream subscribe --offset -1 test' Enter
+tmux send-keys -t ds:0.1 'sleep 1 && npx tsx src/durable-streams/main.ts stream subscribe -n test --offset -1' Enter
 
 # Pane 2: Publisher
 tmux send-keys -t ds:0.2 'sleep 2' Enter
@@ -152,9 +152,9 @@ tmux attach -t ds
 
 Then in pane 2, send messages:
 ```bash
-npx tsx src/durable-streams/main.ts stream append -m "first message" test
-npx tsx src/durable-streams/main.ts stream append -m "second message" test
-npx tsx src/durable-streams/main.ts stream append -e '{"type":"custom","payload":123}' test
+npx tsx src/durable-streams/main.ts stream append -n test -m "first message"
+npx tsx src/durable-streams/main.ts stream append -n test -m "second message"
+npx tsx src/durable-streams/main.ts stream append -n test -e '{"type":"custom","payload":123}'
 ```
 
 Watch them appear in pane 1 (subscriber).

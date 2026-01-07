@@ -3,16 +3,19 @@
  *
  * Commands:
  *
- * server run [--port] [--host]     Run server in foreground
- * server start [--port]            Start daemonized server
- * server stop                      Stop daemon
- * server restart [--port]          Restart daemon
- * server status                    Check daemon status
+ * server run [--port] [--host] [--storage]   Run server in foreground
+ * server start [--port] [--storage]          Start daemonized server
+ * server stop                                Stop daemon
+ * server restart [--port] [--storage]        Restart daemon
+ * server status                              Check daemon status
  *
- * stream subscribe <name> [--offset]  Subscribe to stream events
- * stream append <name> -m|-e          Append event to stream
+ * stream subscribe -n <name> [--offset]      Subscribe to stream events
+ * stream append -n <name> -m|-e              Append event to stream
+ * stream get -n <name> [--offset] [--limit]  Get historic events
+ * stream list                                List all streams
+ * stream delete -n <name>                    Delete a stream
  */
-import { Args, Command, Options } from "@effect/cli"
+import { Command, Options } from "@effect/cli"
 import { FileSystem, HttpServer, Path } from "@effect/platform"
 import { NodeContext, NodeHttpServer } from "@effect/platform-node"
 import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
@@ -177,8 +180,9 @@ const serverCommand = Command.make("server").pipe(
 
 // ─── Stream Commands ────────────────────────────────────────────────────────
 
-const streamNameArg = Args.text({ name: "name" }).pipe(
-  Args.withDescription("Stream name")
+const streamNameOption = Options.text("name").pipe(
+  Options.withAlias("n"),
+  Options.withDescription("Stream name")
 )
 
 const offsetOption = Options.text("offset").pipe(
@@ -200,7 +204,7 @@ const eventOption = Options.text("event").pipe(
 )
 
 const limitOption = Options.integer("limit").pipe(
-  Options.withAlias("n"),
+  Options.withAlias("l"),
   Options.withDescription("Maximum number of events to return"),
   Options.optional
 )
@@ -208,7 +212,7 @@ const limitOption = Options.integer("limit").pipe(
 /** stream subscribe - subscribe to stream events */
 const streamSubscribeCommand = Command.make(
   "subscribe",
-  { name: streamNameArg, offset: offsetOption, server: serverUrlOption },
+  { name: streamNameOption, offset: offsetOption, server: serverUrlOption },
   ({ name, offset, server: _server }) =>
     Effect.gen(function*() {
       const client = yield* StreamClientService
@@ -236,7 +240,7 @@ const streamSubscribeCommand = Command.make(
 /** stream append - append event to stream */
 const streamAppendCommand = Command.make(
   "append",
-  { name: streamNameArg, message: messageOption, event: eventOption, server: serverUrlOption },
+  { name: streamNameOption, message: messageOption, event: eventOption, server: serverUrlOption },
   ({ event, message, name, server: _server }) =>
     Effect.gen(function*() {
       const client = yield* StreamClientService
@@ -266,7 +270,7 @@ const streamAppendCommand = Command.make(
 /** stream get - get historic events (one-shot) */
 const streamGetCommand = Command.make(
   "get",
-  { name: streamNameArg, offset: offsetOption, limit: limitOption, server: serverUrlOption },
+  { name: streamNameOption, offset: offsetOption, limit: limitOption, server: serverUrlOption },
   ({ limit, name, offset, server: _server }) =>
     Effect.gen(function*() {
       const client = yield* StreamClientService
@@ -314,7 +318,7 @@ const streamListCommand = Command.make(
 /** stream delete - delete a stream */
 const streamDeleteCommand = Command.make(
   "delete",
-  { name: streamNameArg, server: serverUrlOption },
+  { name: streamNameOption, server: serverUrlOption },
   ({ name }) =>
     Effect.gen(function*() {
       const client = yield* StreamClientService
