@@ -333,13 +333,50 @@ describe("MyService", () => {
 static readonly testLayer = Layer.sync(MyService, () => {
   // Mutable state is fine in tests - JS is single-threaded
   const store = new Map<string, Data>()
-  
+
   return MyService.of({
     get: (key) => Effect.succeed(store.get(key)),
     set: (key, value) => Effect.sync(() => void store.set(key, value))
   })
 })
 ```
+
+## TestClock in vitest
+
+`@effect/vitest` uses `TestClock` by default—time doesn't advance automatically. Use `TestClock.adjust` to advance time in tests with `Effect.sleep`:
+
+```typescript
+import { Effect, Fiber, TestClock } from "effect"
+import { it } from "@effect/vitest"
+
+it.effect("handles sleep with TestClock", () =>
+  Effect.gen(function*() {
+    const fiber = yield* Effect.fork(
+      Effect.gen(function*() {
+        yield* Effect.sleep("1 second")
+        return "done"
+      })
+    )
+
+    yield* TestClock.adjust("1 second")  // Advance virtual time
+
+    const result = yield* Fiber.join(fiber)
+    expect(result).toBe("done")
+  })
+)
+```
+
+For real time instead of test clock, use `it.live`:
+
+```typescript
+it.live("uses real clock", () =>
+  Effect.gen(function*() {
+    yield* Effect.sleep("10 millis")  // Actually waits
+  })
+)
+```
+
+**Alternative:** For PubSub subscription tests, `PubSub.subscribe` guarantees subscription is established when effect completes—often you can publish immediately without sleep.
 
 ## Layer Memoization
 

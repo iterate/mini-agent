@@ -7,15 +7,16 @@
 import type { Scope } from "effect"
 import { Effect, PubSub, Ref, Stream } from "effect"
 import { Storage } from "./storage.ts"
+// eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import {
   InvalidOffsetError,
   isStartOffset,
   makeOffset,
+  type Offset,
   OFFSET_START,
   parseOffset,
   StorageError,
   StreamEvent,
-  type Offset,
   type StreamName
 } from "./types.ts"
 
