@@ -22,6 +22,7 @@ import { EventStore } from "../event-store.ts"
 import { makeRouter } from "../http-routes.ts"
 import { layercodeCommand } from "../layercode/index.ts"
 import { printTraceLinks } from "../tracing.ts"
+import { voiceCommand } from "../voice/index.ts"
 
 const encodeEvent = Schema.encodeSync(ContextEvent)
 
@@ -620,6 +621,7 @@ const rootCommand = Command.make(
     chatCommand,
     serveCommand,
     layercodeCommand,
+    voiceCommand,
     logTestCommand,
     traceTestCommand,
     clearCommand
