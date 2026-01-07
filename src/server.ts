@@ -8,8 +8,9 @@ import { AnthropicClient, AnthropicLanguageModel } from "@effect/ai-anthropic"
 import { GoogleClient, GoogleLanguageModel } from "@effect/ai-google"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient, HttpServer } from "@effect/platform"
-import { BunContext, BunHttpServer, BunRuntime } from "@effect/platform-bun"
+import { NodeContext, NodeHttpServer, NodeRuntime } from "@effect/platform-node"
 import { ConfigProvider, Effect, Layer, LogLevel, Option } from "effect"
+import { createServer } from "node:http"
 import { AgentRegistry } from "./agent-registry.ts"
 import { AppConfig, type MiniAgentConfig } from "./config.ts"
 import { EventReducer } from "./event-reducer.ts"
@@ -104,13 +105,12 @@ const program = Effect.gen(function*() {
     Layer.provide(EventStoreFileSystem),
     Layer.provide(EventReducer.Default),
     Layer.provide(appConfigLayer),
-    Layer.provide(BunContext.layer)
+    Layer.provide(NodeContext.layer)
   )
 
   // HTTP server layer
-  // Set idleTimeout high for SSE streaming - Bun defaults to 10s which kills long-running streams
   const serverLayer = HttpServer.serve(makeRouter).pipe(
-    Layer.provide(BunHttpServer.layer({ port, idleTimeout: 120 })),
+    Layer.provide(NodeHttpServer.layer(createServer, { port })),
     Layer.provide(serviceLayer)
   )
 
@@ -123,9 +123,9 @@ const loggingLayer = createLoggingLayer({
   baseDir: ".mini-agent"
 })
 
-const mainLayer = Layer.mergeAll(loggingLayer, BunContext.layer)
+const mainLayer = Layer.mergeAll(loggingLayer, NodeContext.layer)
 
 program.pipe(
   Effect.provide(mainLayer),
-  BunRuntime.runMain
+  NodeRuntime.runMain
 )

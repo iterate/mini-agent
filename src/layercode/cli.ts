@@ -6,8 +6,9 @@
 import { Command as CliCommand, Options } from "@effect/cli"
 import type { CommandExecutor } from "@effect/platform"
 import { Command as PlatformCommand, HttpRouter, HttpServer } from "@effect/platform"
-import { BunHttpServer } from "@effect/platform-bun"
+import { NodeHttpServer } from "@effect/platform-node"
 import { Console, Effect, Layer, Option, Stream } from "effect"
+import { createServer } from "node:http"
 import { AppConfig } from "../config.ts"
 import { makeRouter } from "../http-routes.ts"
 import { makeLayerCodeRouter } from "./layercode.adapter.ts"
@@ -143,8 +144,8 @@ const layercodeServeCommand = CliCommand.make(
         makeLayerCodeRouter(welcomeMessage)
       )
 
-      // Set a high idleTimeout for SSE streaming - Bun defaults to 10s which kills long-running streams
-      const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost, idleTimeout: 120 })
+      // Create Node.js HTTP server layer
+      const serverLayer = NodeHttpServer.layer(createServer, { port: actualPort, host: actualHost })
 
       // Start the tunnel if enabled (fork it to run concurrently with server)
       if (tunnelEnabled && Option.isSome(agentId)) {

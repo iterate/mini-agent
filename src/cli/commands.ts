@@ -6,8 +6,9 @@
 import { type Prompt, Telemetry } from "@effect/ai"
 import { Command, Options, Prompt as CliPrompt } from "@effect/cli"
 import { type Error as PlatformError, FileSystem, HttpServer, type Terminal } from "@effect/platform"
-import { BunHttpServer, BunStream } from "@effect/platform-bun"
-import { Chunk, Console, DateTime, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { NodeHttpServer } from "@effect/platform-node"
+import { Console, DateTime, Effect, Fiber, Layer, Option, Schema, Stream } from "effect"
+import { createServer } from "node:http"
 import { AgentRegistry } from "../agent-registry.ts"
 import { AppConfig, resolveBaseDir } from "../config.ts"
 import {
@@ -198,13 +199,13 @@ const determineMode = (options: {
   return "pipe"
 }
 
-const utf8Decoder = new TextDecoder("utf-8")
-
-const readAllStdin: Effect.Effect<string> = BunStream.stdin.pipe(
-  Stream.mapChunks(Chunk.map((bytes) => utf8Decoder.decode(bytes))),
-  Stream.runCollect,
-  Effect.map((chunks) => Chunk.join(chunks, "").trim())
-)
+const readAllStdin: Effect.Effect<string> = Effect.promise(async () => {
+  const chunks: Array<Buffer> = []
+  for await (const chunk of process.stdin) {
+    chunks.push(chunk as Buffer)
+  }
+  return Buffer.concat(chunks).toString("utf-8").trim()
+})
 
 /** Simple input message schema - accepts minimal fields */
 const SimpleInputMessage = Schema.Struct({
@@ -218,10 +219,21 @@ const SimpleInputMessage = Schema.Struct({
 })
 type SimpleInputMessage = typeof SimpleInputMessage.Type
 
-const stdinEvents = BunStream.stdin.pipe(
-  Stream.mapChunks(Chunk.map((bytes) => utf8Decoder.decode(bytes))),
-  Stream.splitLines,
-  Stream.filter((line) => line.trim() !== ""),
+const stdinEvents = Stream.fromAsyncIterable(
+  (async function*() {
+    let buffer = ""
+    for await (const chunk of process.stdin) {
+      buffer += (chunk as Buffer).toString("utf-8")
+      const lines = buffer.split("\n")
+      buffer = lines.pop() ?? ""
+      for (const line of lines) {
+        if (line.trim() !== "") yield line
+      }
+    }
+    if (buffer.trim() !== "") yield buffer
+  })(),
+  (error) => new Error(String(error))
+).pipe(
   Stream.mapEffect((line) =>
     Effect.try(() => JSON.parse(line) as unknown).pipe(
       Effect.flatMap((json) => Schema.decodeUnknown(SimpleInputMessage)(json))
@@ -592,9 +604,8 @@ export const serveCommand = Command.make(
       yield* Console.log(`    -d '{"_tag":"UserMessageEvent","content":"hello"}'`)
       yield* Console.log("")
 
-      // Create server layer with configured port/host
-      // Set idleTimeout high for SSE streaming - Bun defaults to 10s which kills long-running streams
-      const serverLayer = BunHttpServer.layer({ port: actualPort, hostname: actualHost, idleTimeout: 120 })
+      // Create Node.js HTTP server layer
+      const serverLayer = NodeHttpServer.layer(createServer, { port: actualPort, host: actualHost })
 
       // Use Layer.launch to keep the server running
       return yield* Layer.launch(

@@ -5,7 +5,7 @@
  * Uses PlatformLogger.toFile for proper resource management.
  */
 import { FileSystem, PlatformLogger } from "@effect/platform"
-import { BunContext } from "@effect/platform-bun"
+import { NodeContext } from "@effect/platform-node"
 import { Effect, Layer, Logger, LogLevel } from "effect"
 import * as YamlLogger from "./yaml-logger.ts"
 
@@ -101,7 +101,7 @@ export const createLoggingLayer = (config: LoggingConfig): Layer.Layer<never> =>
   // 2. Add file logger (scoped, cleaned up properly without breaking console)
   const consoleLayer = Logger.replace(Logger.defaultLogger, consoleLogger)
   const fileLayer = Logger.addScoped(fileLoggerEffect).pipe(
-    Layer.provide(BunContext.layer),
+    Layer.provide(NodeContext.layer),
     Layer.catchAll(() => Layer.empty)
   )
 
