@@ -140,9 +140,55 @@ const deleteHandler = Effect.gen(function*() {
   return HttpServerResponse.empty({ status: 204 })
 })
 
+/** GET /streams/:name/events - Get historic events (one-shot, no SSE) */
+const getEventsHandler = Effect.gen(function*() {
+  const request = yield* HttpServerRequest.HttpServerRequest
+  const manager = yield* StreamManagerService
+  const params = yield* HttpRouter.params
+
+  const name = params.name
+  if (!name) {
+    return HttpServerResponse.text("Missing stream name", { status: 400 })
+  }
+
+  // Parse offset and limit from query string
+  const url = new URL(request.url, "http://localhost")
+  const offsetParam = url.searchParams.get("offset")
+  const limitParam = url.searchParams.get("limit")
+
+  const offset: Offset | undefined = offsetParam === null
+    ? undefined
+    : offsetParam === "-1"
+    ? OFFSET_START
+    : offsetParam as Offset
+
+  const limit = limitParam ? parseInt(limitParam, 10) : undefined
+
+  const getFromOpts: { name: StreamName; offset?: Offset; limit?: number } = { name: name as StreamName }
+  if (offset !== undefined) {
+    getFromOpts.offset = offset
+  }
+  if (limit !== undefined && !isNaN(limit)) {
+    getFromOpts.limit = limit
+  }
+  const eventsResult = yield* manager.getFrom(getFromOpts).pipe(Effect.either)
+
+  if (eventsResult._tag === "Left") {
+    const err = eventsResult.left
+    if (err._tag === "InvalidOffsetError") {
+      return HttpServerResponse.text(err.message, { status: 400 })
+    }
+    return HttpServerResponse.text(err.message, { status: 500 })
+  }
+
+  const events = eventsResult.right.map((e) => Schema.encodeSync(StreamEvent)(e))
+  return yield* HttpServerResponse.json({ events })
+})
+
 /** Durable streams router */
 export const durableStreamsRouter = HttpRouter.empty.pipe(
   HttpRouter.post("/streams/:name", appendHandler),
+  HttpRouter.get("/streams/:name/events", getEventsHandler),
   HttpRouter.get("/streams/:name", subscribeHandler),
   HttpRouter.get("/streams", listHandler),
   HttpRouter.del("/streams/:name", deleteHandler)

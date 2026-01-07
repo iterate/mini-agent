@@ -16,10 +16,13 @@ export interface DaemonConfig {
   readonly port: number
 }
 
-/** Default config - files in PWD */
+/** Data directory for all durable-streams files */
+export const DATA_DIR = ".iterate"
+
+/** Default config - files in .iterate/ */
 export const defaultDaemonConfig: DaemonConfig = {
-  pidFile: "daemon.pid",
-  logFile: "daemon.log",
+  pidFile: `${DATA_DIR}/daemon.pid`,
+  logFile: `${DATA_DIR}/daemon.log`,
   port: 3000
 }
 
@@ -88,7 +91,11 @@ const makeDaemonImpl = (
 
   /** Spawn daemonized server process */
   const spawnDaemon = (config: DaemonConfig) =>
-    Effect.sync(() => {
+    Effect.gen(function*() {
+      // Ensure .iterate/ directory exists
+      const dataDirPath = resolvePath(DATA_DIR)
+      yield* fs.makeDirectory(dataDirPath, { recursive: true }).pipe(Effect.ignore)
+
       const logPath = resolvePath(config.logFile)
       const out = openSync(logPath, "a")
 
@@ -106,7 +113,7 @@ const makeDaemonImpl = (
       )
       child.unref()
       return child.pid!
-    })
+    }).pipe(Effect.orDie)
 
   /** Stop process gracefully */
   const stopProcess = (pidFile: string): Effect.Effect<void, DaemonError> =>
@@ -153,7 +160,7 @@ const makeDaemonImpl = (
       yield* fs.writeFileString(pidPath, String(pid)).pipe(Effect.ignore)
 
       // Write port to a separate file for client discovery
-      const portPath = resolvePath("daemon.port")
+      const portPath = resolvePath(`${DATA_DIR}/daemon.port`)
       yield* fs.writeFileString(portPath, String(cfg.port)).pipe(Effect.ignore)
 
       return pid
@@ -182,7 +189,7 @@ const makeDaemonImpl = (
       if (Option.isNone(maybePid)) return Option.none<string>()
 
       // Read port from file
-      const portPath = resolvePath("daemon.port")
+      const portPath = resolvePath(`${DATA_DIR}/daemon.port`)
       const exists = yield* fs.exists(portPath).pipe(Effect.orElseSucceed(() => false))
       if (!exists) return Option.some(`http://localhost:${defaultDaemonConfig.port}`)
 

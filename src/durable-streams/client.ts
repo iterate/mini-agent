@@ -44,6 +44,13 @@ export interface StreamClient {
     offset?: Offset
   }) => Effect.Effect<Stream.Stream<StreamEvent, ClientError>, ClientError>
 
+  /** Get historic events from a stream (one-shot, no live subscription) */
+  readonly get: (opts: {
+    name: StreamName
+    offset?: Offset
+    limit?: number
+  }) => Effect.Effect<ReadonlyArray<StreamEvent>, ClientError>
+
   /** List all streams */
   readonly list: () => Effect.Effect<ReadonlyArray<StreamName>, ClientError>
 
@@ -116,6 +123,39 @@ export const makeStreamClient = (
       return Effect.succeed(eventStream)
     }
 
+    const get = (opts: {
+      name: StreamName
+      offset?: Offset
+      limit?: number
+    }): Effect.Effect<ReadonlyArray<StreamEvent>, ClientError> =>
+      Effect.gen(function*() {
+        const params = new URLSearchParams()
+        if (opts.offset) params.set("offset", opts.offset === OFFSET_START ? "-1" : opts.offset)
+        if (opts.limit) params.set("limit", String(opts.limit))
+        const queryString = params.toString()
+        const url = `/streams/${opts.name}/events${queryString ? `?${queryString}` : ""}`
+
+        const request = HttpClientRequest.get(url)
+
+        const response = yield* clientOk.execute(request).pipe(
+          Effect.flatMap((r) => r.json),
+          Effect.scoped,
+          Effect.catchTags({
+            RequestError: (error) => Effect.fail(new ClientError(`Request failed: ${error.message}`)),
+            ResponseError: (error) =>
+              Effect.fail(new ClientError(`HTTP ${error.response.status}`, error.response.status))
+          })
+        ) as Effect.Effect<{ events: ReadonlyArray<unknown> }, ClientError>
+
+        return yield* Effect.all(
+          response.events.map((e) =>
+            Schema.decodeUnknown(StreamEvent)(e).pipe(
+              Effect.mapError((err) => new ClientError(`Invalid event: ${err}`))
+            )
+          )
+        )
+      })
+
     const list = (): Effect.Effect<ReadonlyArray<StreamName>, ClientError> =>
       Effect.gen(function*() {
         const request = HttpClientRequest.get(`/streams`)
@@ -154,6 +194,7 @@ export const makeStreamClient = (
     return {
       append,
       subscribe,
+      get,
       list,
       delete: deleteStream
     } satisfies StreamClient
@@ -206,6 +247,7 @@ export class StreamClientService extends Effect.Service<StreamClientService>()(
       return {
         append: (opts: { name: StreamName; data: unknown }) => withClient((c) => c.append(opts)),
         subscribe: (opts: { name: StreamName; offset?: Offset }) => withClient((c) => c.subscribe(opts)),
+        get: (opts: { name: StreamName; offset?: Offset; limit?: number }) => withClient((c) => c.get(opts)),
         list: () => withClient((c) => c.list()),
         delete: (opts: { name: StreamName }) => withClient((c) => c.delete(opts))
       } satisfies StreamClient
@@ -255,6 +297,7 @@ export const StreamClientLive: Layer.Layer<StreamClientService, never, HttpClien
       return {
         append: (opts: { name: StreamName; data: unknown }) => withClient((c) => c.append(opts)),
         subscribe: (opts: { name: StreamName; offset?: Offset }) => withClient((c) => c.subscribe(opts)),
+        get: (opts: { name: StreamName; offset?: Offset; limit?: number }) => withClient((c) => c.get(opts)),
         list: () => withClient((c) => c.list()),
         delete: (opts: { name: StreamName }) => withClient((c) => c.delete(opts))
       } as unknown as StreamClientService

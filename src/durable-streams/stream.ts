@@ -35,6 +35,12 @@ export interface DurableStream {
     Scope.Scope
   >
 
+  /** Get events from offset (for historic reads without live subscription) */
+  getFrom(opts: { offset: Offset; limit?: number }): Effect.Effect<
+    ReadonlyArray<StreamEvent>,
+    InvalidOffsetError | StorageError
+  >
+
   /** Current event count */
   readonly count: Effect.Effect<number, StorageError>
 }
@@ -126,6 +132,28 @@ export const makeDurableStream = (opts: {
         return Stream.concat(historicalStream, liveStream)
       })
 
+    const getFrom = (
+      getFromOpts: { offset: Offset; limit?: number }
+    ): Effect.Effect<ReadonlyArray<StreamEvent>, InvalidOffsetError | StorageError> =>
+      Effect.gen(function*() {
+        const { limit, offset } = getFromOpts
+
+        // Validate offset format (unless it's the start sentinel)
+        if (!isStartOffset(offset)) {
+          const parsed = parseOffset(offset)
+          if (isNaN(parsed) || parsed < 0) {
+            return yield* Effect.fail(
+              new InvalidOffsetError({
+                offset,
+                message: "Offset must be a non-negative integer string or -1"
+              })
+            )
+          }
+        }
+
+        return yield* storage.getFrom(limit !== undefined ? { name, offset, limit } : { name, offset })
+      })
+
     const count: Effect.Effect<number, StorageError> = Effect.gen(function*() {
       const events = yield* storage.getAll({ name })
       return events.length
@@ -135,6 +163,7 @@ export const makeDurableStream = (opts: {
       name,
       append,
       subscribe,
+      getFrom,
       count
     }
   })

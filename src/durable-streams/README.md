@@ -26,10 +26,11 @@ Pure event streams with append/subscribe semantics. No LLM logic, no agent behav
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                        HTTP Layer                          │
-│  POST /streams/:name   → append event                      │
-│  GET  /streams/:name   → subscribe (SSE)                   │
-│  GET  /streams         → list streams                      │
-│  DELETE /streams/:name → delete stream                     │
+│  POST /streams/:name         → append event                │
+│  GET  /streams/:name         → subscribe (SSE)             │
+│  GET  /streams/:name/events  → get historic events         │
+│  GET  /streams               → list streams                │
+│  DELETE /streams/:name       → delete stream               │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -50,7 +51,8 @@ Pure event streams with append/subscribe semantics. No LLM logic, no agent behav
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                        Storage                              │
-│  InMemory (default) | FileSystem (future)                  │
+│  InMemory (tests) | FileSystem (production)                │
+│  Data persisted in .iterate/streams/*.json                 │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -78,11 +80,17 @@ npx tsx src/durable-streams/main.ts server status
 ### Stream Commands
 
 ```bash
-# Subscribe to stream (outputs JSON lines)
+# Subscribe to stream (outputs JSON lines - waits for live events)
 npx tsx src/durable-streams/main.ts stream subscribe my-stream
 
 # Subscribe from beginning (offset -1)
 npx tsx src/durable-streams/main.ts stream subscribe my-stream --offset -1
+
+# Get historic events (one-shot, exits after fetching)
+npx tsx src/durable-streams/main.ts stream get my-stream
+
+# Get events with offset and limit
+npx tsx src/durable-streams/main.ts stream get my-stream --offset 0000000000000005 --limit 10
 
 # Append message (auto-wraps as {type:"message",text:"..."})
 npx tsx src/durable-streams/main.ts stream append my-stream -m "hello world"
@@ -103,10 +111,11 @@ npx tsx src/durable-streams/main.ts stream delete my-stream
 
 ### Files Created
 
-When using daemon mode:
-- `daemon.pid` - Process ID of running daemon
-- `daemon.port` - Port the daemon is listening on
-- `daemon.log` - Server stdout/stderr
+Data files are stored in `.iterate/` in the working directory:
+- `.iterate/daemon.pid` - Process ID of running daemon
+- `.iterate/daemon.port` - Port the daemon is listening on
+- `.iterate/daemon.log` - Server stdout/stderr
+- `.iterate/streams/*.json` - Persisted event streams
 
 ## Testing with tmux
 
@@ -173,6 +182,21 @@ Output (SSE format):
 data: {"offset":"0000000000000000","data":{"type":"message","text":"hello"},"timestamp":1704672000000}
 
 data: {"offset":"0000000000000001","data":{"type":"message","text":"world"},"timestamp":1704672001000}
+```
+
+### Get Historic Events
+
+```bash
+# Get all events from stream
+curl http://localhost:3000/streams/my-stream/events
+
+# Get events with offset and limit
+curl http://localhost:3000/streams/my-stream/events?offset=0000000000000005&limit=10
+```
+
+Response:
+```json
+{"events":[{"offset":"0000000000000005","data":{"type":"message","text":"hello"},"timestamp":1704672000000}]}
 ```
 
 ### List Streams

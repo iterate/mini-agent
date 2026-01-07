@@ -13,13 +13,14 @@
  * stream append <name> -m|-e          Append event to stream
  */
 import { Args, Command, Options } from "@effect/cli"
-import { HttpServer } from "@effect/platform"
-import { NodeHttpServer } from "@effect/platform-node"
+import { FileSystem, HttpServer, Path } from "@effect/platform"
+import { NodeContext, NodeHttpServer } from "@effect/platform-node"
 import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
 import { createServer } from "node:http"
 import { StreamClientService } from "./client.ts"
-import { DaemonService } from "./daemon.ts"
+import { DaemonService, DATA_DIR } from "./daemon.ts"
 import { durableStreamsRouter } from "./http-routes.ts"
+import { Storage } from "./storage.ts"
 import { StreamManagerService } from "./stream-manager.ts"
 import { type Offset, OFFSET_START, StreamEvent, type StreamName } from "./types.ts"
 
@@ -50,16 +51,31 @@ const serverRunCommand = Command.make(
   { host: hostOption, port: portOption },
   ({ host, port }) =>
     Effect.gen(function*() {
+      const fs = yield* FileSystem.FileSystem
+      const path = yield* Path.Path
+
+      // Ensure data directory exists
+      const dataDirPath = path.join(process.cwd(), DATA_DIR)
+      yield* fs.makeDirectory(dataDirPath, { recursive: true }).pipe(Effect.ignore)
+
       yield* Console.log(`Starting durable-streams server on ${host}:${port}`)
+      yield* Console.log(`Data directory: ${dataDirPath}`)
       yield* Console.log("")
       yield* Console.log("Endpoints:")
-      yield* Console.log("  POST   /streams/:name    Append event")
-      yield* Console.log("  GET    /streams/:name    Subscribe (SSE)")
-      yield* Console.log("  GET    /streams          List streams")
-      yield* Console.log("  DELETE /streams/:name    Delete stream")
+      yield* Console.log("  POST   /streams/:name         Append event")
+      yield* Console.log("  GET    /streams/:name         Subscribe (SSE)")
+      yield* Console.log("  GET    /streams/:name/events  Get historic events")
+      yield* Console.log("  GET    /streams               List streams")
+      yield* Console.log("  DELETE /streams/:name         Delete stream")
       yield* Console.log("")
 
-      const serviceLayer = StreamManagerService.InMemory
+      // Use FileSystem storage for persistence
+      const storageLayer = Storage.FileSystem({ dataDir: dataDirPath }).pipe(
+        Layer.provide(NodeContext.layer)
+      )
+      const serviceLayer = StreamManagerService.Live.pipe(
+        Layer.provide(storageLayer)
+      )
 
       const serverLayer = HttpServer.serve(durableStreamsRouter).pipe(
         Layer.provide(NodeHttpServer.layer(createServer, { port })),
@@ -169,6 +185,12 @@ const eventOption = Options.text("event").pipe(
   Options.optional
 )
 
+const limitOption = Options.integer("limit").pipe(
+  Options.withAlias("n"),
+  Options.withDescription("Maximum number of events to return"),
+  Options.optional
+)
+
 /** stream subscribe - subscribe to stream events */
 const streamSubscribeCommand = Command.make(
   "subscribe",
@@ -227,6 +249,33 @@ const streamAppendCommand = Command.make(
     )
 ).pipe(Command.withDescription("Append event to stream"))
 
+/** stream get - get historic events (one-shot) */
+const streamGetCommand = Command.make(
+  "get",
+  { name: streamNameArg, offset: offsetOption, limit: limitOption, server: serverUrlOption },
+  ({ limit, name, offset, server: _server }) =>
+    Effect.gen(function*() {
+      const client = yield* StreamClientService
+
+      const getOpts: { name: StreamName; offset?: Offset; limit?: number } = { name: name as StreamName }
+      if (Option.isSome(offset)) {
+        getOpts.offset = offset.value === "-1" ? OFFSET_START : offset.value as Offset
+      }
+      if (Option.isSome(limit)) {
+        getOpts.limit = limit.value
+      }
+
+      const events = yield* client.get(getOpts)
+
+      for (const event of events) {
+        const encoded = Schema.encodeSync(StreamEvent)(event)
+        yield* Console.log(JSON.stringify(encoded))
+      }
+    }).pipe(
+      Effect.catchAll((e) => Console.error(`Error: ${e.message}`))
+    )
+).pipe(Command.withDescription("Get historic events (one-shot, no live subscription)"))
+
 /** stream list - list all streams */
 const streamListCommand = Command.make(
   "list",
@@ -267,6 +316,7 @@ const streamCommand = Command.make("stream").pipe(
   Command.withSubcommands([
     streamSubscribeCommand,
     streamAppendCommand,
+    streamGetCommand,
     streamListCommand,
     streamDeleteCommand
   ]),

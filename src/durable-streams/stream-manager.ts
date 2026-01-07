@@ -8,7 +8,14 @@ import type { Scope, Stream } from "effect"
 import { Effect, HashMap, Layer, Ref } from "effect"
 import { Storage } from "./storage.ts"
 import { type DurableStream, makeDurableStream } from "./stream.ts"
-import type { InvalidOffsetError, Offset, StorageError, StreamEvent, StreamName } from "./types.ts"
+import {
+  type InvalidOffsetError,
+  type Offset,
+  OFFSET_START,
+  type StorageError,
+  type StreamEvent,
+  type StreamName
+} from "./types.ts"
 
 /** StreamManager service interface */
 export interface StreamManager {
@@ -23,6 +30,13 @@ export interface StreamManager {
     name: StreamName
     offset?: Offset | undefined
   }): Effect.Effect<Stream.Stream<StreamEvent>, InvalidOffsetError | StorageError, Scope.Scope>
+
+  /** Get events from a stream (one-shot, no live subscription) */
+  getFrom(opts: {
+    name: StreamName
+    offset?: Offset | undefined
+    limit?: number
+  }): Effect.Effect<ReadonlyArray<StreamEvent>, InvalidOffsetError | StorageError>
 
   /** List all stream names */
   list(): Effect.Effect<ReadonlyArray<StreamName>, StorageError>
@@ -73,6 +87,19 @@ export class StreamManagerService extends Effect.Service<StreamManagerService>()
           return yield* stream.subscribe(opts.offset !== undefined ? { offset: opts.offset } : {})
         })
 
+      const getFrom = (opts: {
+        name: StreamName
+        offset?: Offset | undefined
+        limit?: number
+      }): Effect.Effect<ReadonlyArray<StreamEvent>, InvalidOffsetError | StorageError> =>
+        Effect.gen(function*() {
+          const stream = yield* getStream({ name: opts.name })
+          const offset = opts.offset ?? OFFSET_START
+          return yield* stream.getFrom(
+            opts.limit !== undefined ? { offset, limit: opts.limit } : { offset }
+          )
+        })
+
       const list = (): Effect.Effect<ReadonlyArray<StreamName>, StorageError> => storage.list()
 
       const deleteStream = (opts: { name: StreamName }): Effect.Effect<void, StorageError> =>
@@ -85,6 +112,7 @@ export class StreamManagerService extends Effect.Service<StreamManagerService>()
         getStream,
         append,
         subscribe,
+        getFrom,
         list,
         delete: deleteStream
       } satisfies StreamManager
@@ -92,6 +120,77 @@ export class StreamManagerService extends Effect.Service<StreamManagerService>()
     dependencies: [Storage.Default]
   }
 ) {
+  /** Create a StreamManagerService layer with custom storage layer */
+  static readonly Live: Layer.Layer<StreamManagerService, never, Storage> = Layer.effect(
+    StreamManagerService,
+    Effect.gen(function*() {
+      const storage = yield* Storage
+
+      const streamsRef = yield* Ref.make(HashMap.empty<StreamName, DurableStream>())
+
+      const getStream = (opts: { name: StreamName }): Effect.Effect<DurableStream, StorageError> =>
+        Effect.gen(function*() {
+          const streams = yield* Ref.get(streamsRef)
+          const existing = HashMap.get(streams, opts.name)
+
+          if (existing._tag === "Some") {
+            return existing.value
+          }
+
+          const stream = yield* makeDurableStream({ name: opts.name }).pipe(
+            Effect.provideService(Storage, storage)
+          )
+          yield* Ref.update(streamsRef, HashMap.set(opts.name, stream))
+          return stream
+        })
+
+      const append = (opts: { name: StreamName; data: unknown }): Effect.Effect<StreamEvent, StorageError> =>
+        Effect.gen(function*() {
+          const stream = yield* getStream({ name: opts.name })
+          return yield* stream.append({ data: opts.data })
+        })
+
+      const subscribe = (opts: {
+        name: StreamName
+        offset?: Offset | undefined
+      }): Effect.Effect<Stream.Stream<StreamEvent>, InvalidOffsetError | StorageError, Scope.Scope> =>
+        Effect.gen(function*() {
+          const stream = yield* getStream({ name: opts.name })
+          return yield* stream.subscribe(opts.offset !== undefined ? { offset: opts.offset } : {})
+        })
+
+      const getFrom = (opts: {
+        name: StreamName
+        offset?: Offset | undefined
+        limit?: number
+      }): Effect.Effect<ReadonlyArray<StreamEvent>, InvalidOffsetError | StorageError> =>
+        Effect.gen(function*() {
+          const stream = yield* getStream({ name: opts.name })
+          const offset = opts.offset ?? OFFSET_START
+          return yield* stream.getFrom(
+            opts.limit !== undefined ? { offset, limit: opts.limit } : { offset }
+          )
+        })
+
+      const list = (): Effect.Effect<ReadonlyArray<StreamName>, StorageError> => storage.list()
+
+      const deleteStream = (opts: { name: StreamName }): Effect.Effect<void, StorageError> =>
+        Effect.gen(function*() {
+          yield* storage.delete(opts)
+          yield* Ref.update(streamsRef, HashMap.remove(opts.name))
+        })
+
+      return {
+        getStream,
+        append,
+        subscribe,
+        getFrom,
+        list,
+        delete: deleteStream
+      } as unknown as StreamManagerService
+    })
+  )
+
   static readonly InMemory: Layer.Layer<StreamManagerService> = Layer.effect(
     StreamManagerService,
     Effect.gen(function*() {
@@ -130,6 +229,19 @@ export class StreamManagerService extends Effect.Service<StreamManagerService>()
           return yield* stream.subscribe(opts.offset !== undefined ? { offset: opts.offset } : {})
         })
 
+      const getFrom = (opts: {
+        name: StreamName
+        offset?: Offset | undefined
+        limit?: number
+      }): Effect.Effect<ReadonlyArray<StreamEvent>, InvalidOffsetError | StorageError> =>
+        Effect.gen(function*() {
+          const stream = yield* getStream({ name: opts.name })
+          const offset = opts.offset ?? OFFSET_START
+          return yield* stream.getFrom(
+            opts.limit !== undefined ? { offset, limit: opts.limit } : { offset }
+          )
+        })
+
       const list = (): Effect.Effect<ReadonlyArray<StreamName>, StorageError> => storage.list()
 
       const deleteStream = (opts: { name: StreamName }): Effect.Effect<void, StorageError> =>
@@ -142,6 +254,7 @@ export class StreamManagerService extends Effect.Service<StreamManagerService>()
         getStream,
         append,
         subscribe,
+        getFrom,
         list,
         delete: deleteStream
       } as unknown as StreamManagerService
