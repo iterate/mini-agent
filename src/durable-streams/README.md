@@ -64,8 +64,14 @@ Pure event streams with append/subscribe semantics. No LLM logic, no agent behav
 # Run server in foreground (blocks)
 npx tsx src/durable-streams/main.ts server run --port 3000
 
+# Run with in-memory storage (no persistence)
+npx tsx src/durable-streams/main.ts server run --storage memory
+
 # Start daemonized server (returns immediately)
 npx tsx src/durable-streams/main.ts server start --port 3000
+
+# Start daemon with in-memory storage
+npx tsx src/durable-streams/main.ts server start --storage memory
 
 # Stop daemon
 npx tsx src/durable-streams/main.ts server stop
@@ -76,6 +82,10 @@ npx tsx src/durable-streams/main.ts server restart --port 3000
 # Check daemon status
 npx tsx src/durable-streams/main.ts server status
 ```
+
+**Storage options:**
+- `--storage fs` (default) - Persistent file-based storage in `.iterate/streams/`
+- `--storage memory` - Volatile in-memory storage (data lost on restart)
 
 ### Stream Commands
 

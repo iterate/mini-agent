@@ -43,23 +43,39 @@ const serverUrlOption = Options.text("server").pipe(
   Options.optional
 )
 
+const storageOption = Options.choice("storage", ["memory", "fs"]).pipe(
+  Options.withDescription("Storage backend: memory (volatile) or fs (persistent)"),
+  Options.withDefault("fs" as const)
+)
+
 // ─── Server Commands ────────────────────────────────────────────────────────
 
 /** server run - run server in foreground */
 const serverRunCommand = Command.make(
   "run",
-  { host: hostOption, port: portOption },
-  ({ host, port }) =>
+  { host: hostOption, port: portOption, storage: storageOption },
+  ({ host, port, storage }) =>
     Effect.gen(function*() {
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
 
-      // Ensure data directory exists
-      const dataDirPath = path.join(process.cwd(), DATA_DIR)
-      yield* fs.makeDirectory(dataDirPath, { recursive: true }).pipe(Effect.ignore)
-
       yield* Console.log(`Starting durable-streams server on ${host}:${port}`)
-      yield* Console.log(`Data directory: ${dataDirPath}`)
+      yield* Console.log(`Storage: ${storage}`)
+
+      // Build storage layer based on option
+      let storageLayer: Layer.Layer<Storage>
+      if (storage === "memory") {
+        yield* Console.log("Warning: Using in-memory storage - data will be lost on restart")
+        storageLayer = Storage.InMemory
+      } else {
+        const dataDirPath = path.join(process.cwd(), DATA_DIR)
+        yield* fs.makeDirectory(dataDirPath, { recursive: true }).pipe(Effect.ignore)
+        yield* Console.log(`Data directory: ${dataDirPath}`)
+        storageLayer = Storage.FileSystem({ dataDir: dataDirPath }).pipe(
+          Layer.provide(NodeContext.layer)
+        )
+      }
+
       yield* Console.log("")
       yield* Console.log("Endpoints:")
       yield* Console.log("  POST   /streams/:name         Append event")
@@ -69,10 +85,6 @@ const serverRunCommand = Command.make(
       yield* Console.log("  DELETE /streams/:name         Delete stream")
       yield* Console.log("")
 
-      // Use FileSystem storage for persistence
-      const storageLayer = Storage.FileSystem({ dataDir: dataDirPath }).pipe(
-        Layer.provide(NodeContext.layer)
-      )
       const serviceLayer = StreamManagerService.Live.pipe(
         Layer.provide(storageLayer)
       )
@@ -89,13 +101,14 @@ const serverRunCommand = Command.make(
 /** server start - start daemon */
 const serverStartCommand = Command.make(
   "start",
-  { port: portOption },
-  ({ port }) =>
+  { port: portOption, storage: storageOption },
+  ({ port, storage }) =>
     Effect.gen(function*() {
       const daemon = yield* DaemonService
-      const pid = yield* daemon.start({ port })
+      const pid = yield* daemon.start({ port, storage })
       yield* Console.log(`Daemon started (PID ${pid}) on port ${port}`)
-      yield* Console.log(`Logs: daemon.log`)
+      yield* Console.log(`Storage: ${storage}`)
+      yield* Console.log(`Logs: ${DATA_DIR}/daemon.log`)
     }).pipe(
       Effect.catchTag("DaemonError", (e) => Console.error(`Error: ${e.message}`))
     )
@@ -118,12 +131,13 @@ const serverStopCommand = Command.make(
 /** server restart - restart daemon */
 const serverRestartCommand = Command.make(
   "restart",
-  { port: portOption },
-  ({ port }) =>
+  { port: portOption, storage: storageOption },
+  ({ port, storage }) =>
     Effect.gen(function*() {
       const daemon = yield* DaemonService
-      const pid = yield* daemon.restart({ port })
+      const pid = yield* daemon.restart({ port, storage })
       yield* Console.log(`Daemon restarted (PID ${pid}) on port ${port}`)
+      yield* Console.log(`Storage: ${storage}`)
     }).pipe(
       Effect.catchTag("DaemonError", (e) => Console.error(`Error: ${e.message}`))
     )

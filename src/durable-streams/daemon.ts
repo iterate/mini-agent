@@ -9,11 +9,15 @@ import { Effect, Layer, Option, Schema } from "effect"
 import { spawn } from "node:child_process"
 import { openSync } from "node:fs"
 
+/** Storage backend type */
+export type StorageBackend = "memory" | "fs"
+
 /** Daemon configuration */
 export interface DaemonConfig {
   readonly pidFile: string
   readonly logFile: string
   readonly port: number
+  readonly storage: StorageBackend
 }
 
 /** Data directory for all durable-streams files */
@@ -23,7 +27,8 @@ export const DATA_DIR = ".iterate"
 export const defaultDaemonConfig: DaemonConfig = {
   pidFile: `${DATA_DIR}/daemon.pid`,
   logFile: `${DATA_DIR}/daemon.log`,
-  port: 3000
+  port: 3000,
+  storage: "fs"
 }
 
 /** Error for daemon operations */
@@ -103,7 +108,7 @@ const makeDaemonImpl = (
       const mainScript = path.join(cwd, "src/durable-streams/main.ts")
       const child = spawn(
         "npx",
-        ["tsx", mainScript, "server", "run", "--port", String(config.port)],
+        ["tsx", mainScript, "server", "run", "--port", String(config.port), "--storage", config.storage],
         {
           detached: true,
           stdio: ["ignore", out, out],
