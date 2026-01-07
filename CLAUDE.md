@@ -15,8 +15,8 @@ See README.md for context
 
 # Typescript
 
-- Use bun as runtime and package manager
-- Run CLI using `bun run mini-agent` (includes doppler for env vars)
+- Use Node.js as runtime, pnpm as package manager
+- Run CLI using `pnpm mini-agent` (includes doppler for env vars)
 - kebab-case filenames
 - tests using vitest; colocate test files with .test.ts
 - import using .ts extension; no .js
@@ -27,18 +27,18 @@ See README.md for context
 
 ## Scripts
 
-- `bun run typecheck` — tsc only
-- `bun run lint` / `bun run lint:fix` — eslint only
-- `bun run check` — typecheck + lint
-- `bun run check:fix` — typecheck + lint:fix
-- `doppler run -- bun run test` — vitest (requires Doppler for API keys)
-- `doppler run -- bun run test:watch` — vitest watch mode
+- `pnpm typecheck` — tsc only
+- `pnpm lint` / `pnpm lint:fix` — eslint only
+- `pnpm check` — typecheck + lint
+- `pnpm check:fix` — typecheck + lint:fix
+- `pnpm test` — vitest (requires Doppler for API keys)
+- `pnpm test:watch` — vitest watch mode
 
 ## Pull Requests
 
 Before committing and pushing code, you must run:
 ```bash
-bun run check:fix
+pnpm check:fix
 ```
 
 This runs typecheck + linter with auto-fix. Commit any resulting changes before pushing.
