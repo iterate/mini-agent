@@ -1,5 +1,5 @@
 /**
- * HTTP Client for Durable Streams
+ * HTTP Client for Event Streams
  *
  * Provides typed client operations for stream append and subscribe.
  * Handles SSE parsing for subscriptions.
@@ -11,7 +11,7 @@ import type * as HttpClientError from "@effect/platform/HttpClientError"
 import * as HttpClientRequest from "@effect/platform/HttpClientRequest"
 import { Duration, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { DaemonService, defaultDaemonConfig } from "./daemon.ts"
-import { type Offset, OFFSET_START, StreamEvent, type StreamName } from "./types.ts"
+import { Event, type Offset, OFFSET_START, type StreamName } from "./types.ts"
 
 /** Max time to wait for daemon to become ready */
 const DAEMON_READY_TIMEOUT = Duration.seconds(10)
@@ -42,20 +42,23 @@ export interface StreamClient {
   readonly append: (opts: {
     name: StreamName
     data: unknown
-  }) => Effect.Effect<StreamEvent, ClientError>
+  }) => Effect.Effect<Event, ClientError>
 
   /** Subscribe to a stream, returns event stream */
   readonly subscribe: (opts: {
     name: StreamName
     offset?: Offset
-  }) => Effect.Effect<Stream.Stream<StreamEvent, ClientError>, ClientError>
+  }) => Effect.Effect<Stream.Stream<Event, ClientError>, ClientError>
+
+  /** Subscribe to all streams (live events only, no history) */
+  readonly subscribeAll: () => Effect.Effect<Stream.Stream<Event, ClientError>, ClientError>
 
   /** Get historic events from a stream (one-shot, no live subscription) */
   readonly get: (opts: {
     name: StreamName
     offset?: Offset
     limit?: number
-  }) => Effect.Effect<ReadonlyArray<StreamEvent>, ClientError>
+  }) => Effect.Effect<ReadonlyArray<Event>, ClientError>
 
   /** List all streams */
   readonly list: () => Effect.Effect<ReadonlyArray<StreamName>, ClientError>
@@ -116,7 +119,7 @@ export const makeStreamClient = (
       return new ClientError(`Request failed: ${error.message}`)
     }
 
-    const append = (opts: { name: StreamName; data: unknown }): Effect.Effect<StreamEvent, ClientError> =>
+    const append = (opts: { name: StreamName; data: unknown }): Effect.Effect<Event, ClientError> =>
       Effect.gen(function*() {
         const request = HttpClientRequest.post(`/streams/${opts.name}`, {
           body: HttpBody.unsafeJson({ data: opts.data })
@@ -132,7 +135,7 @@ export const makeStreamClient = (
           })
         )
 
-        return yield* Schema.decodeUnknown(StreamEvent)(response).pipe(
+        return yield* Schema.decodeUnknown(Event)(response).pipe(
           Effect.mapError((e) => new ClientError(`Invalid event: ${e}`))
         )
       })
@@ -140,20 +143,43 @@ export const makeStreamClient = (
     const subscribe = (opts: {
       name: StreamName
       offset?: Offset
-    }): Effect.Effect<Stream.Stream<StreamEvent, ClientError>, ClientError> => {
+    }): Effect.Effect<Stream.Stream<Event, ClientError>, ClientError> => {
       const offsetParam = opts.offset ? `?offset=${opts.offset === OFFSET_START ? "-1" : opts.offset}` : ""
       const url = `/streams/${opts.name}${offsetParam}`
 
       const request = HttpClientRequest.get(url)
 
       // Return a stream that handles the SSE connection
-      const eventStream: Stream.Stream<StreamEvent, ClientError> = clientOk.execute(request).pipe(
+      const eventStream: Stream.Stream<Event, ClientError> = clientOk.execute(request).pipe(
         Effect.map((r) => r.stream),
         Stream.unwrapScoped,
         Stream.decodeText(),
         Stream.pipeThroughChannel(Sse.makeChannel()),
         Stream.mapEffect((event) =>
-          Schema.decode(Schema.parseJson(StreamEvent))(event.data).pipe(
+          Schema.decode(Schema.parseJson(Event))(event.data).pipe(
+            Effect.mapError((e) => new ClientError(`Parse error: ${e}`))
+          )
+        ),
+        Stream.catchTags({
+          RequestError: (error) => Stream.fail(mapRequestError(error)),
+          ResponseError: (error) => Stream.fail(new ClientError(`HTTP ${error.response.status}`, error.response.status))
+        })
+      )
+
+      return Effect.succeed(eventStream)
+    }
+
+    const subscribeAll = (): Effect.Effect<Stream.Stream<Event, ClientError>, ClientError> => {
+      const request = HttpClientRequest.get("/streams/all")
+
+      // Return a stream that handles the SSE connection
+      const eventStream: Stream.Stream<Event, ClientError> = clientOk.execute(request).pipe(
+        Effect.map((r) => r.stream),
+        Stream.unwrapScoped,
+        Stream.decodeText(),
+        Stream.pipeThroughChannel(Sse.makeChannel()),
+        Stream.mapEffect((event) =>
+          Schema.decode(Schema.parseJson(Event))(event.data).pipe(
             Effect.mapError((e) => new ClientError(`Parse error: ${e}`))
           )
         ),
@@ -170,7 +196,7 @@ export const makeStreamClient = (
       name: StreamName
       offset?: Offset
       limit?: number
-    }): Effect.Effect<ReadonlyArray<StreamEvent>, ClientError> =>
+    }): Effect.Effect<ReadonlyArray<Event>, ClientError> =>
       Effect.gen(function*() {
         const params = new URLSearchParams()
         if (opts.offset) params.set("offset", opts.offset === OFFSET_START ? "-1" : opts.offset)
@@ -192,7 +218,7 @@ export const makeStreamClient = (
 
         return yield* Effect.all(
           response.events.map((e) =>
-            Schema.decodeUnknown(StreamEvent)(e).pipe(
+            Schema.decodeUnknown(Event)(e).pipe(
               Effect.mapError((err) => new ClientError(`Invalid event: ${err}`))
             )
           )
@@ -237,6 +263,7 @@ export const makeStreamClient = (
     return {
       append,
       subscribe,
+      subscribeAll,
       get,
       list,
       delete: deleteStream
@@ -245,7 +272,7 @@ export const makeStreamClient = (
 
 /** Stream client service with auto-daemon support */
 export class StreamClientService extends Effect.Service<StreamClientService>()(
-  "@durable-streams/StreamClient",
+  "@event-stream/StreamClient",
   {
     effect: Effect.gen(function*() {
       const daemon = yield* DaemonService
@@ -254,7 +281,7 @@ export class StreamClientService extends Effect.Service<StreamClientService>()(
       /** Resolve server URL from env, flag, or daemon. Starts daemon if needed and waits for ready. */
       const resolveServerUrl: Effect.Effect<string, ClientError> = Effect.gen(function*() {
         // Check env var first
-        const envUrl = process.env.DURABLE_STREAMS_URL
+        const envUrl = process.env.EVENT_STREAM_URL
         if (envUrl) return envUrl
 
         // Check if daemon is running
@@ -291,6 +318,7 @@ export class StreamClientService extends Effect.Service<StreamClientService>()(
       return {
         append: (opts: { name: StreamName; data: unknown }) => withClient((c) => c.append(opts)),
         subscribe: (opts: { name: StreamName; offset?: Offset }) => withClient((c) => c.subscribe(opts)),
+        subscribeAll: () => withClient((c) => c.subscribeAll()),
         get: (opts: { name: StreamName; offset?: Offset; limit?: number }) => withClient((c) => c.get(opts)),
         list: () => withClient((c) => c.list()),
         delete: (opts: { name: StreamName }) => withClient((c) => c.delete(opts))
@@ -309,7 +337,7 @@ export const StreamClientLive: Layer.Layer<StreamClientService, never, HttpClien
       const httpClient = yield* HttpClient.HttpClient
 
       const resolveServerUrl: Effect.Effect<string, ClientError> = Effect.gen(function*() {
-        const envUrl = process.env.DURABLE_STREAMS_URL
+        const envUrl = process.env.EVENT_STREAM_URL
         if (envUrl) return envUrl
 
         const daemonUrl = yield* daemon.getServerUrl().pipe(
@@ -344,6 +372,7 @@ export const StreamClientLive: Layer.Layer<StreamClientService, never, HttpClien
       return {
         append: (opts: { name: StreamName; data: unknown }) => withClient((c) => c.append(opts)),
         subscribe: (opts: { name: StreamName; offset?: Offset }) => withClient((c) => c.subscribe(opts)),
+        subscribeAll: () => withClient((c) => c.subscribeAll()),
         get: (opts: { name: StreamName; offset?: Offset; limit?: number }) => withClient((c) => c.get(opts)),
         list: () => withClient((c) => c.list()),
         delete: (opts: { name: StreamName }) => withClient((c) => c.delete(opts))

@@ -1,5 +1,5 @@
 /**
- * E2E tests for durable-streams HTTP routes
+ * E2E tests for event-stream HTTP routes
  *
  * Uses @effect/platform-node's layerTest for automatic server setup.
  * HttpClient is pre-configured with the server's base URL.
@@ -8,9 +8,9 @@ import { HttpClient, HttpClientRequest, HttpServer } from "@effect/platform"
 import { NodeHttpServer } from "@effect/platform-node"
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Layer, Stream } from "effect"
-import { durableStreamsRouter } from "./http-routes.ts"
+import { eventStreamRouter } from "./http-routes.ts"
 import { StreamManagerService } from "./stream-manager.ts"
-import type { StreamEvent } from "./types.ts"
+import type { Event } from "./types.ts"
 
 // Test layer: Node HTTP server + StreamManager + serve the router
 const testLayer = Layer.mergeAll(
@@ -24,7 +24,7 @@ describe("HTTP Routes E2E", () => {
   describe("GET /streams", () => {
     it.effect("returns empty list initially", () =>
       Effect.gen(function*() {
-        yield* HttpServer.serveEffect(durableStreamsRouter)
+        yield* HttpServer.serveEffect(eventStreamRouter)
         const client = yield* HttpClient.HttpClient
 
         const response = yield* client.get("/streams")
@@ -38,7 +38,7 @@ describe("HTTP Routes E2E", () => {
   describe("POST /streams/:name", () => {
     it.effect("appends event and returns 201", () =>
       Effect.gen(function*() {
-        yield* HttpServer.serveEffect(durableStreamsRouter)
+        yield* HttpServer.serveEffect(eventStreamRouter)
         const client = yield* HttpClient.HttpClient
 
         const request = yield* HttpClientRequest.post("/streams/test-stream").pipe(
@@ -48,28 +48,28 @@ describe("HTTP Routes E2E", () => {
 
         expect(response.status).toBe(201)
 
-        const event = (yield* response.json) as StreamEvent
+        const event = (yield* response.json) as Event
         expect(event.offset).toBe("0000000000000000")
         expect(event.data).toEqual({ message: "hello world" })
-        expect(typeof event.timestamp).toBe("number")
+        expect(typeof event.createdAt).toBe("string")
       }).pipe(Effect.scoped, Effect.provide(testLayer)))
 
     it.effect("assigns sequential offsets", () =>
       Effect.gen(function*() {
-        yield* HttpServer.serveEffect(durableStreamsRouter)
+        yield* HttpServer.serveEffect(eventStreamRouter)
         const client = yield* HttpClient.HttpClient
 
         const req1 = yield* HttpClientRequest.post("/streams/sequential-test").pipe(
           HttpClientRequest.bodyJson({ data: "event1" })
         )
         const res1 = yield* client.execute(req1)
-        const event1 = (yield* res1.json) as StreamEvent
+        const event1 = (yield* res1.json) as Event
 
         const req2 = yield* HttpClientRequest.post("/streams/sequential-test").pipe(
           HttpClientRequest.bodyJson({ data: "event2" })
         )
         const res2 = yield* client.execute(req2)
-        const event2 = (yield* res2.json) as StreamEvent
+        const event2 = (yield* res2.json) as Event
 
         expect(event1.offset).toBe("0000000000000000")
         expect(event2.offset).toBe("0000000000000001")
@@ -77,7 +77,7 @@ describe("HTTP Routes E2E", () => {
 
     it.effect("returns 400 for invalid JSON", () =>
       Effect.gen(function*() {
-        yield* HttpServer.serveEffect(durableStreamsRouter)
+        yield* HttpServer.serveEffect(eventStreamRouter)
         const client = yield* HttpClient.HttpClient
 
         const request = HttpClientRequest.post("/streams/invalid-json-test").pipe(
@@ -92,7 +92,7 @@ describe("HTTP Routes E2E", () => {
   describe("GET /streams/:name (SSE subscription)", () => {
     it.effect("returns historical events as SSE", () =>
       Effect.gen(function*() {
-        yield* HttpServer.serveEffect(durableStreamsRouter)
+        yield* HttpServer.serveEffect(eventStreamRouter)
         const client = yield* HttpClient.HttpClient
 
         // Add some events first
@@ -113,13 +113,13 @@ describe("HTTP Routes E2E", () => {
         expect(response.headers["content-type"]).toBe("text/event-stream")
 
         // Read first 2 events from the SSE stream
-        const events: Array<StreamEvent> = []
+        const events: Array<Event> = []
 
         yield* response.stream.pipe(
           Stream.decodeText(),
           Stream.mapConcat((chunk) => chunk.split("\n\n")),
           Stream.filter((line) => line.startsWith("data: ")),
-          Stream.map((line) => JSON.parse(line.slice(6)) as StreamEvent),
+          Stream.map((line) => JSON.parse(line.slice(6)) as Event),
           Stream.take(2),
           Stream.runForEach((event) => Effect.sync(() => events.push(event)))
         )
@@ -131,7 +131,7 @@ describe("HTTP Routes E2E", () => {
 
     it.effect("supports offset query parameter", () =>
       Effect.gen(function*() {
-        yield* HttpServer.serveEffect(durableStreamsRouter)
+        yield* HttpServer.serveEffect(eventStreamRouter)
         const client = yield* HttpClient.HttpClient
 
         // Add 3 events
@@ -144,7 +144,7 @@ describe("HTTP Routes E2E", () => {
           HttpClientRequest.bodyJson({ data: "event1" })
         )
         const res1 = yield* client.execute(req1)
-        const event1 = (yield* res1.json) as StreamEvent
+        const event1 = (yield* res1.json) as Event
 
         const req2 = yield* HttpClientRequest.post("/streams/offset-test").pipe(
           HttpClientRequest.bodyJson({ data: "event2" })
@@ -156,12 +156,12 @@ describe("HTTP Routes E2E", () => {
 
         expect(response.status).toBe(200)
 
-        const events: Array<StreamEvent> = []
+        const events: Array<Event> = []
         yield* response.stream.pipe(
           Stream.decodeText(),
           Stream.mapConcat((chunk) => chunk.split("\n\n")),
           Stream.filter((line) => line.startsWith("data: ")),
-          Stream.map((line) => JSON.parse(line.slice(6)) as StreamEvent),
+          Stream.map((line) => JSON.parse(line.slice(6)) as Event),
           Stream.take(2),
           Stream.runForEach((event) => Effect.sync(() => events.push(event)))
         )
@@ -175,7 +175,7 @@ describe("HTTP Routes E2E", () => {
   describe("DELETE /streams/:name", () => {
     it.effect("deletes stream and returns 204", () =>
       Effect.gen(function*() {
-        yield* HttpServer.serveEffect(durableStreamsRouter)
+        yield* HttpServer.serveEffect(eventStreamRouter)
         const client = yield* HttpClient.HttpClient
 
         // Create stream

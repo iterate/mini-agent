@@ -1,5 +1,5 @@
 /**
- * Core types for durable streams
+ * Core types for event streams
  */
 import { Schema } from "effect"
 
@@ -10,6 +10,12 @@ export const StreamName = Schema.String.pipe(
 )
 export type StreamName = typeof StreamName.Type
 
+export const EventStreamId = Schema.String.pipe(
+  Schema.nonEmptyString(),
+  Schema.brand("EventStreamId")
+)
+export type EventStreamId = typeof EventStreamId.Type
+
 export const Offset = Schema.String.pipe(Schema.brand("Offset"))
 export type Offset = typeof Offset.Type
 
@@ -18,16 +24,17 @@ export const makeOffset = (n: number): Offset => String(n).padStart(16, "0") as 
 
 export const parseOffset = (offset: Offset): number => parseInt(offset, 10)
 
-/** Special offset meaning "start from beginning" per durable-streams spec */
+/** Special offset meaning "start from beginning" per event-stream spec */
 export const OFFSET_START = "-1" as Offset
 
 export const isStartOffset = (offset: Offset): boolean => offset === OFFSET_START
 
 // Event schema
-export class StreamEvent extends Schema.Class<StreamEvent>("StreamEvent")({
+export class Event extends Schema.Class<Event>("Event")({
   offset: Offset,
+  eventStreamId: EventStreamId,
   data: Schema.Unknown,
-  timestamp: Schema.Number
+  createdAt: Schema.String
 }) {}
 
 // Errors

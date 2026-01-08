@@ -1,54 +1,54 @@
 /**
- * DurableStreamFactory - Service that creates DurableStream instances
+ * EventStreamFactory - Service that creates EventStream instances
  *
  * Different factory implementations provide different behaviors:
- * - Plain: returns base DurableStream unchanged
+ * - Plain: returns base EventStream unchanged
  * - WithHooks: wraps streams with before/after hooks
  */
 import { Effect, Layer } from "effect"
 import { HookError, type StreamHooks } from "./hooks.ts"
 import { Storage } from "./storage.ts"
-import { type DurableStream, makeDurableStream } from "./stream.ts"
+import { type EventStream, makeEventStream } from "./stream.ts"
 import type { StorageError, StreamName } from "./types.ts"
 import { withHooks } from "./with-hooks.ts"
 
-/** Factory interface - creates DurableStream instances (Storage already provided) */
-export class DurableStreamFactory extends Effect.Service<DurableStreamFactory>()(
-  "@durable-streams/DurableStreamFactory",
+/** Factory interface - creates EventStream instances (Storage already provided) */
+export class EventStreamFactory extends Effect.Service<EventStreamFactory>()(
+  "@event-stream/EventStreamFactory",
   {
     succeed: {
       // Note: Layers provide Storage closure, so make() returns Effect without Storage requirement
-      make: (_opts: { name: StreamName }): Effect.Effect<DurableStream, StorageError> =>
-        Effect.die("DurableStreamFactory.Default not usable - use Plain or WithHooks layer")
+      make: (_opts: { name: StreamName }): Effect.Effect<EventStream, StorageError> =>
+        Effect.die("EventStreamFactory.Default not usable - use Plain or WithHooks layer")
     }
   }
 ) {
-  /** Plain factory - returns base DurableStream unchanged */
-  static readonly Plain: Layer.Layer<DurableStreamFactory, never, Storage> = Layer.effect(
-    DurableStreamFactory,
+  /** Plain factory - returns base EventStream unchanged */
+  static readonly Plain: Layer.Layer<EventStreamFactory, never, Storage> = Layer.effect(
+    EventStreamFactory,
     Effect.gen(function*() {
       const storage = yield* Storage
       return {
-        make: (opts: { name: StreamName }) => makeDurableStream(opts).pipe(Effect.provideService(Storage, storage))
-      } as DurableStreamFactory
+        make: (opts: { name: StreamName }) => makeEventStream(opts).pipe(Effect.provideService(Storage, storage))
+      } as EventStreamFactory
     })
   )
 
   /** Factory that wraps streams with hooks */
-  static WithHooks(hooks: StreamHooks): Layer.Layer<DurableStreamFactory, never, Storage> {
+  static WithHooks(hooks: StreamHooks): Layer.Layer<EventStreamFactory, never, Storage> {
     return Layer.effect(
-      DurableStreamFactory,
+      EventStreamFactory,
       Effect.gen(function*() {
         const storage = yield* Storage
         return {
           make: (opts: { name: StreamName }) =>
-            makeDurableStream(opts).pipe(
+            makeEventStream(opts).pipe(
               Effect.provideService(Storage, storage),
-              // withHooks returns HookedDurableStream which is compatible with DurableStream
+              // withHooks returns HookedEventStream which is compatible with EventStream
               // (HookError is added to append error channel)
-              Effect.map((base) => withHooks(base, hooks) as unknown as DurableStream)
+              Effect.map((base) => withHooks(base, hooks) as unknown as EventStream)
             )
-        } as DurableStreamFactory
+        } as EventStreamFactory
       })
     )
   }
@@ -112,9 +112,9 @@ const embryonicAgentHooks: StreamHooks = {
 }
 
 // Variant layers
-export const PlainFactory = DurableStreamFactory.Plain
-export const ValidatedFactory = DurableStreamFactory.WithHooks(validatedHooks)
-export const EmbryonicAgentFactory = DurableStreamFactory.WithHooks(embryonicAgentHooks)
+export const PlainFactory = EventStreamFactory.Plain
+export const ValidatedFactory = EventStreamFactory.WithHooks(validatedHooks)
+export const EmbryonicAgentFactory = EventStreamFactory.WithHooks(embryonicAgentHooks)
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CHANGE THIS LINE TO SWAP IMPLEMENTATION

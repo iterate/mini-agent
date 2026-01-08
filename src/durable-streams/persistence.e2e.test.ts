@@ -12,11 +12,11 @@ import { createServer } from "node:http"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, test } from "vitest"
-import { durableStreamsRouter } from "./http-routes.ts"
+import { eventStreamRouter } from "./http-routes.ts"
 import { Storage } from "./storage.ts"
 import { PlainFactory } from "./stream-factory.ts"
 import { StreamManagerService } from "./stream-manager.ts"
-import type { StreamEvent } from "./types.ts"
+import type { Event } from "./types.ts"
 
 /** Helper to start a server with FileSystem storage */
 const startServer = async (dataDir: string): Promise<{
@@ -42,7 +42,7 @@ const startServer = async (dataDir: string): Promise<{
   const serverEffect = Effect.gen(function*() {
     const server = yield* HttpServer.HttpServer
     yield* Deferred.succeed(addressDeferred, server.address)
-    yield* HttpServer.serveEffect(durableStreamsRouter)
+    yield* HttpServer.serveEffect(eventStreamRouter)
     return yield* Effect.never
   }).pipe(
     Effect.scoped,
@@ -84,7 +84,7 @@ describe("Persistence E2E", () => {
         body: JSON.stringify({ data: { message: "first event" } })
       })
       expect(res1.status).toBe(201)
-      const event1 = await res1.json() as StreamEvent
+      const event1 = await res1.json() as Event
 
       const res2 = await fetch(`${server.baseUrl}/streams/${streamName}`, {
         method: "POST",
@@ -92,7 +92,7 @@ describe("Persistence E2E", () => {
         body: JSON.stringify({ data: { message: "second event" } })
       })
       expect(res2.status).toBe(201)
-      const event2 = await res2.json() as StreamEvent
+      const event2 = await res2.json() as Event
 
       // Verify offsets
       expect(event1.offset).toBe("0000000000000000")
@@ -101,7 +101,7 @@ describe("Persistence E2E", () => {
       // 2. Get events before restart (verify they exist)
       const beforeRes = await fetch(`${server.baseUrl}/streams/${streamName}/events`)
       expect(beforeRes.status).toBe(200)
-      const beforeBody = await beforeRes.json() as { events: Array<StreamEvent> }
+      const beforeBody = await beforeRes.json() as { events: Array<Event> }
       expect(beforeBody.events).toHaveLength(2)
 
       // 3. Stop server
@@ -114,7 +114,7 @@ describe("Persistence E2E", () => {
       // 5. Get events after restart - should still be there
       const afterRes = await fetch(`${server.baseUrl}/streams/${streamName}/events`)
       expect(afterRes.status).toBe(200)
-      const afterBody = await afterRes.json() as { events: Array<StreamEvent> }
+      const afterBody = await afterRes.json() as { events: Array<Event> }
 
       expect(afterBody.events).toHaveLength(2)
       expect(afterBody.events[0]!.offset).toBe("0000000000000000")
@@ -129,7 +129,7 @@ describe("Persistence E2E", () => {
         body: JSON.stringify({ data: { message: "third event after restart" } })
       })
       expect(res3.status).toBe(201)
-      const event3 = await res3.json() as StreamEvent
+      const event3 = await res3.json() as Event
 
       // Offset should continue from where we left off
       expect(event3.offset).toBe("0000000000000002")
@@ -196,25 +196,25 @@ describe("Persistence E2E", () => {
 
       // Get all events
       const allRes = await fetch(`${server.baseUrl}/streams/${streamName}/events`)
-      const allBody = await allRes.json() as { events: Array<StreamEvent> }
+      const allBody = await allRes.json() as { events: Array<Event> }
       expect(allBody.events).toHaveLength(5)
 
       // Get with limit
       const limitRes = await fetch(`${server.baseUrl}/streams/${streamName}/events?limit=2`)
-      const limitBody = await limitRes.json() as { events: Array<StreamEvent> }
+      const limitBody = await limitRes.json() as { events: Array<Event> }
       expect(limitBody.events).toHaveLength(2)
       expect((limitBody.events[0]!.data as { index: number }).index).toBe(0)
 
       // Get with offset (start from event 2)
       const offset = allBody.events[2]!.offset
       const offsetRes = await fetch(`${server.baseUrl}/streams/${streamName}/events?offset=${offset}`)
-      const offsetBody = await offsetRes.json() as { events: Array<StreamEvent> }
+      const offsetBody = await offsetRes.json() as { events: Array<Event> }
       expect(offsetBody.events).toHaveLength(3) // events 2, 3, 4
       expect((offsetBody.events[0]!.data as { index: number }).index).toBe(2)
 
       // Get with offset and limit
       const combinedRes = await fetch(`${server.baseUrl}/streams/${streamName}/events?offset=${offset}&limit=1`)
-      const combinedBody = await combinedRes.json() as { events: Array<StreamEvent> }
+      const combinedBody = await combinedRes.json() as { events: Array<Event> }
       expect(combinedBody.events).toHaveLength(1)
       expect((combinedBody.events[0]!.data as { index: number }).index).toBe(2)
 

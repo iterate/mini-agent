@@ -8,9 +8,9 @@ import { NodeHttpServer } from "@effect/platform-node"
 import { Deferred, Effect, Fiber, Layer } from "effect"
 import { createServer } from "node:http"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
-import { durableStreamsRouter } from "./http-routes.ts"
+import { eventStreamRouter } from "./http-routes.ts"
 import { StreamManagerService } from "./stream-manager.ts"
-import type { StreamEvent } from "./types.ts"
+import type { Event } from "./types.ts"
 
 let baseUrl: string
 let serverFiber: Fiber.RuntimeFiber<void, unknown>
@@ -30,7 +30,7 @@ beforeAll(async () => {
   const serverEffect = Effect.gen(function*() {
     const server = yield* HttpServer.HttpServer
     yield* Deferred.succeed(addressDeferred, server.address)
-    yield* HttpServer.serveEffect(durableStreamsRouter)
+    yield* HttpServer.serveEffect(eventStreamRouter)
     return yield* Effect.never
   }).pipe(
     Effect.scoped,
@@ -77,10 +77,10 @@ describe("Native Fetch E2E", () => {
 
       expect(response.status).toBe(201)
 
-      const event = await response.json() as StreamEvent
+      const event = await response.json() as Event
       expect(event.offset).toBe("0000000000000000")
       expect(event.data).toEqual({ message: "hello from fetch" })
-      expect(typeof event.timestamp).toBe("number")
+      expect(typeof event.createdAt).toBe("string")
     })
 
     test("assigns sequential offsets", async () => {
@@ -89,14 +89,14 @@ describe("Native Fetch E2E", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ data: "event1" })
       })
-      const event1 = await res1.json() as StreamEvent
+      const event1 = await res1.json() as Event
 
       const res2 = await fetch(`${baseUrl}/streams/fetch-sequential`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ data: "event2" })
       })
-      const event2 = await res2.json() as StreamEvent
+      const event2 = await res2.json() as Event
 
       expect(event1.offset).toBe("0000000000000000")
       expect(event2.offset).toBe("0000000000000001")
@@ -136,7 +136,7 @@ describe("Native Fetch E2E", () => {
       // Read SSE events from stream
       const reader = response.body!.getReader()
       const decoder = new TextDecoder()
-      const events: Array<StreamEvent> = []
+      const events: Array<Event> = []
       let buffer = ""
 
       while (events.length < 2) {
@@ -177,7 +177,7 @@ describe("Native Fetch E2E", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ data: "offset-event1" })
       })
-      const event1 = await res1.json() as StreamEvent
+      const event1 = await res1.json() as Event
 
       await fetch(`${baseUrl}/streams/fetch-offset`, {
         method: "POST",
@@ -192,7 +192,7 @@ describe("Native Fetch E2E", () => {
 
       const reader = response.body!.getReader()
       const decoder = new TextDecoder()
-      const events: Array<StreamEvent> = []
+      const events: Array<Event> = []
       let buffer = ""
 
       while (events.length < 2) {

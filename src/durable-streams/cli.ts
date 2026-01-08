@@ -1,5 +1,5 @@
 /**
- * Durable Streams CLI
+ * Event Stream CLI
  *
  * Commands:
  *
@@ -10,6 +10,7 @@
  * server status                              Check daemon status
  *
  * stream subscribe -n <name> [--offset]      Subscribe to stream events
+ * stream subscribe-all                       Subscribe to all streams (live only)
  * stream append -n <name> -m|-e              Append event to stream
  * stream get -n <name> [--offset] [--limit]  Get historic events
  * stream list                                List all streams
@@ -22,11 +23,11 @@ import { Console, Effect, Layer, Option, Schema, Stream } from "effect"
 import { createServer } from "node:http"
 import { StreamClientService } from "./client.ts"
 import { DaemonService, DATA_DIR } from "./daemon.ts"
-import { durableStreamsRouter } from "./http-routes.ts"
+import { eventStreamRouter } from "./http-routes.ts"
 import { Storage } from "./storage.ts"
 import { ActiveFactory } from "./stream-factory.ts"
 import { StreamManagerService } from "./stream-manager.ts"
-import { type Offset, OFFSET_START, StreamEvent, type StreamName } from "./types.ts"
+import { Event, type Offset, OFFSET_START, type StreamName } from "./types.ts"
 
 // ─── Shared Options ─────────────────────────────────────────────────────────
 
@@ -63,7 +64,7 @@ const serverRunCommand = Command.make(
       const fs = yield* FileSystem.FileSystem
       const path = yield* Path.Path
 
-      yield* Console.log(`Starting durable-streams server on ${host}:${port}`)
+      yield* Console.log(`Starting event-stream server on ${host}:${port}`)
       yield* Console.log(`Storage: ${storage}`)
 
       // Build storage layer based on option
@@ -94,7 +95,7 @@ const serverRunCommand = Command.make(
         Layer.provide(storageLayer)
       )
 
-      const serverLayer = HttpServer.serve(durableStreamsRouter).pipe(
+      const serverLayer = HttpServer.serve(eventStreamRouter).pipe(
         Layer.provide(NodeHttpServer.layer(createServer, { port })),
         Layer.provide(serviceLayer)
       )
@@ -230,7 +231,7 @@ const streamSubscribeCommand = Command.make(
       // Output events as JSON lines
       yield* eventStream.pipe(
         Stream.runForEach((event) => {
-          const encoded = Schema.encodeSync(StreamEvent)(event)
+          const encoded = Schema.encodeSync(Event)(event)
           return Console.log(JSON.stringify(encoded))
         })
       )
@@ -238,6 +239,28 @@ const streamSubscribeCommand = Command.make(
       Effect.catchAll((e) => Console.error(`Error: ${e.message}`))
     )
 ).pipe(Command.withDescription("Subscribe to stream events (outputs JSON lines)"))
+
+/** stream subscribe-all - subscribe to all streams (live events only) */
+const streamSubscribeAllCommand = Command.make(
+  "subscribe-all",
+  { server: serverUrlOption },
+  () =>
+    Effect.gen(function*() {
+      const client = yield* StreamClientService
+
+      const eventStream = yield* client.subscribeAll()
+
+      // Output events as JSON lines
+      yield* eventStream.pipe(
+        Stream.runForEach((event) => {
+          const encoded = Schema.encodeSync(Event)(event)
+          return Console.log(JSON.stringify(encoded))
+        })
+      )
+    }).pipe(
+      Effect.catchAll((e) => Console.error(`Error: ${e.message}`))
+    )
+).pipe(Command.withDescription("Subscribe to all streams (live events only, outputs JSON lines)"))
 
 /** stream append - append event to stream */
 const streamAppendCommand = Command.make(
@@ -262,7 +285,7 @@ const streamAppendCommand = Command.make(
       }
 
       const result = yield* client.append({ name: name as StreamName, data })
-      const encoded = Schema.encodeSync(StreamEvent)(result)
+      const encoded = Schema.encodeSync(Event)(result)
       yield* Console.log(JSON.stringify(encoded))
     }).pipe(
       Effect.catchAll((e) => Console.error(`Error: ${e.message}`))
@@ -288,7 +311,7 @@ const streamGetCommand = Command.make(
       const events = yield* client.get(getOpts)
 
       for (const event of events) {
-        const encoded = Schema.encodeSync(StreamEvent)(event)
+        const encoded = Schema.encodeSync(Event)(event)
         yield* Console.log(JSON.stringify(encoded))
       }
     }).pipe(
@@ -335,6 +358,7 @@ const streamDeleteCommand = Command.make(
 const streamCommand = Command.make("stream").pipe(
   Command.withSubcommands([
     streamSubscribeCommand,
+    streamSubscribeAllCommand,
     streamAppendCommand,
     streamGetCommand,
     streamListCommand,
@@ -345,14 +369,14 @@ const streamCommand = Command.make("stream").pipe(
 
 // ─── Root Command ───────────────────────────────────────────────────────────
 
-const rootCommand = Command.make("durable-streams").pipe(
+const rootCommand = Command.make("event-stream").pipe(
   Command.withSubcommands([serverCommand, streamCommand]),
-  Command.withDescription("Durable event streams with daemon support")
+  Command.withDescription("Event streams with daemon support")
 )
 
 /** Main CLI definition */
 export const cli = Command.run(rootCommand, {
-  name: "durable-streams",
+  name: "event-stream",
   version: "0.1.0"
 })
 

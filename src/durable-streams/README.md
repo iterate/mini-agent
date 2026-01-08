@@ -253,7 +253,7 @@ curl -X POST http://localhost:3000/streams/my-stream \
 
 Response:
 ```json
-{"offset":"0000000000000000","data":{"type":"message","text":"hello"},"timestamp":1704672000000}
+{"offset":"0000000000000000","eventStreamId":"my-stream","data":{"type":"message","text":"hello"},"createdAt":"2024-01-08T00:00:00.000Z"}
 ```
 
 ### Subscribe (SSE)
@@ -271,9 +271,9 @@ curl -N http://localhost:3000/streams/my-stream?offset=0000000000000005
 
 Output (SSE format):
 ```
-data: {"offset":"0000000000000000","data":{"type":"message","text":"hello"},"timestamp":1704672000000}
+data: {"offset":"0000000000000000","eventStreamId":"my-stream","data":{"type":"message","text":"hello"},"createdAt":"2024-01-08T00:00:00.000Z"}
 
-data: {"offset":"0000000000000001","data":{"type":"message","text":"world"},"timestamp":1704672001000}
+data: {"offset":"0000000000000001","eventStreamId":"my-stream","data":{"type":"message","text":"world"},"createdAt":"2024-01-08T00:00:01.000Z"}
 ```
 
 ### Get Historic Events
@@ -288,7 +288,7 @@ curl http://localhost:3000/streams/my-stream/events?offset=0000000000000005&limi
 
 Response:
 ```json
-{"events":[{"offset":"0000000000000005","data":{"type":"message","text":"hello"},"timestamp":1704672000000}]}
+{"events":[{"offset":"0000000000000005","eventStreamId":"my-stream","data":{"type":"message","text":"hello"},"createdAt":"2024-01-08T00:00:00.000Z"}]}
 ```
 
 ### List Streams
@@ -311,10 +311,11 @@ curl -X DELETE http://localhost:3000/streams/my-stream
 ## Event Structure
 
 ```typescript
-interface StreamEvent {
-  offset: string    // Zero-padded 16-char number ("0000000000000042")
-  data: unknown     // Your payload
-  timestamp: number // Unix millis
+interface Event {
+  offset: string        // Zero-padded 16-char number ("0000000000000042")
+  eventStreamId: string // Name of the stream this event belongs to
+  data: unknown         // Your payload
+  createdAt: string     // ISO 8601 timestamp ("2024-01-08T00:00:00.000Z")
 }
 ```
 

@@ -24,7 +24,7 @@ export interface DaemonConfig {
   readonly storage: StorageBackend
 }
 
-/** Data directory for all durable-streams files */
+/** Data directory for all event-stream files */
 export const DATA_DIR = ".iterate"
 
 /** Default config - files in .iterate/ */
@@ -219,7 +219,7 @@ const makeDaemonImpl = (
 }
 
 /** Daemon service tag and implementation */
-export class DaemonService extends Effect.Service<DaemonService>()("@durable-streams/Daemon", {
+export class DaemonService extends Effect.Service<DaemonService>()("@event-stream/Daemon", {
   effect: Effect.gen(function*() {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path

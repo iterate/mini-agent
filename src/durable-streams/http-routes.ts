@@ -1,20 +1,21 @@
 /**
- * HTTP Routes for durable-streams
+ * HTTP Routes for event-stream
  *
  * Endpoints:
  * - POST /streams/:name - Append event to stream (JSON body: { data: any })
  * - GET /streams/:name - Subscribe to stream (SSE). Query params: offset
+ * - GET /streams/all - Subscribe to all streams (SSE, live events only)
  * - GET /streams - List all streams
  * - DELETE /streams/:name - Delete stream
  */
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "@effect/platform"
 import { Effect, Schema, Stream } from "effect"
 import { StreamManagerService } from "./stream-manager.ts"
-import { type Offset, OFFSET_START, StreamEvent, type StreamName } from "./types.ts"
+import { Event, type Offset, OFFSET_START, type StreamName } from "./types.ts"
 
-/** Encode a StreamEvent as SSE data line */
-const encodeSSE = (event: StreamEvent): Uint8Array => {
-  const encoded = Schema.encodeSync(StreamEvent)(event)
+/** Encode an Event as SSE data line */
+const encodeSSE = (event: Event): Uint8Array => {
+  const encoded = Schema.encodeSync(Event)(event)
   return new TextEncoder().encode(`data: ${JSON.stringify(encoded)}\n\n`)
 }
 
@@ -71,7 +72,7 @@ const appendHandler = Effect.gen(function*() {
   }
 
   const event = appendResult.right
-  const encoded = Schema.encodeSync(StreamEvent)(event)
+  const encoded = Schema.encodeSync(Event)(event)
   return yield* HttpServerResponse.json(encoded, { status: 201 })
 })
 
@@ -149,6 +150,30 @@ const deleteHandler = Effect.gen(function*() {
   return HttpServerResponse.empty({ status: 204 })
 })
 
+/** GET /streams/all - Subscribe to all streams (SSE, live events only) */
+const subscribeAllHandler = Effect.gen(function*() {
+  const manager = yield* StreamManagerService
+
+  const eventStreamResult = yield* manager.subscribeAll().pipe(Effect.either)
+
+  if (eventStreamResult._tag === "Left") {
+    const err = eventStreamResult.left
+    return HttpServerResponse.text(err.message, { status: 500 })
+  }
+
+  const eventStream = eventStreamResult.right
+
+  const sseStream = eventStream.pipe(Stream.map(encodeSSE))
+
+  return HttpServerResponse.stream(sseStream, {
+    contentType: "text/event-stream",
+    headers: {
+      "Cache-Control": "no-cache",
+      "Connection": "keep-alive"
+    }
+  })
+})
+
 /** GET /streams/:name/events - Get historic events (one-shot, no SSE) */
 const getEventsHandler = Effect.gen(function*() {
   const request = yield* HttpServerRequest.HttpServerRequest
@@ -190,14 +215,15 @@ const getEventsHandler = Effect.gen(function*() {
     return HttpServerResponse.text(err.message, { status: 500 })
   }
 
-  const events = eventsResult.right.map((e) => Schema.encodeSync(StreamEvent)(e))
+  const events = eventsResult.right.map((e) => Schema.encodeSync(Event)(e))
   return yield* HttpServerResponse.json({ events })
 })
 
-/** Durable streams router */
-export const durableStreamsRouter = HttpRouter.empty.pipe(
+/** Event stream router */
+export const eventStreamRouter = HttpRouter.empty.pipe(
   HttpRouter.post("/streams/:name", appendHandler),
   HttpRouter.get("/streams/:name/events", getEventsHandler),
+  HttpRouter.get("/streams/all", subscribeAllHandler), // Must be before :name to avoid "all" being matched
   HttpRouter.get("/streams/:name", subscribeHandler),
   HttpRouter.get("/streams", listHandler),
   HttpRouter.del("/streams/:name", deleteHandler)

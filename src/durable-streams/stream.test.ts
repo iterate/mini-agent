@@ -1,19 +1,19 @@
 /**
- * Tests for DurableStream (Layer 0)
+ * Tests for EventStream (Layer 0)
  */
 import { describe, expect, it } from "@effect/vitest"
 import { Effect, Fiber, Queue, Stream } from "effect"
 import { Storage } from "./storage.ts"
-import { makeDurableStream } from "./stream.ts"
+import { makeEventStream } from "./stream.ts"
 import { makeOffset, type Offset, OFFSET_START, type StreamName } from "./types.ts"
 
 const testStreamName = "test-stream" as StreamName
 
-describe("DurableStream", () => {
+describe("EventStream", () => {
   describe("append", () => {
     it.effect("assigns sequential offsets", () =>
       Effect.gen(function*() {
-        const stream = yield* makeDurableStream({ name: testStreamName })
+        const stream = yield* makeEventStream({ name: testStreamName })
 
         const e1 = yield* stream.append({ data: { msg: "first" } })
         const e2 = yield* stream.append({ data: { msg: "second" } })
@@ -24,18 +24,18 @@ describe("DurableStream", () => {
 
     it.effect("stores data correctly", () =>
       Effect.gen(function*() {
-        const stream = yield* makeDurableStream({ name: testStreamName })
+        const stream = yield* makeEventStream({ name: testStreamName })
 
         const event = yield* stream.append({ data: { key: "value" } })
 
         expect(event.data).toEqual({ key: "value" })
-        expect(typeof event.timestamp).toBe("number")
-        expect(event.timestamp).toBeGreaterThan(0)
+        expect(typeof event.createdAt).toBe("string")
+        expect(new Date(event.createdAt).toISOString()).toBe(event.createdAt)
       }).pipe(Effect.provide(Storage.InMemory)))
 
     it.effect("increments count", () =>
       Effect.gen(function*() {
-        const stream = yield* makeDurableStream({ name: testStreamName })
+        const stream = yield* makeEventStream({ name: testStreamName })
 
         expect(yield* stream.count).toBe(0)
 
@@ -50,7 +50,7 @@ describe("DurableStream", () => {
   describe("subscribe", () => {
     it.effect("returns historical events", () =>
       Effect.gen(function*() {
-        const stream = yield* makeDurableStream({ name: testStreamName })
+        const stream = yield* makeEventStream({ name: testStreamName })
 
         yield* stream.append({ data: { msg: "first" } })
         yield* stream.append({ data: { msg: "second" } })
@@ -69,7 +69,7 @@ describe("DurableStream", () => {
 
     it.effect("receives live events after subscribing", () =>
       Effect.gen(function*() {
-        const stream = yield* makeDurableStream({ name: testStreamName })
+        const stream = yield* makeEventStream({ name: testStreamName })
         const collected = yield* Queue.unbounded<unknown>()
 
         // Subscribe first (no historical events)
@@ -103,7 +103,7 @@ describe("DurableStream", () => {
 
     it.effect("returns both historical and live events", () =>
       Effect.gen(function*() {
-        const stream = yield* makeDurableStream({ name: testStreamName })
+        const stream = yield* makeEventStream({ name: testStreamName })
         const collected = yield* Queue.unbounded<unknown>()
 
         // Add historical
@@ -143,7 +143,7 @@ describe("DurableStream", () => {
   describe("subscribe with offset", () => {
     it.effect("returns events from specified offset", () =>
       Effect.gen(function*() {
-        const stream = yield* makeDurableStream({ name: testStreamName })
+        const stream = yield* makeEventStream({ name: testStreamName })
 
         yield* stream.append({ data: { n: 0 } })
         yield* stream.append({ data: { n: 1 } })
@@ -164,7 +164,7 @@ describe("DurableStream", () => {
 
     it.effect("handles -1 offset (start from beginning)", () =>
       Effect.gen(function*() {
-        const stream = yield* makeDurableStream({ name: testStreamName })
+        const stream = yield* makeEventStream({ name: testStreamName })
 
         yield* stream.append({ data: { n: 0 } })
         yield* stream.append({ data: { n: 1 } })
@@ -182,7 +182,7 @@ describe("DurableStream", () => {
 
     it.effect("fails with invalid offset", () =>
       Effect.gen(function*() {
-        const stream = yield* makeDurableStream({ name: testStreamName })
+        const stream = yield* makeEventStream({ name: testStreamName })
 
         const result = yield* stream
           .subscribe({ offset: "invalid" as Offset })
@@ -198,7 +198,7 @@ describe("DurableStream", () => {
   describe("multiple subscribers", () => {
     it.effect("all subscribers receive the same events", () =>
       Effect.gen(function*() {
-        const stream = yield* makeDurableStream({ name: testStreamName })
+        const stream = yield* makeEventStream({ name: testStreamName })
 
         const q1 = yield* Queue.unbounded<unknown>()
         const q2 = yield* Queue.unbounded<unknown>()

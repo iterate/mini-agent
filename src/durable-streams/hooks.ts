@@ -1,12 +1,12 @@
 /**
- * Hook types for DurableStream composition (Layer 2)
+ * Hook types for EventStream composition (Layer 2)
  *
  * Hooks have IDs for debugging/logging and future dependency-based execution.
  * Before-hooks can veto operations; after-hooks are fire-and-forget.
  */
 import type { Effect } from "effect"
 import { Schema } from "effect"
-import type { StreamEvent, StreamName } from "./types.ts"
+import type { Event, StreamName } from "./types.ts"
 
 /** Error when a before-hook vetoes an operation */
 export class HookError extends Schema.TaggedError<HookError>()("HookError", {
@@ -29,11 +29,11 @@ export interface AfterAppendHook {
   readonly id: string
   readonly run: (opts: {
     name: StreamName
-    event: StreamEvent
+    event: Event
   }) => Effect.Effect<void, never>
 }
 
-/** Hook configuration for a DurableStream */
+/** Hook configuration for an EventStream */
 export interface StreamHooks {
   readonly beforeAppend?: ReadonlyArray<BeforeAppendHook>
   readonly afterAppend?: ReadonlyArray<AfterAppendHook>

@@ -1,5 +1,5 @@
 /**
- * Storage abstraction for durable streams
+ * Storage abstraction for event streams
  *
  * Implementations:
  * - InMemory: Fast, ephemeral (for tests)
@@ -7,35 +7,44 @@
  */
 import { FileSystem, Path } from "@effect/platform"
 import { Effect, Layer, Schema } from "effect"
-import { isStartOffset, makeOffset, type Offset, StorageError, StreamEvent, type StreamName } from "./types.ts"
+import {
+  Event,
+  type EventStreamId,
+  isStartOffset,
+  makeOffset,
+  type Offset,
+  StorageError,
+  type StreamName
+} from "./types.ts"
 
 /** Stored event shape (internal) */
 interface StoredEvent {
   readonly offset: Offset
+  readonly eventStreamId: EventStreamId
   readonly data: unknown
-  readonly timestamp: number
+  readonly createdAt: string
 }
 
 /** Storage service interface - all methods use object params */
-export class Storage extends Effect.Service<Storage>()("@durable-streams/Storage", {
+export class Storage extends Effect.Service<Storage>()("@event-stream/Storage", {
   succeed: {
     /** Append events to a stream, returns created events with offsets */
     append: (_opts: {
       name: StreamName
       events: ReadonlyArray<{ data: unknown }>
-    }): Effect.Effect<ReadonlyArray<StreamEvent>, StorageError> => Effect.succeed([]),
+    }): Effect.Effect<ReadonlyArray<Event>, StorageError> => Effect.succeed([]),
 
     /** Get events from offset (inclusive). Offset -1 means from start */
     getFrom: (_opts: {
       name: StreamName
       offset: Offset
       limit?: number
-    }): Effect.Effect<ReadonlyArray<StreamEvent>, StorageError> => Effect.succeed([]),
+    }): Effect.Effect<ReadonlyArray<Event>, StorageError> => Effect.succeed([]),
 
     /** Get all events for a stream */
     getAll: (_opts: {
       name: StreamName
-    }): Effect.Effect<ReadonlyArray<StreamEvent>, StorageError> => Effect.succeed([]),
+    }): Effect.Effect<ReadonlyArray<Event>, StorageError> => Effect.succeed([]),
 
     /** Check if stream exists */
     exists: (_opts: {
@@ -68,20 +77,23 @@ export class Storage extends Effect.Service<Storage>()("@durable-streams/Storage
             store.set(opts.name, [])
           }
           const events = store.get(opts.name)!
-          const now = Date.now()
-          const newEvents: Array<StreamEvent> = opts.events.map((e, i) =>
-            new StreamEvent({
+          const createdAt = new Date().toISOString()
+          const eventStreamId = opts.name as unknown as EventStreamId
+          const newEvents: Array<Event> = opts.events.map((e, i) =>
+            new Event({
               offset: makeOffset(events.length + i),
+              eventStreamId,
               data: e.data,
-              timestamp: now
+              createdAt
             })
           )
           store.set(opts.name, [
             ...events,
             ...newEvents.map((e) => ({
               offset: e.offset,
+              eventStreamId: e.eventStreamId,
               data: e.data,
-              timestamp: e.timestamp
+              createdAt: e.createdAt
             }))
           ])
           return newEvents
@@ -92,17 +104,17 @@ export class Storage extends Effect.Service<Storage>()("@durable-streams/Storage
           const events = store.get(opts.name) ?? []
           if (isStartOffset(opts.offset)) {
             const limited = opts.limit ? events.slice(0, opts.limit) : events
-            return limited.map((e) => new StreamEvent(e))
+            return limited.map((e) => new Event(e))
           }
           const filtered = events.filter((e) => e.offset >= opts.offset)
           const limited = opts.limit ? filtered.slice(0, opts.limit) : filtered
-          return limited.map((e) => new StreamEvent(e))
+          return limited.map((e) => new Event(e))
         }),
 
       getAll: (opts: { name: StreamName }) =>
         Effect.sync(() => {
           const events = store.get(opts.name) ?? []
-          return events.map((e) => new StreamEvent(e))
+          return events.map((e) => new Event(e))
         }),
 
       exists: (opts: { name: StreamName }) => Effect.sync(() => store.has(opts.name)),
@@ -149,8 +161,9 @@ export class Storage extends Effect.Service<Storage>()("@durable-streams/Storage
         const FileSchema = Schema.Struct({
           events: Schema.Array(Schema.Struct({
             offset: Schema.String,
+            eventStreamId: Schema.String,
             data: Schema.Unknown,
-            timestamp: Schema.Number
+            createdAt: Schema.String
           }))
         })
 
@@ -180,8 +193,9 @@ export class Storage extends Effect.Service<Storage>()("@durable-streams/Storage
 
             return decoded.events.map((e) => ({
               offset: e.offset as Offset,
+              eventStreamId: e.eventStreamId as EventStreamId,
               data: e.data,
-              timestamp: e.timestamp
+              createdAt: e.createdAt
             }))
           })
 
@@ -197,7 +211,14 @@ export class Storage extends Effect.Service<Storage>()("@durable-streams/Storage
 
             const filePath = getStreamPath(name)
             const content = JSON.stringify(
-              { events: events.map((e) => ({ offset: e.offset, data: e.data, timestamp: e.timestamp })) },
+              {
+                events: events.map((e) => ({
+                  offset: e.offset,
+                  eventStreamId: e.eventStreamId,
+                  data: e.data,
+                  createdAt: e.createdAt
+                }))
+              },
               null,
               2
             )
@@ -211,13 +232,15 @@ export class Storage extends Effect.Service<Storage>()("@durable-streams/Storage
           append: (appendOpts: { name: StreamName; events: ReadonlyArray<{ data: unknown }> }) =>
             Effect.gen(function*() {
               const existing = yield* readStreamFile(appendOpts.name)
-              const now = Date.now()
+              const createdAt = new Date().toISOString()
+              const eventStreamId = appendOpts.name as unknown as EventStreamId
 
-              const newEvents: Array<StreamEvent> = appendOpts.events.map((e, i) =>
-                new StreamEvent({
+              const newEvents: Array<Event> = appendOpts.events.map((e, i) =>
+                new Event({
                   offset: makeOffset(existing.length + i),
+                  eventStreamId,
                   data: e.data,
-                  timestamp: now
+                  createdAt
                 })
               )
 
@@ -225,8 +248,9 @@ export class Storage extends Effect.Service<Storage>()("@durable-streams/Storage
                 ...existing,
                 ...newEvents.map((e) => ({
                   offset: e.offset,
+                  eventStreamId: e.eventStreamId,
                   data: e.data,
-                  timestamp: e.timestamp
+                  createdAt: e.createdAt
                 }))
               ]
 
@@ -247,13 +271,13 @@ export class Storage extends Effect.Service<Storage>()("@durable-streams/Storage
               }
 
               const limited = getFromOpts.limit ? filtered.slice(0, getFromOpts.limit) : filtered
-              return limited.map((e) => new StreamEvent(e))
+              return limited.map((e) => new Event(e))
             }),
 
           getAll: (getAllOpts: { name: StreamName }) =>
             Effect.gen(function*() {
               const events = yield* readStreamFile(getAllOpts.name)
-              return events.map((e) => new StreamEvent(e))
+              return events.map((e) => new Event(e))
             }),
 
           exists: (existsOpts: { name: StreamName }) =>

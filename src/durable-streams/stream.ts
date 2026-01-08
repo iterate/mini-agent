@@ -1,5 +1,5 @@
 /**
- * DurableStream - Layer 0 core primitive
+ * EventStream - Layer 0 core primitive
  *
  * A single named stream with append and subscribe operations.
  * Uses PubSub for live subscriptions with historical catch-up.
@@ -9,6 +9,8 @@ import { Effect, PubSub, Ref, Stream } from "effect"
 import { Storage } from "./storage.ts"
 // eslint-disable-next-line @typescript-eslint/consistent-type-imports
 import {
+  Event,
+  type EventStreamId,
   InvalidOffsetError,
   isStartOffset,
   makeOffset,
@@ -16,28 +18,27 @@ import {
   OFFSET_START,
   parseOffset,
   StorageError,
-  StreamEvent,
   type StreamName
 } from "./types.ts"
 
-/** DurableStream interface - all methods use object params */
-export interface DurableStream {
+/** EventStream interface - all methods use object params */
+export interface EventStream {
   readonly name: StreamName
 
   /** Append data to stream, returns event with assigned offset */
-  append(opts: { data: unknown }): Effect.Effect<StreamEvent, StorageError>
+  append(opts: { data: unknown }): Effect.Effect<Event, StorageError>
 
   /** Subscribe to events. Returns historical + live. Use offset to start from position.
    * Requires Scope - subscription stays active while scope is open. */
   subscribe(opts?: { offset?: Offset }): Effect.Effect<
-    Stream.Stream<StreamEvent>,
+    Stream.Stream<Event>,
     InvalidOffsetError | StorageError,
     Scope.Scope
   >
 
   /** Get events from offset (for historic reads without live subscription) */
   getFrom(opts: { offset: Offset; limit?: number }): Effect.Effect<
-    ReadonlyArray<StreamEvent>,
+    ReadonlyArray<Event>,
     InvalidOffsetError | StorageError
   >
 
@@ -45,10 +46,10 @@ export interface DurableStream {
   readonly count: Effect.Effect<number, StorageError>
 }
 
-/** Create a DurableStream instance for a given name */
-export const makeDurableStream = (opts: {
+/** Create an EventStream instance for a given name */
+export const makeEventStream = (opts: {
   name: StreamName
-}): Effect.Effect<DurableStream, StorageError, Storage> =>
+}): Effect.Effect<EventStream, StorageError, Storage> =>
   Effect.gen(function*() {
     const storage = yield* Storage
     const { name } = opts
@@ -57,22 +58,23 @@ export const makeDurableStream = (opts: {
     yield* storage.create({ name })
 
     // PubSub for live event fan-out
-    const pubsub = yield* PubSub.unbounded<StreamEvent>()
+    const pubsub = yield* PubSub.unbounded<Event>()
 
     // Sync offset counter with storage
     const events = yield* storage.getAll({ name })
     const nextOffsetRef = yield* Ref.make(events.length)
 
-    const append = (appendOpts: { data: unknown }): Effect.Effect<StreamEvent, StorageError> =>
+    const append = (appendOpts: { data: unknown }): Effect.Effect<Event, StorageError> =>
       Effect.gen(function*() {
         const counter = yield* Ref.getAndUpdate(nextOffsetRef, (n) => n + 1)
         const offset = makeOffset(counter)
-        const timestamp = Date.now()
+        const createdAt = new Date().toISOString()
 
-        const event = new StreamEvent({
+        const event = new Event({
           offset,
+          eventStreamId: name as unknown as EventStreamId,
           data: appendOpts.data,
-          timestamp
+          createdAt
         })
 
         // Store the event
@@ -86,7 +88,7 @@ export const makeDurableStream = (opts: {
 
     const subscribe = (
       subscribeOpts?: { offset?: Offset }
-    ): Effect.Effect<Stream.Stream<StreamEvent>, InvalidOffsetError | StorageError, Scope.Scope> =>
+    ): Effect.Effect<Stream.Stream<Event>, InvalidOffsetError | StorageError, Scope.Scope> =>
       Effect.gen(function*() {
         const offset = subscribeOpts?.offset ?? OFFSET_START
 
@@ -134,7 +136,7 @@ export const makeDurableStream = (opts: {
 
     const getFrom = (
       getFromOpts: { offset: Offset; limit?: number }
-    ): Effect.Effect<ReadonlyArray<StreamEvent>, InvalidOffsetError | StorageError> =>
+    ): Effect.Effect<ReadonlyArray<Event>, InvalidOffsetError | StorageError> =>
       Effect.gen(function*() {
         const { limit, offset } = getFromOpts
 

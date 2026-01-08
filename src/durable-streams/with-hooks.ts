@@ -1,53 +1,53 @@
 /**
- * withHooks - Layer 2 wrapper for DurableStream
+ * withHooks - Layer 2 wrapper for EventStream
  *
- * Pure function that wraps a DurableStream with before/after hooks.
+ * Pure function that wraps an EventStream with before/after hooks.
  * No services, no layers - just composition.
  */
 import type { Scope, Stream } from "effect"
 import { Effect } from "effect"
 import type { HookError, StreamHooks } from "./hooks.ts"
-import type { InvalidOffsetError, Offset, StorageError, StreamEvent, StreamName } from "./types.ts"
+import type { Event, InvalidOffsetError, Offset, StorageError, StreamName } from "./types.ts"
 
-/** DurableStream with hooks has HookError in its append error channel */
-export interface HookedDurableStream {
+/** EventStream with hooks has HookError in its append error channel */
+export interface HookedEventStream {
   readonly name: StreamName
-  append(opts: { data: unknown }): Effect.Effect<StreamEvent, StorageError | HookError>
+  append(opts: { data: unknown }): Effect.Effect<Event, StorageError | HookError>
   subscribe: (opts?: { offset?: Offset }) => Effect.Effect<
-    Stream.Stream<StreamEvent>,
+    Stream.Stream<Event>,
     InvalidOffsetError | StorageError,
     Scope.Scope
   >
   getFrom: (opts: {
     offset: Offset
     limit?: number
-  }) => Effect.Effect<ReadonlyArray<StreamEvent>, InvalidOffsetError | StorageError>
+  }) => Effect.Effect<ReadonlyArray<Event>, InvalidOffsetError | StorageError>
   readonly count: Effect.Effect<number, StorageError>
 }
 
 /**
- * Wrap a DurableStream with before/after hooks.
+ * Wrap an EventStream with before/after hooks.
  *
  * - Before hooks run sequentially in array order; any failure vetoes append
  * - After hooks run sequentially after successful append; errors logged, don't fail
  * - subscribe/getFrom/count pass through unchanged
  *
- * Note: Returns HookedDurableStream which has HookError in the append error channel.
+ * Note: Returns HookedEventStream which has HookError in the append error channel.
  */
 export const withHooks = (
   base: {
     readonly name: StreamName
-    append(opts: { data: unknown }): Effect.Effect<StreamEvent, StorageError>
-    subscribe: HookedDurableStream["subscribe"]
-    getFrom: HookedDurableStream["getFrom"]
+    append(opts: { data: unknown }): Effect.Effect<Event, StorageError>
+    subscribe: HookedEventStream["subscribe"]
+    getFrom: HookedEventStream["getFrom"]
     readonly count: Effect.Effect<number, StorageError>
   },
   hooks: StreamHooks
-): HookedDurableStream => {
+): HookedEventStream => {
   const { afterAppend = [], beforeAppend = [] } = hooks
 
   const append = (opts: { data: unknown }): Effect.Effect<
-    StreamEvent,
+    Event,
     StorageError | HookError
   > =>
     Effect.gen(function*() {

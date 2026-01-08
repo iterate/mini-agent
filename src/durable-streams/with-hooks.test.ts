@@ -5,7 +5,7 @@ import { describe, expect, it } from "@effect/vitest"
 import { Effect, Ref } from "effect"
 import { HookError, type StreamHooks } from "./hooks.ts"
 import { Storage } from "./storage.ts"
-import { makeDurableStream } from "./stream.ts"
+import { makeEventStream } from "./stream.ts"
 import type { StreamName } from "./types.ts"
 import { withHooks } from "./with-hooks.ts"
 
@@ -13,7 +13,7 @@ describe("withHooks", () => {
   const testStreamName = "test-stream" as StreamName
 
   const makeTestStream = Effect.gen(function*() {
-    return yield* makeDurableStream({ name: testStreamName })
+    return yield* makeEventStream({ name: testStreamName })
   }).pipe(Effect.provide(Storage.InMemory))
 
   describe("beforeAppend hooks", () => {

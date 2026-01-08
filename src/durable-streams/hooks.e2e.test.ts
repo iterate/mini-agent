@@ -10,11 +10,11 @@ import { createServer } from "node:http"
 import { afterAll, beforeAll, describe, expect, test } from "vitest"
 import type { StreamHooks } from "./hooks.ts"
 import { HookError } from "./hooks.ts"
-import { durableStreamsRouter } from "./http-routes.ts"
+import { eventStreamRouter } from "./http-routes.ts"
 import { Storage } from "./storage.ts"
-import { DurableStreamFactory } from "./stream-factory.ts"
+import { EventStreamFactory } from "./stream-factory.ts"
 import { StreamManagerService } from "./stream-manager.ts"
-import type { StreamEvent } from "./types.ts"
+import type { Event } from "./types.ts"
 
 describe("Hooks E2E", () => {
   describe("ValidatedFactory (before hook)", () => {
@@ -47,7 +47,7 @@ describe("Hooks E2E", () => {
       const serverLayer = Layer.mergeAll(
         NodeHttpServer.layer(createServer, { port: 0 }),
         StreamManagerService.Live.pipe(
-          Layer.provide(DurableStreamFactory.WithHooks(validatedHooks)),
+          Layer.provide(EventStreamFactory.WithHooks(validatedHooks)),
           Layer.provide(Storage.InMemory)
         )
       ).pipe(Layer.provideMerge(HttpServer.layerContext))
@@ -58,7 +58,7 @@ describe("Hooks E2E", () => {
       const serverEffect = Effect.gen(function*() {
         const server = yield* HttpServer.HttpServer
         yield* Deferred.succeed(addressDeferred, server.address)
-        yield* HttpServer.serveEffect(durableStreamsRouter)
+        yield* HttpServer.serveEffect(eventStreamRouter)
         return yield* Effect.never
       }).pipe(
         Effect.scoped,
@@ -102,7 +102,7 @@ describe("Hooks E2E", () => {
 
       expect(response.status).toBe(201)
 
-      const event = await response.json() as StreamEvent
+      const event = await response.json() as Event
       expect(event.offset).toBe("0000000000000000")
       expect(event.data).toEqual({ _type: "message", text: "hello" })
     })
@@ -130,7 +130,7 @@ describe("Hooks E2E", () => {
       const serverLayer = Layer.mergeAll(
         NodeHttpServer.layer(createServer, { port: 0 }),
         StreamManagerService.Live.pipe(
-          Layer.provide(DurableStreamFactory.WithHooks(trackingHooks)),
+          Layer.provide(EventStreamFactory.WithHooks(trackingHooks)),
           Layer.provide(Storage.InMemory)
         )
       ).pipe(Layer.provideMerge(HttpServer.layerContext))
@@ -141,7 +141,7 @@ describe("Hooks E2E", () => {
       const serverEffect = Effect.gen(function*() {
         const server = yield* HttpServer.HttpServer
         yield* Deferred.succeed(addressDeferred, server.address)
-        yield* HttpServer.serveEffect(durableStreamsRouter)
+        yield* HttpServer.serveEffect(eventStreamRouter)
         return yield* Effect.never
       }).pipe(
         Effect.scoped,
@@ -224,7 +224,7 @@ describe("Hooks E2E", () => {
       const serverLayer = Layer.mergeAll(
         NodeHttpServer.layer(createServer, { port: 0 }),
         StreamManagerService.Live.pipe(
-          Layer.provide(DurableStreamFactory.WithHooks(orderTrackingHooks)),
+          Layer.provide(EventStreamFactory.WithHooks(orderTrackingHooks)),
           Layer.provide(Storage.InMemory)
         )
       ).pipe(Layer.provideMerge(HttpServer.layerContext))
@@ -235,7 +235,7 @@ describe("Hooks E2E", () => {
       const serverEffect = Effect.gen(function*() {
         const server = yield* HttpServer.HttpServer
         yield* Deferred.succeed(addressDeferred, server.address)
-        yield* HttpServer.serveEffect(durableStreamsRouter)
+        yield* HttpServer.serveEffect(eventStreamRouter)
         return yield* Effect.never
       }).pipe(
         Effect.scoped,

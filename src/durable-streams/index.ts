@@ -1,11 +1,13 @@
 /**
- * Durable Streams - Event sourcing primitives with Effect-TS
+ * Event Streams - Event sourcing primitives with Effect-TS
  *
- * @module durable-streams
+ * @module event-stream
  */
 
 // Types
 export {
+  Event,
+  EventStreamId,
   InvalidOffsetError,
   isStartOffset,
   makeOffset,
@@ -13,27 +15,26 @@ export {
   OFFSET_START,
   parseOffset,
   StorageError,
-  StreamEvent,
   StreamName,
   StreamNotFoundError
 } from "./types.ts"
-export type { Offset as OffsetType, StreamName as StreamNameType } from "./types.ts"
+export type { EventStreamId as EventStreamIdType, Offset as OffsetType, StreamName as StreamNameType } from "./types.ts"
 
 // Storage (Layer 0)
 export { Storage } from "./storage.ts"
 
 // Stream (Layer 1)
-export { type DurableStream, makeDurableStream } from "./stream.ts"
+export { type EventStream, makeEventStream } from "./stream.ts"
 
 // Hooks (Layer 2)
 export { type AfterAppendHook, type BeforeAppendHook, HookError, type StreamHooks } from "./hooks.ts"
-export { withHooks } from "./with-hooks.ts"
+export { type HookedEventStream, withHooks } from "./with-hooks.ts"
 
 // Stream Factory (Layer 3)
 export {
   ActiveFactory,
-  DurableStreamFactory,
   EmbryonicAgentFactory,
+  EventStreamFactory,
   PlainFactory,
   ValidatedFactory
 } from "./stream-factory.ts"
@@ -42,7 +43,7 @@ export {
 export { type StreamManager, StreamManagerService } from "./stream-manager.ts"
 
 // HTTP Routes (Layer 5)
-export { durableStreamsRouter } from "./http-routes.ts"
+export { eventStreamRouter } from "./http-routes.ts"
 
 // CLI
 export { cli, run } from "./cli.ts"
