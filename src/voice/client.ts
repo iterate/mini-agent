@@ -11,10 +11,8 @@ import {
   ConversationItemCreateMessage,
   DEFAULT_API_URL,
   DEFAULT_INSTRUCTIONS,
-  DEFAULT_SAMPLE_RATE,
   DEFAULT_VOICE,
   ErrorEvent,
-  InputAudioBufferAppendMessage,
   InputAudioBufferSpeechStartedEvent,
   InputAudioTranscriptionCompletedEvent,
   ResponseCreateMessage,
@@ -22,8 +20,6 @@ import {
   ResponseOutputAudioDeltaEvent,
   ResponseOutputAudioTranscriptDeltaEvent,
   SessionUpdatedEvent,
-  SessionUpdateMessage,
-  type VoiceName,
   type VoiceSessionConfig
 } from "./domain.ts"
 
@@ -48,8 +44,8 @@ export class GrokVoiceClient extends Effect.Service<GrokVoiceClient>()("@lome/Gr
       Effect.gen(function*() {
         const apiUrl = config.apiUrl ?? DEFAULT_API_URL
         const voice = config.voice ?? DEFAULT_VOICE
-        const sampleRate = config.sampleRate ?? DEFAULT_SAMPLE_RATE
         const instructions = config.instructions ?? DEFAULT_INSTRUCTIONS
+        // Note: sampleRate from config is not used - API uses fixed 24kHz PCM16
 
         yield* Effect.log(`Connecting to ${apiUrl}`)
 
