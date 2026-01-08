@@ -58,10 +58,19 @@ const appendHandler = Effect.gen(function*() {
 
   const { data } = parseResult.right
 
-  const event = yield* manager.append({ name: name as StreamName, data }).pipe(
-    Effect.mapError((e) => new Error(e.message))
-  )
+  const appendResult = yield* manager.append({ name: name as StreamName, data }).pipe(Effect.either)
 
+  if (appendResult._tag === "Left") {
+    const err = appendResult.left as { _tag: string; message: string; hookId?: string }
+    // HookError from validation hooks (runtime check - factory may inject hooked streams)
+    if (err._tag === "HookError" && err.hookId) {
+      return yield* HttpServerResponse.json({ error: err.message, hookId: err.hookId }, { status: 400 })
+    }
+    // StorageError
+    return yield* HttpServerResponse.json({ error: err.message }, { status: 500 })
+  }
+
+  const event = appendResult.right
   const encoded = Schema.encodeSync(StreamEvent)(event)
   return yield* HttpServerResponse.json(encoded, { status: 201 })
 })

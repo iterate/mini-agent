@@ -16,6 +16,8 @@ Pure event streams with append/subscribe semantics. No LLM logic, no agent behav
 
 ## Architecture
 
+Each layer is expressible entirely in terms of the layer below (onion model).
+
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                         CLI Layer                          │
@@ -25,7 +27,7 @@ Pure event streams with append/subscribe semantics. No LLM logic, no agent behav
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                        HTTP Layer                          │
+│                   HTTP Routes (Layer 5)                    │
 │  POST /streams/:name         → append event                │
 │  GET  /streams/:name         → subscribe (SSE)             │
 │  GET  /streams/:name/events  → get historic events         │
@@ -35,26 +37,106 @@ Pure event streams with append/subscribe semantics. No LLM logic, no agent behav
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    StreamManager (Layer 1)                  │
-│  getStream() → lazy init + cache                           │
+│                   StreamManager (Layer 4)                  │
+│  getStream() → lazy init + cache via factory               │
 │  append/subscribe/list/delete                              │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                    DurableStream (Layer 0)                  │
-│  Per-stream state: offset counter, PubSub                  │
-│  append() → increment offset, store, broadcast             │
-│  subscribe() → historical catchup + live PubSub            │
+│               DurableStreamFactory (Layer 3)               │
+│  Plain       → returns base DurableStream                  │
+│  WithHooks   → wraps with before/after hooks               │
+│  ActiveFactory → change one line to swap implementations   │
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│                        Storage                              │
+│                    withHooks (Layer 2)                     │
+│  Pure wrapper function for hook composition                │
+│  Before hooks: veto append on failure (HookError)          │
+│  After hooks: log errors but don't fail                    │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   DurableStream (Layer 1)                  │
+│  Per-stream state: offset counter, PubSub                  │
+│  append() → increment offset, store, broadcast             │
+│  subscribe() → historical catchup + live PubSub            │
+│  Pure stream primitive - no hook concept                   │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                     Storage (Layer 0)                      │
 │  InMemory (tests) | FileSystem (production)                │
 │  Data persisted in .iterate/streams/*.json                 │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+## Hooks System
+
+Hooks allow intercepting stream operations without modifying the base `DurableStream` implementation.
+
+### Hook Types
+
+**Before hooks** run before append. Failure vetoes the operation:
+```typescript
+const validateType: BeforeAppendHook = {
+  id: "validate-type",
+  run: ({ data }) => {
+    const obj = data as Record<string, unknown>
+    if (typeof obj._type !== "string") {
+      return Effect.fail(new HookError({
+        hookId: "validate-type",
+        message: "Data must have _type field"
+      }))
+    }
+    return Effect.void
+  }
+}
+```
+
+**After hooks** run after successful append. Errors are logged but don't fail:
+```typescript
+const auditLog: AfterAppendHook = {
+  id: "audit-log",
+  run: ({ name, event }) =>
+    Effect.log("Event appended", { stream: name, offset: event.offset })
+}
+```
+
+### Using withHooks
+
+Wrap any `DurableStream` with hooks:
+```typescript
+import { withHooks } from "./with-hooks.ts"
+
+const hooked = withHooks(baseStream, {
+  beforeAppend: [validateType, rateLimit],
+  afterAppend: [auditLog, notifyDownstream]
+})
+```
+
+### Swapping Implementations
+
+Edit `stream-factory.ts` to change `ActiveFactory`:
+```typescript
+// Default: plain streams (no hooks)
+export const ActiveFactory = PlainFactory
+
+// To test validation hooks:
+export const ActiveFactory = ValidatedFactory
+
+// To test agent event hooks:
+export const ActiveFactory = EmbryonicAgentFactory
+```
+
+Pre-configured variants in `stream-factory.ts`:
+- `PlainFactory` - base DurableStream, no hooks
+- `ValidatedFactory` - requires `_type` field on all events
+- `EmbryonicAgentFactory` - validates agent events (`_type` starts with `agent:`) + logging
 
 ## CLI Reference
 
@@ -246,8 +328,11 @@ Offsets are lexicographically sortable strings. Special offset `-1` means "start
 | `main.ts` | Entry point |
 | `daemon.ts` | Daemon management (start/stop/status) |
 | `client.ts` | HTTP client with auto-daemon |
-| `http-routes.ts` | HTTP route handlers |
-| `stream-manager.ts` | Stream lifecycle management |
-| `stream.ts` | Core DurableStream implementation |
-| `storage.ts` | Storage backend interface |
+| `http-routes.ts` | HTTP route handlers (Layer 5) |
+| `stream-manager.ts` | Stream lifecycle management (Layer 4) |
+| `stream-factory.ts` | Factory service + ActiveFactory (Layer 3) |
+| `with-hooks.ts` | Hook wrapper function (Layer 2) |
+| `hooks.ts` | Hook types and HookError |
+| `stream.ts` | Core DurableStream implementation (Layer 1) |
+| `storage.ts` | Storage backend interface (Layer 0) |
 | `types.ts` | Type definitions |

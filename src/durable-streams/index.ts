@@ -19,16 +19,29 @@ export {
 } from "./types.ts"
 export type { Offset as OffsetType, StreamName as StreamNameType } from "./types.ts"
 
-// Storage
+// Storage (Layer 0)
 export { Storage } from "./storage.ts"
 
-// Stream (Layer 0)
+// Stream (Layer 1)
 export { type DurableStream, makeDurableStream } from "./stream.ts"
 
-// StreamManager (Layer 1)
+// Hooks (Layer 2)
+export { type AfterAppendHook, type BeforeAppendHook, HookError, type StreamHooks } from "./hooks.ts"
+export { withHooks } from "./with-hooks.ts"
+
+// Stream Factory (Layer 3)
+export {
+  ActiveFactory,
+  DurableStreamFactory,
+  EmbryonicAgentFactory,
+  PlainFactory,
+  ValidatedFactory
+} from "./stream-factory.ts"
+
+// StreamManager (Layer 4)
 export { type StreamManager, StreamManagerService } from "./stream-manager.ts"
 
-// HTTP Routes (Layer 2)
+// HTTP Routes (Layer 5)
 export { durableStreamsRouter } from "./http-routes.ts"
 
 // CLI

@@ -14,6 +14,7 @@ import { join } from "node:path"
 import { describe, expect, test } from "vitest"
 import { durableStreamsRouter } from "./http-routes.ts"
 import { Storage } from "./storage.ts"
+import { PlainFactory } from "./stream-factory.ts"
 import { StreamManagerService } from "./stream-manager.ts"
 import type { StreamEvent } from "./types.ts"
 
@@ -26,6 +27,7 @@ const startServer = async (dataDir: string): Promise<{
     Layer.provide(NodeContext.layer)
   )
   const serviceLayer = StreamManagerService.Live.pipe(
+    Layer.provide(PlainFactory),
     Layer.provide(storageLayer)
   )
 

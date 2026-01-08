@@ -24,6 +24,7 @@ import { StreamClientService } from "./client.ts"
 import { DaemonService, DATA_DIR } from "./daemon.ts"
 import { durableStreamsRouter } from "./http-routes.ts"
 import { Storage } from "./storage.ts"
+import { ActiveFactory } from "./stream-factory.ts"
 import { StreamManagerService } from "./stream-manager.ts"
 import { type Offset, OFFSET_START, StreamEvent, type StreamName } from "./types.ts"
 
@@ -89,6 +90,7 @@ const serverRunCommand = Command.make(
       yield* Console.log("")
 
       const serviceLayer = StreamManagerService.Live.pipe(
+        Layer.provide(ActiveFactory),
         Layer.provide(storageLayer)
       )
 
