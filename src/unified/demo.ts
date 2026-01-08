@@ -163,18 +163,14 @@ if (mode !== "http" && mode !== "voice") {
   process.exit(1)
 }
 
-// Register exit handlers to dump event log
-process.on("SIGINT", () => {
-  writeEventLog()
-  process.exit(0)
-})
-
+// Register exit handler to dump event log
+// exit fires on all exit paths (including SIGINT, uncaughtException)
 process.on("exit", () => {
   writeEventLog()
 })
 
-process.on("uncaughtException", () => {
-  writeEventLog()
+process.on("SIGINT", () => {
+  process.exit(0)
 })
 
 /* eslint-disable no-console */
