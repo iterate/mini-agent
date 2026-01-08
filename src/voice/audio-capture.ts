@@ -37,6 +37,7 @@ export class AudioCapture extends Effect.Service<AudioCapture>()("@lome/AudioCap
 
       const command = Command.make(
         "sox",
+        "-q", // quiet - suppress status output
         "-d",
         "-t",
         "raw",

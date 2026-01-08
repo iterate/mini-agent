@@ -156,7 +156,7 @@ export const VoiceSessionConfig = Schema.Struct({
 export type VoiceSessionConfig = typeof VoiceSessionConfig.Type
 
 export const DEFAULT_API_URL = "wss://api.x.ai/v1/realtime"
-export const DEFAULT_SAMPLE_RATE = 24000
+export const DEFAULT_SAMPLE_RATE = 48000 // Highest quality supported
 export const DEFAULT_VOICE: VoiceName = "ara"
 export const DEFAULT_INSTRUCTIONS =
   "You are a helpful voice assistant. Keep your responses conversational and concise since they will be spoken aloud."

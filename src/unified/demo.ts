@@ -29,68 +29,38 @@ import { type ConversationEvent, makeUnifiedSession } from "./domain.ts"
 import { HttpTransportLive } from "./http-transport.ts"
 import { WsTransportLive } from "./ws-transport.ts"
 
-// Event log for YAML dump on exit
-interface LoggedEvent {
-  timestamp: string
-  event: string
-  data: Record<string, unknown>
-}
-const eventLog: Array<LoggedEvent> = []
+// Event log for YAML dump on exit - raw WebSocket/HTTP messages
+const eventLog: Array<{ timestamp: string; direction: "recv" | "send"; message: unknown }> = []
 
 /**
- * Log an event for later YAML dump
+ * Truncate delta fields in an object to avoid huge logs
  */
-const logEvent = (event: ConversationEvent): void => {
-  const timestamp = new Date().toISOString()
-  const base: LoggedEvent = {
-    timestamp,
-    event: event._tag,
-    data: {}
-  }
+const truncateDeltas = (obj: unknown): unknown => {
+  if (obj === null || typeof obj !== "object") return obj
+  if (Array.isArray(obj)) return obj.map(truncateDeltas)
 
-  switch (event._tag) {
-    case "TextDelta":
-      base.data = { delta: event.delta }
-      break
-    case "TextComplete":
-      base.data = { content: event.content }
-      break
-    case "AudioDelta":
-      // Truncate audio to first 32 bytes, show length
-      base.data = {
-        chunkSize: Buffer.isBuffer(event.chunk) ? event.chunk.length : 0,
-        preview: Buffer.isBuffer(event.chunk) ? event.chunk.subarray(0, 32).toString("base64") : ""
-      }
-      break
-    case "AudioComplete":
-      break
-    case "ToolCall":
-      base.data = { id: event.id, name: event.name, params: event.params }
-      break
-    case "ToolResult":
-      base.data = { id: event.id, result: event.result }
-      break
-    case "TurnComplete":
-      base.data = { inputTokens: event.inputTokens, outputTokens: event.outputTokens }
-      break
-    case "UserTranscript":
-      base.data = { transcript: event.transcript }
-      break
-    case "ConversationError":
-      base.data = { message: event.message, code: event.code._tag === "Some" ? event.code.value : null }
-      break
-    case "SessionReady":
-    case "SpeechStarted":
-    case "SpeechStopped":
-    case "ResponseStarted":
-      // Lifecycle events - no extra data needed
-      break
-    case "RawEvent":
-      base.data = { type: event.type, rawData: event.data }
-      break
+  const result: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+    if (key === "delta" && typeof value === "string" && value.length > 100) {
+      result[key] = `<truncated: ${value.length} chars>`
+    } else if (typeof value === "object" && value !== null) {
+      result[key] = truncateDeltas(value)
+    } else {
+      result[key] = value
+    }
   }
+  return result
+}
 
-  eventLog.push(base)
+/**
+ * Log a raw message (incoming or outgoing)
+ */
+const logRawMessage = (direction: "recv" | "send", message: unknown): void => {
+  eventLog.push({
+    timestamp: new Date().toISOString(),
+    direction,
+    message: truncateDeltas(message)
+  })
 }
 
 /**
@@ -179,9 +149,6 @@ process.on("SIGINT", () => {
  */
 const handleEvent = (event: ConversationEvent): Effect.Effect<void> =>
   Effect.sync(() => {
-    // Log event for YAML dump
-    logEvent(event)
-
     switch (event._tag) {
       case "TextDelta":
         process.stdout.write(event.delta)
@@ -228,7 +195,8 @@ const handleEvent = (event: ConversationEvent): Effect.Effect<void> =>
         console.log("[Response started]")
         break
       case "RawEvent":
-        // Don't display raw events to console, but they're logged to YAML
+        // Log raw WebSocket message to YAML (truncates delta fields)
+        logRawMessage("recv", event.data)
         break
     }
   })
@@ -302,11 +270,15 @@ const voiceDemo = Effect.gen(function*() {
   const audioPlayback = yield* AudioPlayback
   const player = yield* audioPlayback.createPlayer()
 
-  // Fork event handler - route audio to playback
+  // Fork event handler - route audio to playback, handle barge-in
   yield* session.events.pipe(
     Stream.tap((event) => {
       if (event._tag === "AudioDelta" && Buffer.isBuffer(event.chunk)) {
         return player.write(event.chunk)
+      }
+      // Clear playback queue when user starts speaking (barge-in)
+      if (event._tag === "SpeechStarted") {
+        return player.clear
       }
       return handleEvent(event)
     }),

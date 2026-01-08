@@ -11,6 +11,7 @@ import {
   ConversationItemCreateMessage,
   DEFAULT_API_URL,
   DEFAULT_INSTRUCTIONS,
+  DEFAULT_SAMPLE_RATE,
   DEFAULT_VOICE,
   ErrorEvent,
   InputAudioBufferSpeechStartedEvent,
@@ -45,7 +46,6 @@ export class GrokVoiceClient extends Effect.Service<GrokVoiceClient>()("@lome/Gr
         const apiUrl = config.apiUrl ?? DEFAULT_API_URL
         const voice = config.voice ?? DEFAULT_VOICE
         const instructions = config.instructions ?? DEFAULT_INSTRUCTIONS
-        // Note: sampleRate from config is not used - API uses fixed 24kHz PCM16
 
         yield* Effect.log(`Connecting to ${apiUrl}`)
 
@@ -59,13 +59,26 @@ export class GrokVoiceClient extends Effect.Service<GrokVoiceClient>()("@lome/Gr
         let isConfigured = false
 
         const sendSessionConfig = (socket: WebSocket) => {
-          const config = {
+          const sampleRate = config.sampleRate ?? DEFAULT_SAMPLE_RATE
+          const sessionConfig = {
             type: "session.update",
             session: {
               instructions,
               voice,
-              input_audio_format: "pcm16",
-              output_audio_format: "pcm16",
+              audio: {
+                input: {
+                  format: {
+                    type: "audio/pcm",
+                    rate: sampleRate
+                  }
+                },
+                output: {
+                  format: {
+                    type: "audio/pcm",
+                    rate: sampleRate
+                  }
+                }
+              },
               input_audio_transcription: { model: "whisper-large-v3-turbo" },
               turn_detection: {
                 type: "server_vad",
@@ -77,7 +90,7 @@ export class GrokVoiceClient extends Effect.Service<GrokVoiceClient>()("@lome/Gr
             }
           }
 
-          socket.send(JSON.stringify(config))
+          socket.send(JSON.stringify(sessionConfig))
           isConfigured = true
         }
 

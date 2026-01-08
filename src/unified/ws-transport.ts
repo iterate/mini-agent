@@ -49,20 +49,12 @@ const translateVoiceEvents = (
     Stream.map((transcript): ConversationEvent => new UserTranscript({ transcript }))
   )
 
-  // Events already handled by typed streams - filter from raw events
-  const handledEventTypes = new Set([
-    "response.output_audio.delta", // → audioEvents (AudioDelta)
-    "response.output_audio_transcript.delta", // → textEvents (TextDelta)
-    "conversation.item.input_audio_transcription.completed" // → userTranscriptEvents
-  ])
-
   // Translate all raw events to typed ConversationEvents
   const rawEventStream: Stream.Stream<ConversationEvent, never> = conn.events.pipe(
     Stream.filter(
       (event): event is { type: string; [key: string]: unknown } =>
         typeof event === "object" && event !== null && "type" in event
     ),
-    Stream.filter((event) => !handledEventTypes.has(event.type)),
     Stream.map((event): ConversationEvent => {
       switch (event.type) {
         case "session.updated":

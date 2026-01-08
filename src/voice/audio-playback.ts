@@ -15,6 +15,7 @@ export interface AudioPlaybackConfig {
 
 export interface AudioPlayer {
   readonly write: (audio: Buffer) => Effect.Effect<void>
+  readonly clear: Effect.Effect<void>
   readonly close: Effect.Effect<void>
   readonly writerFiber: Fiber.RuntimeFiber<void, never>
 }
@@ -44,6 +45,7 @@ export class AudioPlayback extends Effect.Service<AudioPlayback>()("@lome/AudioP
         let isRunning = true
 
         soxProcess = spawn("sox", [
+          "-q", // quiet - suppress status output
           "-t",
           "raw",
           "-r",
@@ -57,7 +59,7 @@ export class AudioPlayback extends Effect.Service<AudioPlayback>()("@lome/AudioP
           "-",
           "-d"
         ], {
-          stdio: ["pipe", "inherit", "inherit"]
+          stdio: ["pipe", "ignore", "ignore"]
         })
 
         soxProcess.on("error", (error) => {
@@ -68,14 +70,12 @@ export class AudioPlayback extends Effect.Service<AudioPlayback>()("@lome/AudioP
           isRunning = false
         })
 
-        const currentProcess = soxProcess
-
         const writerFiber = yield* Effect.fork(
           Stream.fromQueue(audioQueue).pipe(
             Stream.runForEach((buffer) =>
               Effect.sync(() => {
-                if (currentProcess?.stdin && !currentProcess.stdin.destroyed && isRunning) {
-                  currentProcess.stdin.write(buffer)
+                if (soxProcess?.stdin && !soxProcess.stdin.destroyed && isRunning) {
+                  soxProcess.stdin.write(buffer)
                 }
               })
             )
@@ -84,19 +84,72 @@ export class AudioPlayback extends Effect.Service<AudioPlayback>()("@lome/AudioP
 
         const write = (audio: Buffer): Effect.Effect<void> => Queue.offer(audioQueue, audio).pipe(Effect.asVoid)
 
+        // Clear queue and restart sox to enable barge-in
+        const clear: Effect.Effect<void> = Effect.gen(function*() {
+          // Drain queue (take all pending items and discard)
+          let cleared = 0
+          while (true) {
+            const item = yield* Queue.poll(audioQueue)
+            if (item._tag === "None") break
+            cleared++
+          }
+
+          // Kill old sox (don't wait for close event)
+          const oldProcess = soxProcess
+          if (oldProcess) {
+            oldProcess.removeAllListeners("close")
+            oldProcess.stdin?.end()
+            oldProcess.kill("SIGKILL")
+          }
+
+          // Start new sox process
+          soxProcess = spawn("sox", [
+            "-q", // quiet - suppress status output
+            "-t",
+            "raw",
+            "-r",
+            String(sampleRate),
+            "-e",
+            "signed",
+            "-b",
+            "16",
+            "-c",
+            "1",
+            "-",
+            "-d"
+          ], {
+            stdio: ["pipe", "ignore", "ignore"]
+          })
+
+          isRunning = true
+
+          soxProcess.on("error", (error) => {
+            Effect.runSync(Effect.logError(`Sox playback error: ${error.message}`))
+          })
+
+          soxProcess.on("close", () => {
+            isRunning = false
+          })
+
+          if (cleared > 0) {
+            yield* Effect.logDebug(`Barge-in: cleared ${cleared} audio chunks`)
+          }
+        })
+
         const close: Effect.Effect<void> = Effect.gen(function*() {
           isRunning = false
           yield* Queue.shutdown(audioQueue)
-          if (currentProcess?.stdin) {
-            currentProcess.stdin.end()
+          if (soxProcess?.stdin) {
+            soxProcess.stdin.end()
           }
-          if (currentProcess) {
-            currentProcess.kill()
+          if (soxProcess) {
+            soxProcess.kill()
           }
         })
 
         return {
           write,
+          clear,
           close,
           writerFiber
         }

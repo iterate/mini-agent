@@ -12,6 +12,7 @@ import {
   type ConversationInput,
   LlmTransport,
   type Message,
+  RawEvent,
   type StatelessConnection,
   TextDelta,
   ToolCall,
@@ -102,8 +103,11 @@ export const HttpTransportLive = (
               Stream.mapEffect((chunk) =>
                 Effect.sync(() => {
                   const events: Array<
-                    TextDelta | ToolCall | TurnComplete | ConversationError
+                    TextDelta | ToolCall | TurnComplete | ConversationError | RawEvent
                   > = []
+
+                  // Log raw chunk
+                  events.push(new RawEvent({ type: "chat.completion.chunk", data: chunk }))
 
                   const choice = chunk.choices[0]
                   if (choice?.delta) {

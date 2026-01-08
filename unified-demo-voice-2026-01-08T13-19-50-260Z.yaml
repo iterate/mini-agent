@@ -1,0 +1,784 @@
+meta:
+  mode: voice
+  provider: openrouter
+  model: anthropic/claude-sonnet-4
+  startTime: 2026-01-08T13:19:24.534Z
+  endTime: 2026-01-08T13:19:48.111Z
+  eventCount: 65
+events:
+  - timestamp: 2026-01-08T13:19:24.534Z
+    direction: recv
+    message:
+      type: conversation.created
+      event_id: 57fb6f5e-81bb-4675-8b1f-fceec1c722cd
+      conversation:
+        id: cdc3d8f8-8576-4310-916f-bb9135d38faa
+        object: realtime.conversation
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:24.534Z
+    direction: recv
+    message:
+      type: ping
+      event_id: cffff4a6-1c11-46ec-836c-148f8b80e834
+      timestamp: 1767878364347
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:27.473Z
+    direction: recv
+    message:
+      type: input_audio_buffer.committed
+      event_id: ad0aec5e-ae77-4225-aaca-a19f0462d165
+      item_id: 60a28476-381e-46b7-83fd-5d4d6f2ecef3
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:27.546Z
+    direction: recv
+    message:
+      type: conversation.item.added
+      event_id: d84d76ba-0b28-48c8-a02d-29c3f9f97c49
+      item:
+        id: 60a28476-381e-46b7-83fd-5d4d6f2ecef3
+        object: realtime.item
+        type: message
+        status: completed
+        role: user
+        content:
+          - type: input_audio
+            transcript: " Hey there, what's up banana?"
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:27.599Z
+    direction: recv
+    message:
+      type: conversation.item.input_audio_transcription.completed
+      event_id: 4b71586d-1251-4c15-8978-e61f905fc848
+      item_id: 60a28476-381e-46b7-83fd-5d4d6f2ecef3
+      transcript: " Hey there, what's up banana?"
+      content_index: 0
+      status: completed
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:27.744Z
+    direction: recv
+    message:
+      type: response.output_item.added
+      event_id: 363ba50e-2b2c-4105-9378-f0aa7356ee0e
+      item:
+        id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+        object: realtime.item
+        type: message
+        status: in_progress
+        role: assistant
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:27.800Z
+    direction: recv
+    message:
+      type: conversation.item.added
+      event_id: cff653cc-1c27-48f6-ab65-b287b112387e
+      item:
+        id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+        object: realtime.item
+        type: message
+        status: in_progress
+        role: assistant
+        content: []
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:27.800Z
+    direction: recv
+    message:
+      type: response.content_part.added
+      event_id: b037a81b-f179-49a3-a35b-a2eed5a5648c
+      item_id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+      previous_item_id: "0"
+      part:
+        type: audio
+        transcript: ""
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      content_index: 0
+      output_index: 0
+  - timestamp: 2026-01-08T13:19:28.083Z
+    direction: recv
+    message:
+      type: response.output_audio_transcript.delta
+      event_id: 5786439e-029f-48c1-b2e7-c76d5ca15f68
+      item_id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      delta: Hey, not much—just chilling. What's up
+      content_index: 0
+      output_index: 0
+      start_time: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:28.254Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 19fdc067-750f-43b9-b174-e30b3ba1eeff
+      item_id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      delta: "<truncated: 71680 chars>"
+      content_index: 0
+      output_index: 0
+      rid: a8a048b4ec9411f0866649c67042cd92
+      latency: "0.66"
+      ts: 1767878368024
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:28.339Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 249fdb1e-ad63-4b2c-84f2-72f6ebcbedbf
+      item_id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      delta: "<truncated: 71680 chars>"
+      content_index: 0
+      output_index: 0
+      rid: a8a048b4ec9411f0866649c67042cd92
+      ts: 1767878368132
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:28.425Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 009adcc8-8ea9-4fa0-9d97-516ed7b961c6
+      item_id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      delta: "<truncated: 97280 chars>"
+      content_index: 0
+      output_index: 0
+      rid: a8a048b4ec9411f0866649c67042cd92
+      ts: 1767878368284
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:28.426Z
+    direction: recv
+    message:
+      type: response.output_audio_transcript.delta
+      event_id: e332547d-7b3f-472a-893b-3445e734892c
+      item_id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      delta: " with you, banana?"
+      content_index: 0
+      output_index: 0
+      start_time: 2.7
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:28.694Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 669a6b77-3649-45d8-8812-b8b2a86f88cb
+      item_id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      delta: "<truncated: 122880 chars>"
+      content_index: 0
+      output_index: 0
+      rid: a8fd9c6cec9411f0866649c67042cd92
+      ts: 1767878368619
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:28.789Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 71984322-c6f7-4813-b070-8230c99710b5
+      item_id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      delta: "<truncated: 84480 chars>"
+      content_index: 0
+      output_index: 0
+      rid: a8fd9c6cec9411f0866649c67042cd92
+      ts: 1767878368724
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:28.797Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 44c8af9e-eea4-4610-a1c2-f0ed371263ba
+      item_id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      delta: "<truncated: 5120 chars>"
+      content_index: 0
+      output_index: 0
+      rid: a8fd9c6cec9411f0866649c67042cd92
+      ts: 1767878368724
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:28.798Z
+    direction: recv
+    message:
+      type: response.output_audio_transcript.done
+      event_id: 98dd0418-35b6-4c38-86d9-0d67114ac8d0
+      item_id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+      transcript: Hey, not much—just chilling. What's up with you, banana?
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      content_index: 0
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:28.798Z
+    direction: recv
+    message:
+      type: response.content_part.done
+      event_id: ec742e3b-1913-4c70-b64a-d6bb9e60176d
+      item_id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      content_index: 0
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:28.798Z
+    direction: recv
+    message:
+      type: response.output_audio.done
+      event_id: c602ae89-909f-432d-88d2-4e309ff5f89e
+      item_id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      content_index: 0
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:28.798Z
+    direction: recv
+    message:
+      type: response.output_item.done
+      event_id: b466a75a-c0d8-4c4f-bec1-155557aabd06
+      item:
+        id: d9b6c456-1e4f-4ed9-9bff-7f6ed94b9af5
+        object: realtime.item
+        type: message
+        status: completed
+        role: assistant
+      response_id: 99c2ba29-f1f0-4eb8-ae29-b3d309537571
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:34.276Z
+    direction: recv
+    message:
+      type: input_audio_buffer.committed
+      event_id: 03d70ddd-beca-4be5-a34b-64bfd9046de9
+      item_id: 8978c5d9-0120-4e06-b187-7f9696d44ab5
+      previous_item_id: 60a28476-381e-46b7-83fd-5d4d6f2ecef3
+  - timestamp: 2026-01-08T13:19:34.370Z
+    direction: recv
+    message:
+      type: conversation.item.added
+      event_id: 4aab2865-aef5-4340-8d82-7ec080db5a8c
+      item:
+        id: 8978c5d9-0120-4e06-b187-7f9696d44ab5
+        object: realtime.item
+        type: message
+        status: completed
+        role: user
+        content:
+          - type: input_audio
+            transcript: " Not much. See you later."
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:34.383Z
+    direction: recv
+    message:
+      type: conversation.item.input_audio_transcription.completed
+      event_id: 9a1a01aa-7fa4-4391-b1aa-7404a9b5f836
+      item_id: 8978c5d9-0120-4e06-b187-7f9696d44ab5
+      transcript: " Not much. See you later."
+      content_index: 0
+      status: completed
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:34.403Z
+    direction: recv
+    message:
+      type: ping
+      event_id: fe0fff49-fe88-4d08-8ea5-44bb3d12f0df
+      timestamp: 1767878374346
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:34.544Z
+    direction: recv
+    message:
+      type: response.output_item.added
+      event_id: c398549f-6a1c-4972-9ff5-92442c079cd7
+      item:
+        id: 4883cdad-291c-4ec8-adaf-e5b42bfdec61
+        object: realtime.item
+        type: message
+        status: in_progress
+        role: assistant
+      response_id: 687c240c-58ff-4141-ab52-5163aca06d99
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:34.558Z
+    direction: recv
+    message:
+      type: conversation.item.added
+      event_id: 7b12755c-ca8c-48fb-8597-9c343fa50911
+      item:
+        id: 4883cdad-291c-4ec8-adaf-e5b42bfdec61
+        object: realtime.item
+        type: message
+        status: in_progress
+        role: assistant
+        content: []
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:34.558Z
+    direction: recv
+    message:
+      type: response.content_part.added
+      event_id: 0cec50b8-9614-43d5-8926-9064bb8d9cd0
+      item_id: 4883cdad-291c-4ec8-adaf-e5b42bfdec61
+      previous_item_id: "0"
+      part:
+        type: audio
+        transcript: ""
+      response_id: 687c240c-58ff-4141-ab52-5163aca06d99
+      content_index: 0
+      output_index: 0
+  - timestamp: 2026-01-08T13:19:34.865Z
+    direction: recv
+    message:
+      type: response.output_audio_transcript.delta
+      event_id: 966fdf5f-b673-40f7-ac58-93736865c758
+      item_id: 4883cdad-291c-4ec8-adaf-e5b42bfdec61
+      response_id: 687c240c-58ff-4141-ab52-5163aca06d99
+      delta: See you later! Take care.
+      content_index: 0
+      output_index: 0
+      start_time: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:34.880Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 6958121d-2fbd-4075-aad2-c37333d13b88
+      item_id: 4883cdad-291c-4ec8-adaf-e5b42bfdec61
+      response_id: 687c240c-58ff-4141-ab52-5163aca06d99
+      delta: "<truncated: 71680 chars>"
+      content_index: 0
+      output_index: 0
+      rid: acae01c6ec9411f0866649c67042cd92
+      latency: "0.60"
+      ts: 1767878374808
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:34.982Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 5e095cf3-8fd9-49de-9791-09eb841a2d2c
+      item_id: 4883cdad-291c-4ec8-adaf-e5b42bfdec61
+      response_id: 687c240c-58ff-4141-ab52-5163aca06d99
+      delta: "<truncated: 71680 chars>"
+      content_index: 0
+      output_index: 0
+      rid: acae01c6ec9411f0866649c67042cd92
+      ts: 1767878374919
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:35.163Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 24d001c9-d3d4-4e5c-9676-1014e82bcdc2
+      item_id: 4883cdad-291c-4ec8-adaf-e5b42bfdec61
+      response_id: 687c240c-58ff-4141-ab52-5163aca06d99
+      delta: "<truncated: 64000 chars>"
+      content_index: 0
+      output_index: 0
+      rid: acae01c6ec9411f0866649c67042cd92
+      ts: 1767878375087
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:35.164Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 390b3a50-314b-43e8-b5a5-32d69bd0b12d
+      item_id: 4883cdad-291c-4ec8-adaf-e5b42bfdec61
+      response_id: 687c240c-58ff-4141-ab52-5163aca06d99
+      delta: "<truncated: 5120 chars>"
+      content_index: 0
+      output_index: 0
+      rid: acae01c6ec9411f0866649c67042cd92
+      ts: 1767878375088
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:35.164Z
+    direction: recv
+    message:
+      type: response.output_audio_transcript.done
+      event_id: 9da16a15-f652-4f0c-aa87-006f2fbec980
+      item_id: 4883cdad-291c-4ec8-adaf-e5b42bfdec61
+      transcript: See you later! Take care.
+      response_id: 687c240c-58ff-4141-ab52-5163aca06d99
+      content_index: 0
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:35.164Z
+    direction: recv
+    message:
+      type: response.content_part.done
+      event_id: 7f1627e8-5f4d-455c-a409-3e3bd519ac79
+      item_id: 4883cdad-291c-4ec8-adaf-e5b42bfdec61
+      response_id: 687c240c-58ff-4141-ab52-5163aca06d99
+      content_index: 0
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:35.164Z
+    direction: recv
+    message:
+      type: response.output_audio.done
+      event_id: c32e7148-f4de-4d3d-8239-168fd259a594
+      item_id: 4883cdad-291c-4ec8-adaf-e5b42bfdec61
+      response_id: 687c240c-58ff-4141-ab52-5163aca06d99
+      content_index: 0
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:35.164Z
+    direction: recv
+    message:
+      type: response.output_item.done
+      event_id: da730c47-1f66-4e07-ba59-7091a8e7b2d8
+      item:
+        id: 4883cdad-291c-4ec8-adaf-e5b42bfdec61
+        object: realtime.item
+        type: message
+        status: completed
+        role: assistant
+      response_id: 687c240c-58ff-4141-ab52-5163aca06d99
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:44.397Z
+    direction: recv
+    message:
+      type: ping
+      event_id: 142b36d2-ef15-4087-9c65-c0ccece0bf23
+      timestamp: 1767878384347
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:45.171Z
+    direction: recv
+    message:
+      type: input_audio_buffer.committed
+      event_id: 94a93fde-a0cb-453e-8c5b-73ff3dc00f27
+      item_id: e1c86a59-a881-4b62-9089-5556766a5486
+      previous_item_id: 8978c5d9-0120-4e06-b187-7f9696d44ab5
+  - timestamp: 2026-01-08T13:19:45.281Z
+    direction: recv
+    message:
+      type: conversation.item.added
+      event_id: 8d1b18b4-ff61-487c-b05d-2b9574b37587
+      item:
+        id: e1c86a59-a881-4b62-9089-5556766a5486
+        object: realtime.item
+        type: message
+        status: completed
+        role: user
+        content:
+          - type: input_audio
+            transcript: " Can you clean up the, um, output of this, um..."
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:45.322Z
+    direction: recv
+    message:
+      type: conversation.item.input_audio_transcription.completed
+      event_id: a13ddbcf-508e-4be3-aad5-868c5ea44d55
+      item_id: e1c86a59-a881-4b62-9089-5556766a5486
+      transcript: " Can you clean up the, um, output of this, um..."
+      content_index: 0
+      status: completed
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:45.467Z
+    direction: recv
+    message:
+      type: response.output_item.added
+      event_id: 388ad935-7428-4d40-8721-fccf313cfcd7
+      item:
+        id: 1bd8ddf3-fc2b-4352-b131-d97cd1e9d9a1
+        object: realtime.item
+        type: message
+        status: in_progress
+        role: assistant
+      response_id: 3a3a9354-8635-45e5-9a81-e45c435fbb52
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:45.479Z
+    direction: recv
+    message:
+      type: conversation.item.added
+      event_id: 10c2d901-7a1f-4c08-9925-b7ec023000b7
+      item:
+        id: 1bd8ddf3-fc2b-4352-b131-d97cd1e9d9a1
+        object: realtime.item
+        type: message
+        status: in_progress
+        role: assistant
+        content: []
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:45.479Z
+    direction: recv
+    message:
+      type: response.content_part.added
+      event_id: 8d8be5b3-6a23-46ae-91fa-02c0b8e750fe
+      item_id: 1bd8ddf3-fc2b-4352-b131-d97cd1e9d9a1
+      previous_item_id: "0"
+      part:
+        type: audio
+        transcript: ""
+      response_id: 3a3a9354-8635-45e5-9a81-e45c435fbb52
+      content_index: 0
+      output_index: 0
+  - timestamp: 2026-01-08T13:19:45.805Z
+    direction: recv
+    message:
+      type: response.output_audio_transcript.delta
+      event_id: 990887f6-f9db-4a24-a829-85307ba8a487
+      item_id: 1bd8ddf3-fc2b-4352-b131-d97cd1e9d9a1
+      response_id: 3a3a9354-8635-45e5-9a81-e45c435fbb52
+      delta: Sure, I'd be happy to clean that
+      content_index: 0
+      output_index: 0
+      start_time: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:45.809Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 98242298-aa53-49aa-9f08-6963eef3c771
+      item_id: 1bd8ddf3-fc2b-4352-b131-d97cd1e9d9a1
+      response_id: 3a3a9354-8635-45e5-9a81-e45c435fbb52
+      delta: "<truncated: 71680 chars>"
+      content_index: 0
+      output_index: 0
+      rid: b3318ae0ec9411f0866649c67042cd92
+      latency: "0.63"
+      ts: 1767878385743
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:45.866Z
+    direction: recv
+    message:
+      type: response.output_audio_transcript.delta
+      event_id: 51461f5b-798d-4273-b46c-10dfadf019fc
+      item_id: 1bd8ddf3-fc2b-4352-b131-d97cd1e9d9a1
+      response_id: 3a3a9354-8635-45e5-9a81-e45c435fbb52
+      delta: " up for you. What exactly do you need help with?"
+      content_index: 0
+      output_index: 0
+      start_time: 1.6
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:45.906Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 929dd1a7-83fd-4a30-9169-e34e3fa0ed91
+      item_id: 1bd8ddf3-fc2b-4352-b131-d97cd1e9d9a1
+      response_id: 3a3a9354-8635-45e5-9a81-e45c435fbb52
+      delta: "<truncated: 71680 chars>"
+      content_index: 0
+      output_index: 0
+      rid: b3318ae0ec9411f0866649c67042cd92
+      ts: 1767878385848
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:46.688Z
+    direction: recv
+    message:
+      type: input_audio_buffer.committed
+      event_id: be9200f7-e28b-4705-8e6b-b9e85e314702
+      item_id: 1b63139c-9315-4e94-a135-66f82de8d3d0
+      previous_item_id: e1c86a59-a881-4b62-9089-5556766a5486
+  - timestamp: 2026-01-08T13:19:46.732Z
+    direction: recv
+    message:
+      type: conversation.item.added
+      event_id: 51acd18f-12b8-415f-83ca-303789aac3e5
+      item:
+        id: 1b63139c-9315-4e94-a135-66f82de8d3d0
+        object: realtime.item
+        type: message
+        status: completed
+        role: user
+        content:
+          - type: input_audio
+            transcript: " stuff here."
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:46.733Z
+    direction: recv
+    message:
+      type: conversation.item.input_audio_transcription.completed
+      event_id: 175c88ef-8496-49ff-bbbd-1cb6560680f2
+      item_id: 1b63139c-9315-4e94-a135-66f82de8d3d0
+      transcript: " stuff here."
+      content_index: 0
+      status: completed
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:46.896Z
+    direction: recv
+    message:
+      type: response.output_item.added
+      event_id: 9e8a3a97-aa96-4746-bf4b-781b9580d799
+      item:
+        id: 494247b4-88df-45ae-9933-6311a84fda18
+        object: realtime.item
+        type: message
+        status: in_progress
+        role: assistant
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:46.909Z
+    direction: recv
+    message:
+      type: conversation.item.added
+      event_id: 1177bd74-5566-44dd-b8eb-702c3512dfcc
+      item:
+        id: 494247b4-88df-45ae-9933-6311a84fda18
+        object: realtime.item
+        type: message
+        status: in_progress
+        role: assistant
+        content: []
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:46.910Z
+    direction: recv
+    message:
+      type: response.content_part.added
+      event_id: b42a71d4-a982-47a3-87ca-f1fb97f93b36
+      item_id: 494247b4-88df-45ae-9933-6311a84fda18
+      previous_item_id: "0"
+      part:
+        type: audio
+        transcript: ""
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      content_index: 0
+      output_index: 0
+  - timestamp: 2026-01-08T13:19:47.212Z
+    direction: recv
+    message:
+      type: response.output_audio_transcript.delta
+      event_id: 847d7bf6-5073-4b92-8a4e-629a86a69ce0
+      item_id: 494247b4-88df-45ae-9933-6311a84fda18
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      delta: Sure, I'd be happy to clean up
+      content_index: 0
+      output_index: 0
+      start_time: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:47.226Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 0e30e4af-4c78-4b16-9685-592b6fe04cfc
+      item_id: 494247b4-88df-45ae-9933-6311a84fda18
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      delta: "<truncated: 71680 chars>"
+      content_index: 0
+      output_index: 0
+      rid: b40b95d2ec9411f0866649c67042cd92
+      latency: "0.59"
+      ts: 1767878387163
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:47.303Z
+    direction: recv
+    message:
+      type: response.output_audio_transcript.delta
+      event_id: 35838198-6249-4b17-8a87-a6d82aeb81b0
+      item_id: 494247b4-88df-45ae-9933-6311a84fda18
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      delta: " that output for you. What exactly do you have?"
+      content_index: 0
+      output_index: 0
+      start_time: 1.76
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:47.340Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 5b2235e2-f20a-41de-bba0-4c2f302a5b82
+      item_id: 494247b4-88df-45ae-9933-6311a84fda18
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      delta: "<truncated: 71680 chars>"
+      content_index: 0
+      output_index: 0
+      rid: b40b95d2ec9411f0866649c67042cd92
+      ts: 1767878387278
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:47.440Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 840f9233-7fab-4aa6-b608-c4d39a2db8aa
+      item_id: 494247b4-88df-45ae-9933-6311a84fda18
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      delta: "<truncated: 51200 chars>"
+      content_index: 0
+      output_index: 0
+      rid: b40b95d2ec9411f0866649c67042cd92
+      ts: 1767878387379
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:47.721Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: cebb1785-6683-480c-a293-603a1cf389e3
+      item_id: 494247b4-88df-45ae-9933-6311a84fda18
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      delta: "<truncated: 122880 chars>"
+      content_index: 0
+      output_index: 0
+      rid: b44a3eeaec9411f0866649c67042cd92
+      ts: 1767878387652
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:48.110Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: 740e2a38-bdd2-465a-9bc5-5b31d388b4fb
+      item_id: 494247b4-88df-45ae-9933-6311a84fda18
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      delta: "<truncated: 245760 chars>"
+      content_index: 0
+      output_index: 0
+      rid: b44a3eeaec9411f0866649c67042cd92
+      ts: 1767878387967
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:48.111Z
+    direction: recv
+    message:
+      type: response.output_audio.delta
+      event_id: d317e43a-8735-441a-9d91-9b2bb29ffd91
+      item_id: 494247b4-88df-45ae-9933-6311a84fda18
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      delta: "<truncated: 5120 chars>"
+      content_index: 0
+      output_index: 0
+      rid: b44a3eeaec9411f0866649c67042cd92
+      ts: 1767878387967
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:48.111Z
+    direction: recv
+    message:
+      type: response.output_audio_transcript.done
+      event_id: 4bec8645-c237-4355-9a7a-7c71b14ffc71
+      item_id: 494247b4-88df-45ae-9933-6311a84fda18
+      transcript: Sure, I'd be happy to clean up that output for you. What exactly do
+        you have?
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      content_index: 0
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:48.111Z
+    direction: recv
+    message:
+      type: response.content_part.done
+      event_id: 56bd5745-0aad-4b8e-8efa-130586b3e8c0
+      item_id: 494247b4-88df-45ae-9933-6311a84fda18
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      content_index: 0
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:48.111Z
+    direction: recv
+    message:
+      type: response.output_audio.done
+      event_id: de5d02bb-4300-4b96-a891-1a1d398cb36a
+      item_id: 494247b4-88df-45ae-9933-6311a84fda18
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      content_index: 0
+      output_index: 0
+      previous_item_id: null
+  - timestamp: 2026-01-08T13:19:48.111Z
+    direction: recv
+    message:
+      type: response.output_item.done
+      event_id: 43ef7d14-5a76-4716-b8aa-e5703dec79a5
+      item:
+        id: 494247b4-88df-45ae-9933-6311a84fda18
+        object: realtime.item
+        type: message
+        status: completed
+        role: assistant
+      response_id: 0561e0ed-f2d0-4af8-8aeb-b78347e262ec
+      output_index: 0
+      previous_item_id: null
