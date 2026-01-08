@@ -8,6 +8,10 @@ import { FileSystem, Path } from "@effect/platform"
 import { Effect, Layer, Option, Schema } from "effect"
 import { spawn } from "node:child_process"
 import { openSync } from "node:fs"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
+
+const __dirname = dirname(fileURLToPath(import.meta.url))
 
 /** Storage backend type */
 export type StorageBackend = "memory" | "fs"
@@ -104,8 +108,8 @@ const makeDaemonImpl = (
       const logPath = resolvePath(config.logFile)
       const out = openSync(logPath, "a")
 
-      // Spawn the main.ts with "server run" args
-      const mainScript = path.join(cwd, "src/durable-streams/main.ts")
+      // Use import.meta.url to locate main.ts reliably regardless of cwd
+      const mainScript = join(__dirname, "main.ts")
       const child = spawn(
         "npx",
         ["tsx", mainScript, "server", "run", "--port", String(config.port), "--storage", config.storage],

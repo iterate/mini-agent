@@ -7,10 +7,16 @@
 import * as Sse from "@effect/experimental/Sse"
 import * as HttpBody from "@effect/platform/HttpBody"
 import * as HttpClient from "@effect/platform/HttpClient"
+import type * as HttpClientError from "@effect/platform/HttpClientError"
 import * as HttpClientRequest from "@effect/platform/HttpClientRequest"
-import { Effect, Layer, Option, Schema, Stream } from "effect"
+import { Duration, Effect, Layer, Option, Schedule, Schema, Stream } from "effect"
 import { DaemonService, defaultDaemonConfig } from "./daemon.ts"
 import { type Offset, OFFSET_START, StreamEvent, type StreamName } from "./types.ts"
+
+/** Max time to wait for daemon to become ready */
+const DAEMON_READY_TIMEOUT = Duration.seconds(10)
+/** Interval between health check attempts */
+const HEALTH_CHECK_INTERVAL = Duration.millis(100)
 
 /** Client configuration */
 export interface ClientConfig {
@@ -58,6 +64,35 @@ export interface StreamClient {
   readonly delete: (opts: { name: StreamName }) => Effect.Effect<void, ClientError>
 }
 
+/** Poll server until it responds (or timeout) */
+const waitForServerReady = (
+  serverUrl: string,
+  httpClient: HttpClient.HttpClient
+): Effect.Effect<void, ClientError> => {
+  const healthCheck = HttpClientRequest.get(`${serverUrl}/streams`).pipe(
+    httpClient.execute,
+    Effect.scoped,
+    Effect.asVoid,
+    Effect.mapError(() => new ClientError("Server not ready"))
+  )
+
+  return healthCheck.pipe(
+    Effect.retry(
+      Schedule.spaced(HEALTH_CHECK_INTERVAL).pipe(
+        Schedule.compose(Schedule.elapsed),
+        Schedule.whileOutput(Duration.lessThan(DAEMON_READY_TIMEOUT))
+      )
+    ),
+    Effect.mapError(() =>
+      new ClientError(
+        `Daemon failed to become ready within ${
+          Duration.toSeconds(DAEMON_READY_TIMEOUT)
+        }s. Check ${defaultDaemonConfig.logFile} for errors.`
+      )
+    )
+  )
+}
+
 /** Create client with explicit server URL */
 export const makeStreamClient = (
   config: ClientConfig
@@ -73,6 +108,14 @@ export const makeStreamClient = (
     )
     const clientOk = HttpClient.filterStatusOk(client)
 
+    /** Map HTTP errors to ClientError with helpful messages */
+    const mapRequestError = (error: HttpClientError.RequestError): ClientError => {
+      if (error.reason === "Transport") {
+        return new ClientError(`Cannot connect to ${config.serverUrl} - server not reachable`)
+      }
+      return new ClientError(`Request failed: ${error.message}`)
+    }
+
     const append = (opts: { name: StreamName; data: unknown }): Effect.Effect<StreamEvent, ClientError> =>
       Effect.gen(function*() {
         const request = HttpClientRequest.post(`/streams/${opts.name}`, {
@@ -83,7 +126,7 @@ export const makeStreamClient = (
           Effect.flatMap((r) => r.json),
           Effect.scoped,
           Effect.catchTags({
-            RequestError: (error) => Effect.fail(new ClientError(`Request failed: ${error.message}`)),
+            RequestError: (error) => Effect.fail(mapRequestError(error)),
             ResponseError: (error) =>
               Effect.fail(new ClientError(`HTTP ${error.response.status}`, error.response.status))
           })
@@ -115,7 +158,7 @@ export const makeStreamClient = (
           )
         ),
         Stream.catchTags({
-          RequestError: (error) => Stream.fail(new ClientError(`Request failed: ${error.message}`)),
+          RequestError: (error) => Stream.fail(mapRequestError(error)),
           ResponseError: (error) => Stream.fail(new ClientError(`HTTP ${error.response.status}`, error.response.status))
         })
       )
@@ -141,7 +184,7 @@ export const makeStreamClient = (
           Effect.flatMap((r) => r.json),
           Effect.scoped,
           Effect.catchTags({
-            RequestError: (error) => Effect.fail(new ClientError(`Request failed: ${error.message}`)),
+            RequestError: (error) => Effect.fail(mapRequestError(error)),
             ResponseError: (error) =>
               Effect.fail(new ClientError(`HTTP ${error.response.status}`, error.response.status))
           })
@@ -164,7 +207,7 @@ export const makeStreamClient = (
           Effect.flatMap((r) => r.json),
           Effect.scoped,
           Effect.catchTags({
-            RequestError: (error) => Effect.fail(new ClientError(`Request failed: ${error.message}`)),
+            RequestError: (error) => Effect.fail(mapRequestError(error)),
             ResponseError: (error) =>
               Effect.fail(new ClientError(`HTTP ${error.response.status}`, error.response.status))
           })
@@ -181,7 +224,7 @@ export const makeStreamClient = (
           Effect.scoped,
           Effect.asVoid,
           Effect.catchTags({
-            RequestError: (error) => Effect.fail(new ClientError(`Request failed: ${error.message}`)),
+            RequestError: (error) => Effect.fail(mapRequestError(error)),
             ResponseError: (error) => {
               // 204 is success for delete
               if (error.response.status === 204) return Effect.void
@@ -208,7 +251,7 @@ export class StreamClientService extends Effect.Service<StreamClientService>()(
       const daemon = yield* DaemonService
       const httpClient = yield* HttpClient.HttpClient
 
-      /** Resolve server URL from env, flag, or daemon */
+      /** Resolve server URL from env, flag, or daemon. Starts daemon if needed and waits for ready. */
       const resolveServerUrl: Effect.Effect<string, ClientError> = Effect.gen(function*() {
         // Check env var first
         const envUrl = process.env.DURABLE_STREAMS_URL
@@ -225,12 +268,13 @@ export class StreamClientService extends Effect.Service<StreamClientService>()(
         const pid = yield* daemon.start().pipe(
           Effect.mapError((e) => new ClientError(`Failed to start daemon: ${e.message}`))
         )
-        yield* Effect.log(`Daemon started (PID ${pid})`)
+        yield* Effect.log(`Daemon started (PID ${pid}), waiting for ready...`)
 
-        // Wait a moment for server to be ready
-        yield* Effect.sleep("500 millis")
+        const serverUrl = `http://localhost:${defaultDaemonConfig.port}`
+        yield* waitForServerReady(serverUrl, httpClient)
+        yield* Effect.log("Daemon ready")
 
-        return `http://localhost:${defaultDaemonConfig.port}`
+        return serverUrl
       })
 
       const withClient = <A, E>(
@@ -277,10 +321,13 @@ export const StreamClientLive: Layer.Layer<StreamClientService, never, HttpClien
         const pid = yield* daemon.start().pipe(
           Effect.mapError((e) => new ClientError(`Failed to start daemon: ${e.message}`))
         )
-        yield* Effect.log(`Daemon started (PID ${pid})`)
-        yield* Effect.sleep("500 millis")
+        yield* Effect.log(`Daemon started (PID ${pid}), waiting for ready...`)
 
-        return `http://localhost:${defaultDaemonConfig.port}`
+        const serverUrl = `http://localhost:${defaultDaemonConfig.port}`
+        yield* waitForServerReady(serverUrl, httpClient)
+        yield* Effect.log("Daemon ready")
+
+        return serverUrl
       })
 
       const withClient = <A, E>(
