@@ -35,3 +35,7 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # Agent runtime data (contexts, logs)
 .mini-agent/
+opensrc/
+
+# durable-streams runtime data
+.iterate/

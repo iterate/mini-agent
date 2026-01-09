@@ -9,7 +9,7 @@
  * By default uses mock LLM server. Set USE_REAL_LLM=1 to use real APIs.
  */
 import { Command } from "@effect/platform"
-import { BunContext } from "@effect/platform-bun"
+import { NodeContext } from "@effect/platform-node"
 import { spawn } from "child_process"
 import { Effect } from "effect"
 import { describe } from "vitest"
@@ -51,10 +51,10 @@ const startServer = async (
   for (let attempt = 0; attempt < maxRetries; attempt++) {
     const port = getRandomPort()
     const args = subcommand === "serve"
-      ? [CLI_PATH, "--cwd", cwd, "serve", "--port", String(port)]
-      : [CLI_PATH, "--cwd", cwd, "layercode", "serve", "--port", String(port), "--no-tunnel"]
+      ? ["tsx", CLI_PATH, "--cwd", cwd, "serve", "--port", String(port)]
+      : ["tsx", CLI_PATH, "--cwd", cwd, "layercode", "serve", "--port", String(port), "--no-tunnel"]
 
-    const proc = spawn("bun", args, {
+    const proc = spawn("npx", args, {
       cwd,
       env: {
         ...process.env,
@@ -115,9 +115,9 @@ describe("HTTP Server", () => {
   describe("serve command", () => {
     test("shows help with --help", async () => {
       const result = await Effect.runPromise(
-        Command.make("bun", CLI_PATH, "serve", "--help").pipe(
+        Command.make("npx", "tsx", CLI_PATH, "serve", "--help").pipe(
           Command.string,
-          Effect.provide(BunContext.layer)
+          Effect.provide(NodeContext.layer)
         )
       )
 
@@ -308,9 +308,9 @@ describe("HTTP Server", () => {
   describe("layercode command", () => {
     test("shows help with --help", async () => {
       const result = await Effect.runPromise(
-        Command.make("bun", CLI_PATH, "layercode", "serve", "--help").pipe(
+        Command.make("npx", "tsx", CLI_PATH, "layercode", "serve", "--help").pipe(
           Command.string,
-          Effect.provide(BunContext.layer)
+          Effect.provide(NodeContext.layer)
         )
       )
 

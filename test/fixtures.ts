@@ -11,7 +11,7 @@
  *   - Example: USE_REAL_LLM=1 doppler run -- bun vitest run
  */
 import { Command } from "@effect/platform"
-import { BunContext } from "@effect/platform-bun"
+import { NodeContext } from "@effect/platform-node"
 import type { PlatformError } from "@effect/platform/Error"
 import { Effect, Layer, LogLevel, Option, Stream } from "effect"
 import { mkdir, mkdtemp, realpath } from "node:fs/promises"
@@ -52,7 +52,7 @@ export const runCli = (
     ...options.env
   }
 
-  let cmd = Command.make("bun", CLI_PATH, ...cwdArgs, ...args)
+  let cmd = Command.make("npx", "tsx", CLI_PATH, ...cwdArgs, ...args)
   if (options.cwd) cmd = Command.workingDirectory(cmd, options.cwd)
   cmd = Command.env(cmd, env)
 
@@ -68,7 +68,7 @@ export const runCli = (
 
       return { stdout, stderr, exitCode }
     })
-  ).pipe(Effect.provide(BunContext.layer))
+  ).pipe(Effect.provide(NodeContext.layer))
 }
 
 /** Run CLI with custom environment variables (for multi-LLM testing) */

@@ -15,8 +15,8 @@ See README.md for context
 
 # Typescript
 
-- Use bun as runtime and package manager
-- Run CLI using `bun run mini-agent` (includes doppler for env vars)
+- Use Node.js as runtime, pnpm as package manager
+- Run CLI using `pnpm mini-agent` (includes doppler for env vars)
 - kebab-case filenames
 - tests using vitest; colocate test files with .test.ts
 - import using .ts extension; no .js
@@ -27,18 +27,18 @@ See README.md for context
 
 ## Scripts
 
-- `bun run typecheck` — tsc only
-- `bun run lint` / `bun run lint:fix` — eslint only
-- `bun run check` — typecheck + lint
-- `bun run check:fix` — typecheck + lint:fix
-- `doppler run -- bun run test` — vitest (requires Doppler for API keys)
-- `doppler run -- bun run test:watch` — vitest watch mode
+- `pnpm typecheck` — tsc only
+- `pnpm lint` / `pnpm lint:fix` — eslint only
+- `pnpm check` — typecheck + lint
+- `pnpm check:fix` — typecheck + lint:fix
+- `pnpm test` — vitest (requires Doppler for API keys)
+- `pnpm test:watch` — vitest watch mode
 
 ## Pull Requests
 
 Before committing and pushing code, you must run:
 ```bash
-bun run check:fix
+pnpm check:fix
 ```
 
 This runs typecheck + linter with auto-fix. Commit any resulting changes before pushing.
@@ -333,13 +333,50 @@ describe("MyService", () => {
 static readonly testLayer = Layer.sync(MyService, () => {
   // Mutable state is fine in tests - JS is single-threaded
   const store = new Map<string, Data>()
-  
+
   return MyService.of({
     get: (key) => Effect.succeed(store.get(key)),
     set: (key, value) => Effect.sync(() => void store.set(key, value))
   })
 })
 ```
+
+## TestClock in vitest
+
+`@effect/vitest` uses `TestClock` by default—time doesn't advance automatically. Use `TestClock.adjust` to advance time in tests with `Effect.sleep`:
+
+```typescript
+import { Effect, Fiber, TestClock } from "effect"
+import { it } from "@effect/vitest"
+
+it.effect("handles sleep with TestClock", () =>
+  Effect.gen(function*() {
+    const fiber = yield* Effect.fork(
+      Effect.gen(function*() {
+        yield* Effect.sleep("1 second")
+        return "done"
+      })
+    )
+
+    yield* TestClock.adjust("1 second")  // Advance virtual time
+
+    const result = yield* Fiber.join(fiber)
+    expect(result).toBe("done")
+  })
+)
+```
+
+For real time instead of test clock, use `it.live`:
+
+```typescript
+it.live("uses real clock", () =>
+  Effect.gen(function*() {
+    yield* Effect.sleep("10 millis")  // Actually waits
+  })
+)
+```
+
+**Alternative:** For PubSub subscription tests, `PubSub.subscribe` guarantees subscription is established when effect completes—often you can publish immediately without sleep.
 
 ## Layer Memoization
 

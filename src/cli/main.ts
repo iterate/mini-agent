@@ -5,7 +5,7 @@ import { AnthropicClient, AnthropicLanguageModel } from "@effect/ai-anthropic"
 import { GoogleClient, GoogleLanguageModel } from "@effect/ai-google"
 import { OpenAiClient, OpenAiLanguageModel } from "@effect/ai-openai"
 import { FetchHttpClient } from "@effect/platform"
-import { BunContext, BunRuntime } from "@effect/platform-bun"
+import { NodeContext, NodeRuntime } from "@effect/platform-node"
 import { Cause, Effect, Layer } from "effect"
 import { AgentRegistry } from "../agent-registry.ts"
 import {
@@ -110,13 +110,13 @@ const makeMainLayer = (args: ReadonlyArray<string>) =>
           Layer.provideMerge(appConfigLayer),
           Layer.provideMerge(configProviderLayer),
           Layer.provideMerge(loggingLayer),
-          Layer.provideMerge(BunContext.layer)
+          Layer.provideMerge(NodeContext.layer)
         )
       })
 
       return Layer.unwrapEffect(buildLayers.pipe(Effect.provide(loggingLayer)))
     }).pipe(
-      Effect.provide(BunContext.layer)
+      Effect.provide(NodeContext.layer)
     )
   )
 
@@ -125,5 +125,5 @@ const args = process.argv.slice(2)
 cli(process.argv).pipe(
   Effect.provide(makeMainLayer(args)),
   Effect.catchAllCause((cause) => Cause.isInterruptedOnly(cause) ? Effect.void : Effect.failCause(cause)),
-  (effect) => BunRuntime.runMain(effect, { disablePrettyLogger: true })
+  (effect) => NodeRuntime.runMain(effect, { disablePrettyLogger: true })
 )

@@ -6,7 +6,7 @@
  * By default uses mock LLM server. Set USE_REAL_LLM=1 to use real APIs.
  */
 import { Command } from "@effect/platform"
-import { BunContext } from "@effect/platform-bun"
+import { NodeContext } from "@effect/platform-node"
 import { Effect, Stream } from "effect"
 import * as fs from "node:fs"
 import * as path from "node:path"
@@ -26,11 +26,11 @@ const runCliWithStdin = (cwd: string, llmEnv: LlmEnv, input: string, ...args: Ar
     ...llmEnv
   }
 
-  return Command.make("bun", CLI_PATH, ...cwdArgs, ...args).pipe(
+  return Command.make("npx", "tsx", CLI_PATH, ...cwdArgs, ...args).pipe(
     Command.stdin(Stream.make(Buffer.from(input, "utf-8"))),
     Command.env(env),
     Command.string,
-    Effect.provide(BunContext.layer)
+    Effect.provide(NodeContext.layer)
   )
 }
 

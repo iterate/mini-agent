@@ -45,14 +45,14 @@ const executeFetch = (
   url: URL,
   signal: AbortSignal
 ): Effect.Effect<HttpClientResponse.HttpClientResponse, HttpClientError.HttpClientError> => {
-  const send = (body: unknown) =>
+  const send = (body: NonNullable<RequestInit["body"]> | undefined) =>
     Effect.tryPromise({
       try: () =>
         globalThis.fetch(url, {
           method: request.method,
           headers: request.headers,
-          body: body as RequestInit["body"],
-          signal
+          signal,
+          ...(body !== undefined ? { body } : {})
         }),
       catch: (cause) =>
         new HttpClientError.RequestError({
@@ -62,10 +62,11 @@ const executeFetch = (
         })
     }).pipe(Effect.map((response) => HttpClientResponse.fromWeb(request, response)))
 
+  type Body = NonNullable<RequestInit["body"]>
   switch (request.body._tag) {
     case "Raw":
     case "Uint8Array":
-      return send(request.body.body)
+      return send(request.body.body as Body)
     case "FormData":
       return send(request.body.formData)
     case "Stream":
