@@ -6,6 +6,7 @@
   "scripts": {
     "prepare": "effect-language-service patch",
     "mini-agent": "doppler run -- npx tsx src/cli/main.ts",
+    "agent-wrapper": "doppler run -- npx tsx src/agent-wrapper/main.ts",
     "start": "npx tsx src/cli/main.ts",
     "dev": "npx tsx --watch src/cli/main.ts",
     "typecheck": "tsc --noEmit",
@@ -51,6 +52,7 @@
     "@effect/platform-node": "^0.104.0",
     "@effect/rpc": "^0.72.2",
     "@effect/rpc-http": "^0.52.4",
+    "@mariozechner/pi-coding-agent": "^0.38.0",
     "@opentelemetry/otlp-transformer": "^0.208.0",
     "@opentelemetry/sdk-trace-base": "^2.2.0",
     "@opentui/core": "^0.1.55",
@@ -58,6 +60,7 @@
     "effect": "^3.19.8",
     "react": "19",
     "react-dom": "19",
+    "uuid": "^11.1.0",
     "yaml": "^2.7.0"
   }
 }

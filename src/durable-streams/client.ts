@@ -282,13 +282,19 @@ export class StreamClientService extends Effect.Service<StreamClientService>()(
       const resolveServerUrl: Effect.Effect<string, ClientError> = Effect.gen(function*() {
         // Check env var first
         const envUrl = process.env.EVENT_STREAM_URL
-        if (envUrl) return envUrl
+        if (envUrl) {
+          yield* waitForServerReady(envUrl, httpClient)
+          return envUrl
+        }
 
         // Check if daemon is running
         const daemonUrl = yield* daemon.getServerUrl().pipe(
           Effect.catchAll(() => Effect.succeed(Option.none<string>()))
         )
-        if (Option.isSome(daemonUrl)) return daemonUrl.value
+        if (Option.isSome(daemonUrl)) {
+          yield* waitForServerReady(daemonUrl.value, httpClient)
+          return daemonUrl.value
+        }
 
         // Auto-start daemon
         yield* Effect.log("No server found, starting daemon...")
@@ -338,12 +344,18 @@ export const StreamClientLive: Layer.Layer<StreamClientService, never, HttpClien
 
       const resolveServerUrl: Effect.Effect<string, ClientError> = Effect.gen(function*() {
         const envUrl = process.env.EVENT_STREAM_URL
-        if (envUrl) return envUrl
+        if (envUrl) {
+          yield* waitForServerReady(envUrl, httpClient)
+          return envUrl
+        }
 
         const daemonUrl = yield* daemon.getServerUrl().pipe(
           Effect.catchAll(() => Effect.succeed(Option.none<string>()))
         )
-        if (Option.isSome(daemonUrl)) return daemonUrl.value
+        if (Option.isSome(daemonUrl)) {
+          yield* waitForServerReady(daemonUrl.value, httpClient)
+          return daemonUrl.value
+        }
 
         yield* Effect.log("No server found, starting daemon...")
         const pid = yield* daemon.start().pipe(
