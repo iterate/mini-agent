@@ -36,3 +36,5 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # Agent runtime data (contexts, logs)
 .mini-agent/
 .http-mitm-proxy/
+.mkcert-ca/
+.mitm-mkcert-certs/
