@@ -55,6 +55,7 @@
     "@opentui/core": "^0.1.55",
     "@opentui/react": "^0.1.55",
     "effect": "^3.19.8",
+    "http-mitm-proxy": "^1.1.0",
     "react": "19",
     "react-dom": "19",
     "yaml": "^2.7.0"
