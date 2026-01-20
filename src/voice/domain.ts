@@ -146,12 +146,21 @@ export const InboundEvent = Schema.Union(
 )
 export type InboundEvent = typeof InboundEvent.Type
 
+export const ToolDefinition = Schema.Struct({
+  type: Schema.Literal("function"),
+  name: Schema.String,
+  description: Schema.String,
+  parameters: Schema.Unknown
+})
+export type ToolDefinition = typeof ToolDefinition.Type
+
 export const VoiceSessionConfig = Schema.Struct({
   apiKey: Schema.String,
   apiUrl: Schema.optional(Schema.String),
   voice: Schema.optional(VoiceName),
   sampleRate: Schema.optional(Schema.Number),
-  instructions: Schema.optional(Schema.String)
+  instructions: Schema.optional(Schema.String),
+  tools: Schema.optional(Schema.Array(ToolDefinition))
 })
 export type VoiceSessionConfig = typeof VoiceSessionConfig.Type
 

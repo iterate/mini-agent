@@ -16,6 +16,7 @@ import {
   type StatelessConnection,
   TextDelta,
   ToolCall,
+  type ToolDefinition,
   TurnComplete
 } from "./domain.ts"
 
@@ -76,6 +77,19 @@ const buildMessages = (ctx: ConversationContext) => {
 }
 
 /**
+ * Convert tool definitions to OpenAI format
+ */
+const toolsToOpenAi = (tools: ReadonlyArray<ToolDefinition>) =>
+  tools.map((tool) => ({
+    type: "function" as const,
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters
+    }
+  }))
+
+/**
  * Create HTTP transport layer
  */
 export const HttpTransportLive = (
@@ -89,15 +103,23 @@ export const HttpTransportLive = (
       return {
         connect: Effect.succeed<StatelessConnection>({
           _tag: "stateless",
-          sendTurn: (ctx: ConversationContext, _input: ConversationInput) => {
+          sendTurn: (
+            ctx: ConversationContext,
+            _input: ConversationInput,
+            tools?: ReadonlyArray<ToolDefinition>
+          ) => {
             const messages = buildMessages(ctx)
 
             const request = {
               model: config.model,
               messages,
               stream: true as const,
-              stream_options: { include_usage: true }
+              stream_options: { include_usage: true },
+              ...(tools && tools.length > 0 ? { tools: toolsToOpenAi(tools) } : {})
             }
+
+            // Track tool calls being built across streaming chunks
+            const activeToolCalls: Record<number, { id: string; name: string; args: string }> = {}
 
             return client.createChatCompletionStream(request).pipe(
               Stream.mapEffect((chunk) =>
@@ -118,22 +140,33 @@ export const HttpTransportLive = (
                       events.push(new TextDelta({ delta: delta.content }))
                     }
 
-                    // Tool calls
+                    // Tool calls - accumulate across chunks
                     if (delta.tool_calls) {
                       for (const tc of delta.tool_calls) {
+                        const idx = tc.index
                         if (tc.id && tc.function?.name) {
-                          // Tool call start - we get id and name
-                          // Arguments stream in chunks, so we'd need to accumulate
-                          // For simplicity, emit on first chunk with name
-                          try {
-                            const params = tc.function.arguments
-                              ? JSON.parse(tc.function.arguments)
-                              : {}
-                            events.push(new ToolCall({ id: tc.id, name: tc.function.name, params }))
-                          } catch {
-                            // Arguments incomplete, skip for now
+                          // New tool call starting
+                          activeToolCalls[idx] = {
+                            id: tc.id,
+                            name: tc.function.name,
+                            args: tc.function.arguments ?? ""
                           }
+                        } else if (activeToolCalls[idx] && tc.function?.arguments) {
+                          // Continuing to accumulate arguments
+                          activeToolCalls[idx].args += tc.function.arguments
                         }
+                      }
+                    }
+                  }
+
+                  // On finish_reason, emit accumulated tool calls
+                  if (choice?.finish_reason === "tool_calls") {
+                    for (const tc of Object.values(activeToolCalls)) {
+                      try {
+                        const params = tc.args ? JSON.parse(tc.args) : {}
+                        events.push(new ToolCall({ id: tc.id, name: tc.name, params }))
+                      } catch {
+                        events.push(new ToolCall({ id: tc.id, name: tc.name, params: {} }))
                       }
                     }
                   }

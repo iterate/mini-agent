@@ -6,6 +6,20 @@
  */
 import { Context, Effect, Option, Queue, Ref, Schema, Stream } from "effect"
 
+// Tool definitions
+
+export interface ToolDefinition {
+  readonly name: string
+  readonly description: string
+  readonly parameters: {
+    readonly type: "object"
+    readonly properties: Record<string, unknown>
+    readonly required?: ReadonlyArray<string>
+  }
+}
+
+export type ToolHandler = (params: unknown) => Effect.Effect<unknown, Error>
+
 // Event types that flow from the LLM to the client
 
 export class TextDelta extends Schema.TaggedClass<TextDelta>()("TextDelta", {
@@ -108,7 +122,8 @@ export interface StatelessConnection {
    */
   readonly sendTurn: (
     context: ConversationContext,
-    input: ConversationInput
+    input: ConversationInput,
+    tools?: ReadonlyArray<ToolDefinition>
   ) => Stream.Stream<ConversationEvent, ConversationError>
 }
 
@@ -148,16 +163,24 @@ export interface Message {
   readonly toolCalls?: Array<{ id: string; name: string; params: unknown }>
 }
 
+export interface PendingToolCall {
+  readonly id: string
+  readonly name: string
+  readonly params: unknown
+}
+
 export interface ConversationContext {
   readonly messages: Array<Message>
   readonly systemPrompt: Option.Option<string>
   readonly turnNumber: number
+  readonly pendingToolCalls: Array<PendingToolCall>
 }
 
 export const emptyContext: ConversationContext = {
   messages: [],
   systemPrompt: Option.none(),
-  turnNumber: 0
+  turnNumber: 0,
+  pendingToolCalls: []
 }
 
 export const addUserMessage = (ctx: ConversationContext, text: string): ConversationContext => ({
@@ -165,11 +188,21 @@ export const addUserMessage = (ctx: ConversationContext, text: string): Conversa
   messages: [...ctx.messages, { role: "user", content: text }]
 })
 
-export const addAssistantMessage = (ctx: ConversationContext, content: string): ConversationContext => ({
-  ...ctx,
-  messages: [...ctx.messages, { role: "assistant", content }],
-  turnNumber: ctx.turnNumber + 1
-})
+export const addAssistantMessage = (
+  ctx: ConversationContext,
+  content: string,
+  toolCalls?: Array<{ id: string; name: string; params: unknown }>
+): ConversationContext => {
+  const message: Message = toolCalls && toolCalls.length > 0
+    ? { role: "assistant", content, toolCalls }
+    : { role: "assistant", content }
+  return {
+    ...ctx,
+    messages: [...ctx.messages, message],
+    pendingToolCalls: toolCalls ?? [],
+    turnNumber: ctx.turnNumber + 1
+  }
+}
 
 export const addToolResult = (
   ctx: ConversationContext,
@@ -177,7 +210,8 @@ export const addToolResult = (
   result: unknown
 ): ConversationContext => ({
   ...ctx,
-  messages: [...ctx.messages, { role: "tool", content: JSON.stringify(result), toolCallId }]
+  messages: [...ctx.messages, { role: "tool", content: JSON.stringify(result), toolCallId }],
+  pendingToolCalls: ctx.pendingToolCalls.filter((tc) => tc.id !== toolCallId)
 })
 
 export const setSystemPrompt = (ctx: ConversationContext, prompt: string): ConversationContext => ({
@@ -212,6 +246,8 @@ export class UnifiedSession extends Context.Tag("@unified/UnifiedSession")<
  */
 export interface UnifiedSessionConfig {
   readonly systemPrompt?: string
+  readonly tools?: ReadonlyArray<ToolDefinition>
+  readonly toolHandlers?: Record<string, ToolHandler>
 }
 
 /**
@@ -242,10 +278,104 @@ export const makeUnifiedSession = (
     const contextRef = yield* Ref.make(initialContext)
     const eventQueue = yield* Queue.unbounded<ConversationEvent>()
 
+    const tools = config?.tools
+    const toolHandlers = config?.toolHandlers ?? {}
+
+    // Execute a tool and return the result
+    const executeToolCall = (
+      toolCall: PendingToolCall
+    ): Effect.Effect<{ id: string; result: unknown }, ConversationError> =>
+      Effect.gen(function*() {
+        const handler = toolHandlers[toolCall.name]
+        if (!handler) {
+          return { id: toolCall.id, result: { error: `Unknown tool: ${toolCall.name}` } }
+        }
+        const result = yield* handler(toolCall.params).pipe(
+          Effect.catchAll((e) => Effect.succeed({ error: e.message }))
+        )
+        return { id: toolCall.id, result }
+      })
+
+    // Process a single turn and return accumulated tool calls
+    const processTurn = (
+      ctx: ConversationContext,
+      input: ConversationInput
+    ): Effect.Effect<Array<PendingToolCall>, ConversationError> =>
+      Effect.gen(function*() {
+        if (connection._tag !== "stateless") return []
+
+        const responseStream = connection.sendTurn(ctx, input, tools)
+        let fullResponse = ""
+        const toolCalls: Array<PendingToolCall> = []
+
+        yield* responseStream.pipe(
+          Stream.tap((event) =>
+            Effect.gen(function*() {
+              yield* Queue.offer(eventQueue, event)
+              if (event._tag === "TextDelta") {
+                fullResponse += event.delta
+              } else if (event._tag === "ToolCall") {
+                toolCalls.push({ id: event.id, name: event.name, params: event.params })
+              }
+            })
+          ),
+          Stream.runDrain
+        )
+
+        // Update context with assistant response (including any tool calls)
+        yield* Ref.update(contextRef, (c) =>
+          addAssistantMessage(
+            c,
+            fullResponse,
+            toolCalls.length > 0 ? toolCalls : undefined
+          ))
+
+        return toolCalls
+      })
+
+    // Run the agent loop: process turn, execute tools, repeat until no tool calls
+    const runAgentLoop = (input: ConversationInput): Effect.Effect<void, ConversationError> =>
+      Effect.gen(function*() {
+        let ctx = yield* Ref.get(contextRef)
+        let toolCalls = yield* processTurn(ctx, input)
+
+        while (toolCalls.length > 0) {
+          // Execute all tool calls
+          for (const toolCall of toolCalls) {
+            const { id, result } = yield* executeToolCall(toolCall)
+            // Emit tool result event
+            yield* Queue.offer(eventQueue, new ToolResult({ id, result }))
+            // Update context with tool result
+            yield* Ref.update(contextRef, (c) => addToolResult(c, id, result))
+          }
+
+          // Get updated context and send another turn
+          ctx = yield* Ref.get(contextRef)
+          toolCalls = yield* processTurn(ctx, new ToolResponseInput({ id: "", result: null }))
+        }
+      })
+
     // For stateful connections, fork a fiber to pump events to queue
+    // and automatically execute tool calls
     if (connection._tag === "stateful") {
       yield* connection.events.pipe(
-        Stream.runForEach((event) => Queue.offer(eventQueue, event)),
+        Stream.tap((event) =>
+          Effect.gen(function*() {
+            yield* Queue.offer(eventQueue, event)
+
+            // Auto-execute tool calls for stateful connections
+            if (event._tag === "ToolCall") {
+              const { id, result } = yield* executeToolCall({
+                id: event.id,
+                name: event.name,
+                params: event.params
+              })
+              yield* Queue.offer(eventQueue, new ToolResult({ id, result }))
+              yield* connection.sendToolResult(id, result)
+            }
+          })
+        ),
+        Stream.runDrain,
         Effect.forkDaemon
       )
     }
@@ -255,28 +385,7 @@ export const makeUnifiedSession = (
         yield* Ref.update(contextRef, (ctx) => addUserMessage(ctx, text))
 
         if (connection._tag === "stateless") {
-          const ctx = yield* Ref.get(contextRef)
-          const responseStream = connection.sendTurn(ctx, new TextInput({ text }))
-
-          // Accumulate full response while streaming events
-          let fullResponse = ""
-
-          yield* responseStream.pipe(
-            Stream.tap((event) =>
-              Effect.gen(function*() {
-                yield* Queue.offer(eventQueue, event)
-                if (event._tag === "TextDelta") {
-                  fullResponse += event.delta
-                }
-              })
-            ),
-            Stream.runDrain
-          )
-
-          // Update context with assistant response
-          if (fullResponse.length > 0) {
-            yield* Ref.update(contextRef, (ctx) => addAssistantMessage(ctx, fullResponse))
-          }
+          yield* runAgentLoop(new TextInput({ text }))
         } else {
           yield* connection.sendText(text)
         }
@@ -300,13 +409,7 @@ export const makeUnifiedSession = (
         yield* Ref.update(contextRef, (ctx) => addToolResult(ctx, id, result))
 
         if (connection._tag === "stateless") {
-          // For stateless, we need to send another turn with the tool result
-          const ctx = yield* Ref.get(contextRef)
-          const responseStream = connection.sendTurn(ctx, new ToolResponseInput({ id, result }))
-          yield* responseStream.pipe(
-            Stream.tap((event) => Queue.offer(eventQueue, event)),
-            Stream.runDrain
-          )
+          yield* runAgentLoop(new ToolResponseInput({ id, result }))
         } else {
           yield* connection.sendToolResult(id, result)
         }

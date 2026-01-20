@@ -25,9 +25,27 @@ import { OpenAiChatClient } from "../openai-chat-completions-client.ts"
 import { AudioCapture } from "../voice/audio-capture.ts"
 import { AudioPlayback } from "../voice/audio-playback.ts"
 import { GrokVoiceClient } from "../voice/client.ts"
-import { type ConversationEvent, makeUnifiedSession } from "./domain.ts"
+import { type ConversationEvent, makeUnifiedSession, type ToolDefinition, type ToolHandler } from "./domain.ts"
 import { HttpTransportLive } from "./http-transport.ts"
 import { WsTransportLive } from "./ws-transport.ts"
+
+// Define the get_secret tool
+const tools: ReadonlyArray<ToolDefinition> = [
+  {
+    name: "get_secret",
+    description: "Returns a secret message about the future of technology",
+    parameters: {
+      type: "object",
+      properties: {},
+      required: []
+    }
+  }
+]
+
+// Tool handlers - same implementation for both HTTP and WS
+const toolHandlers: Record<string, ToolHandler> = {
+  get_secret: () => Effect.succeed("The Singularity is near")
+}
 
 // Event log for YAML dump on exit - raw WebSocket/HTTP messages
 const eventLog: Array<{ timestamp: string; direction: "recv" | "send"; message: unknown }> = []
@@ -218,10 +236,14 @@ const prompt = (rl: readline.Interface): Effect.Effect<string> =>
 const httpDemo = Effect.gen(function*() {
   yield* Console.log("=== Unified Session Demo (HTTP Mode) ===")
   yield* Console.log(`Provider: ${providerName} | Model: ${model}`)
+  yield* Console.log("Tools: get_secret (returns a message about the future)")
   yield* Console.log("Type a message and press Enter. Type 'quit' to exit.\n")
 
   const session = yield* makeUnifiedSession({
-    systemPrompt: "You are a helpful assistant. Keep responses concise."
+    systemPrompt:
+      "You are a helpful assistant. Keep responses concise. You have access to a tool called get_secret that returns a secret message.",
+    tools,
+    toolHandlers
   })
 
   // Fork event handler
@@ -260,10 +282,14 @@ const httpDemo = Effect.gen(function*() {
  */
 const voiceDemo = Effect.gen(function*() {
   yield* Console.log("=== Unified Session Demo (Voice Mode) ===")
+  yield* Console.log("Tools: get_secret (returns a message about the future)")
   yield* Console.log("Speak into your microphone. Press Ctrl+C to exit.\n")
 
   const session = yield* makeUnifiedSession({
-    systemPrompt: "You are a helpful voice assistant. Keep responses brief and conversational."
+    systemPrompt:
+      "You are a helpful voice assistant. Keep responses brief and conversational. You have access to a tool called get_secret that returns a secret message.",
+    tools,
+    toolHandlers
   })
 
   // Set up audio playback
@@ -311,10 +337,21 @@ const httpLayers = Layer.mergeAll(
   )
 )
 
+// Convert tools to voice format for WS transport
+const voiceTools = tools.map((t) => ({
+  type: "function" as const,
+  name: t.name,
+  description: t.description,
+  parameters: t.parameters
+}))
+
 const voiceLayers = Layer.mergeAll(
   WsTransportLive({
     apiKey: process.env.XAI_API_KEY ?? "",
-    voice: "ara"
+    voice: "ara",
+    instructions:
+      "You are a helpful voice assistant. Keep responses brief and conversational. You have access to a tool called get_secret that returns a secret message.",
+    tools: voiceTools
   }).pipe(Layer.provide(GrokVoiceClient.Default)),
   AudioCapture.Default,
   AudioPlayback.Default,

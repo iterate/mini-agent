@@ -24,12 +24,20 @@ import {
   type VoiceSessionConfig
 } from "./domain.ts"
 
+export interface ToolCallEvent {
+  readonly id: string
+  readonly name: string
+  readonly params: unknown
+}
+
 export interface GrokVoiceConnection {
   readonly send: (audio: Buffer) => Effect.Effect<void>
   readonly sendText: (text: string) => Effect.Effect<void>
+  readonly sendToolResult: (callId: string, result: unknown) => Effect.Effect<void>
   readonly audioOutput: Stream.Stream<Buffer>
   readonly transcripts: Stream.Stream<string>
   readonly userTranscripts: Stream.Stream<string>
+  readonly toolCalls: Stream.Stream<ToolCallEvent>
   readonly events: Stream.Stream<unknown>
   readonly close: Effect.Effect<void>
   readonly waitForReady: Effect.Effect<void>
@@ -52,15 +60,38 @@ export class GrokVoiceClient extends Effect.Service<GrokVoiceClient>()("@lome/Gr
         const audioQueue = yield* Queue.unbounded<Buffer>()
         const transcriptQueue = yield* Queue.unbounded<string>()
         const userTranscriptQueue = yield* Queue.unbounded<string>()
+        const toolCallQueue = yield* Queue.unbounded<ToolCallEvent>()
         const eventQueue = yield* Queue.unbounded<unknown>()
         const readyQueue = yield* Queue.bounded<void>(1)
+
+        // Track active function calls being built
+        const activeFunctionCalls: Record<string, { name: string; args: string }> = {}
 
         const holder: WsHolder = { ws: null }
         let isConfigured = false
 
         const sendSessionConfig = (socket: WebSocket) => {
           const sampleRate = config.sampleRate ?? DEFAULT_SAMPLE_RATE
-          const sessionConfig = {
+          const sessionConfig: {
+            type: string
+            session: {
+              instructions: string
+              voice: string
+              audio: {
+                input: { format: { type: string; rate: number } }
+                output: { format: { type: string; rate: number } }
+              }
+              input_audio_transcription: { model: string }
+              turn_detection: {
+                type: string
+                threshold: number
+                prefix_padding_ms: number
+                silence_duration_ms: number
+                create_response: boolean
+              }
+              tools?: Array<{ type: string; name: string; description: string; parameters: unknown }>
+            }
+          } = {
             type: "session.update",
             session: {
               instructions,
@@ -88,6 +119,16 @@ export class GrokVoiceClient extends Effect.Service<GrokVoiceClient>()("@lome/Gr
                 create_response: true
               }
             }
+          }
+
+          // Add tools if provided
+          if (config.tools && config.tools.length > 0) {
+            sessionConfig.session.tools = config.tools.map((t) => ({
+              type: "function",
+              name: t.name,
+              description: t.description,
+              parameters: t.parameters
+            }))
           }
 
           socket.send(JSON.stringify(sessionConfig))
@@ -131,6 +172,39 @@ export class GrokVoiceClient extends Effect.Service<GrokVoiceClient>()("@lome/Gr
             } else if (eventType === "response.done") {
               Schema.decodeUnknownSync(ResponseDoneEvent)(message)
               Effect.runSync(Effect.log("Response complete"))
+            } else if (eventType === "response.output_item.added") {
+              // Check if this is a function call item
+              const item = (message as { item?: { type?: string; call_id?: string; name?: string } }).item
+              if (item?.type === "function_call" && item.call_id && item.name) {
+                activeFunctionCalls[item.call_id] = { name: item.name, args: "" }
+                Effect.runSync(Effect.log(`Function call started: ${item.name}`))
+              }
+            } else if (eventType === "response.function_call_arguments.delta") {
+              const msg = message as { call_id?: string; delta?: string }
+              const callId = msg.call_id
+              if (callId && msg.delta) {
+                const fc = activeFunctionCalls[callId]
+                if (fc) {
+                  fc.args += msg.delta
+                }
+              }
+            } else if (eventType === "response.function_call_arguments.done") {
+              const msg = message as { call_id?: string; arguments?: string }
+              const callId = msg.call_id
+              if (callId) {
+                const fc = activeFunctionCalls[callId]
+                if (fc) {
+                  const args = msg.arguments ?? fc.args
+                  try {
+                    const params = args ? JSON.parse(args) : {}
+                    Effect.runSync(Queue.offer(toolCallQueue, { id: callId, name: fc.name, params }))
+                    Effect.runSync(Effect.log(`Function call complete: ${fc.name}`))
+                  } catch {
+                    Effect.runSync(Queue.offer(toolCallQueue, { id: callId, name: fc.name, params: {} }))
+                  }
+                  delete activeFunctionCalls[callId]
+                }
+              }
             } else if (eventType === "error") {
               const evt = Schema.decodeUnknownSync(ErrorEvent)(message)
               Effect.runSync(Effect.logError(`XAI Error: ${evt.error?.message ?? "Unknown error"}`))
@@ -166,6 +240,7 @@ export class GrokVoiceClient extends Effect.Service<GrokVoiceClient>()("@lome/Gr
             Effect.runSync(Queue.shutdown(audioQueue))
             Effect.runSync(Queue.shutdown(transcriptQueue))
             Effect.runSync(Queue.shutdown(userTranscriptQueue))
+            Effect.runSync(Queue.shutdown(toolCallQueue))
             Effect.runSync(Queue.shutdown(eventQueue))
           })
 
@@ -204,6 +279,28 @@ export class GrokVoiceClient extends Effect.Service<GrokVoiceClient>()("@lome/Gr
             }
           })
 
+        const sendToolResult = (callId: string, result: unknown): Effect.Effect<void> =>
+          Effect.sync(() => {
+            const ws = holder.ws
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              // Send function call output
+              const outputMsg = {
+                type: "conversation.item.create",
+                item: {
+                  type: "function_call_output",
+                  call_id: callId,
+                  output: JSON.stringify(result)
+                }
+              }
+              ws.send(JSON.stringify(outputMsg))
+
+              // Trigger response generation
+              const responseMessage = new ResponseCreateMessage({})
+              const encodedResponse = Schema.encodeSync(ResponseCreateMessage)(responseMessage)
+              ws.send(JSON.stringify({ type: "response.create", ...encodedResponse }))
+            }
+          })
+
         const close = Effect.sync(() => {
           const ws = holder.ws
           if (ws) {
@@ -217,9 +314,11 @@ export class GrokVoiceClient extends Effect.Service<GrokVoiceClient>()("@lome/Gr
         return {
           send,
           sendText,
+          sendToolResult,
           audioOutput: Stream.fromQueue(audioQueue),
           transcripts: Stream.fromQueue(transcriptQueue),
           userTranscripts: Stream.fromQueue(userTranscriptQueue),
+          toolCalls: Stream.fromQueue(toolCallQueue),
           events: Stream.fromQueue(eventQueue),
           close,
           waitForReady

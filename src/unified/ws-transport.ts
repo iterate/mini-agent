@@ -6,7 +6,7 @@
 import { Effect, Layer, Option, Stream } from "effect"
 
 import { GrokVoiceClient, type GrokVoiceConnection } from "../voice/client.ts"
-import type { VoiceSessionConfig } from "../voice/domain.ts"
+import type { ToolDefinition as VoiceToolDefinition, VoiceSessionConfig } from "../voice/domain.ts"
 import {
   AudioDelta,
   ConversationError,
@@ -19,6 +19,7 @@ import {
   SpeechStopped,
   type StatefulConnection,
   TextDelta,
+  ToolCall,
   TurnComplete,
   UserTranscript
 } from "./domain.ts"
@@ -28,6 +29,7 @@ interface WsTransportConfig {
   readonly apiUrl?: string
   readonly voice?: "ara" | "rex" | "sal" | "eve" | "leo"
   readonly instructions?: string
+  readonly tools?: ReadonlyArray<VoiceToolDefinition>
 }
 
 /**
@@ -47,6 +49,10 @@ const translateVoiceEvents = (
 
   const userTranscriptEvents: Stream.Stream<ConversationEvent, never> = conn.userTranscripts.pipe(
     Stream.map((transcript): ConversationEvent => new UserTranscript({ transcript }))
+  )
+
+  const toolCallEvents: Stream.Stream<ConversationEvent, never> = conn.toolCalls.pipe(
+    Stream.map((tc): ConversationEvent => new ToolCall({ id: tc.id, name: tc.name, params: tc.params }))
   )
 
   // Translate all raw events to typed ConversationEvents
@@ -74,7 +80,7 @@ const translateVoiceEvents = (
     })
   )
 
-  return Stream.mergeAll([textEvents, audioEvents, userTranscriptEvents, rawEventStream], {
+  return Stream.mergeAll([textEvents, audioEvents, userTranscriptEvents, toolCallEvents, rawEventStream], {
     concurrency: "unbounded"
   }).pipe(
     Stream.catchAll((error: unknown) =>
@@ -105,7 +111,8 @@ export const WsTransportLive = (
             apiKey: config.apiKey,
             apiUrl: config.apiUrl,
             voice: config.voice,
-            instructions: config.instructions
+            instructions: config.instructions,
+            tools: config.tools
           }
 
           const conn = yield* voiceClient.connect(sessionConfig).pipe(
@@ -155,8 +162,7 @@ export const WsTransportLive = (
               ),
 
             sendToolResult: (id: string, result: unknown) =>
-              // For voice, tool results are sent as text messages
-              conn.sendText(`Tool result for ${id}: ${JSON.stringify(result)}`).pipe(
+              conn.sendToolResult(id, result).pipe(
                 Effect.mapError(
                   () =>
                     new ConversationError({
