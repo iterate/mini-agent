@@ -1,0 +1,222 @@
+meta:
+  mode: http
+  provider: openrouter
+  model: gpt-4o-mini
+  startTime: 2026-01-08T13:19:07.825Z
+  endTime: 2026-01-08T13:19:08.089Z
+  eventCount: 16
+events:
+  - timestamp: 2026-01-08T13:19:07.825Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: ""
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:07.862Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: Why
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:07.862Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: " don't"
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:07.876Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: " scientists"
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:07.876Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: " trust"
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:07.932Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: " atoms"
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:07.932Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: "?"
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:07.991Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: |+
+               
+
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:07.991Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: Because
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:08.028Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: " they"
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:08.028Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: " make"
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:08.064Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: " up"
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:08.064Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: " everything"
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:08.072Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: "!"
+          finish_reason: null
+  - timestamp: 2026-01-08T13:19:08.072Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: ""
+          finish_reason: stop
+  - timestamp: 2026-01-08T13:19:08.089Z
+    direction: recv
+    message:
+      id: gen-1767878347-4Be8tXkNhV8HGyhsWD6I
+      object: chat.completion.chunk
+      created: 1767878347
+      model: openai/gpt-4o-mini
+      choices:
+        - index: 0
+          delta:
+            role: assistant
+            content: ""
+          finish_reason: null
+      usage:
+        prompt_tokens: 24
+        completion_tokens: 13
+        total_tokens: 37
